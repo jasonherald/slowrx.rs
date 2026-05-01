@@ -50,14 +50,15 @@ pub(crate) fn goertzel_power(samples: &[f32], target_hz: f64) -> f64 {
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
     clippy::float_cmp
 )]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::f64::consts::PI;
 
     /// Generate `secs` of pure tone at `freq_hz` at the working sample rate.
-    fn synth_tone(freq_hz: f64, secs: f64) -> Vec<f32> {
+    pub(crate) fn synth_tone(freq_hz: f64, secs: f64) -> Vec<f32> {
         let n = (secs * f64::from(WORKING_SAMPLE_RATE_HZ)).round() as usize;
         (0..n)
             .map(|i| {
@@ -65,6 +66,56 @@ mod tests {
                 (2.0 * PI * freq_hz * t).sin() as f32
             })
             .collect()
+    }
+
+    /// Build a synthetic VIS burst encoding the given 7-bit `code`
+    /// with even parity. Pads `pre_silence_secs` of zeros before the
+    /// leader so the detector has to find the burst inside a longer
+    /// audio buffer.
+    pub(crate) fn synth_vis(code: u8, pre_silence_secs: f64) -> Vec<f32> {
+        assert!(code < 0x80, "VIS codes are 7 bits");
+
+        let mut out: Vec<f32> = Vec::new();
+        // Pre-silence
+        let n_pre = (pre_silence_secs * f64::from(WORKING_SAMPLE_RATE_HZ)).round() as usize;
+        out.resize(n_pre, 0.0);
+
+        // 300 ms leader (10 × 30 ms windows of 1900 Hz)
+        out.extend(synth_tone(LEADER_HZ, 0.300));
+        // 30 ms break at 1200 Hz
+        out.extend(synth_tone(BREAK_HZ, 0.030));
+
+        // 7 data bits (LSB-first per slowrx convention)
+        let mut parity = 0u8;
+        for b in 0..7 {
+            let bit = (code >> b) & 1;
+            parity ^= bit;
+            let f = if bit == 1 { BIT_ONE_HZ } else { BIT_ZERO_HZ };
+            out.extend(synth_tone(f, 0.030));
+        }
+        // 8th bit = even parity
+        let parity_freq = if parity == 1 { BIT_ONE_HZ } else { BIT_ZERO_HZ };
+        out.extend(synth_tone(parity_freq, 0.030));
+
+        // 30 ms stop at 1200 Hz
+        out.extend(synth_tone(BREAK_HZ, 0.030));
+        out
+    }
+
+    #[test]
+    fn synth_vis_for_pd120_has_expected_length() {
+        // 0.3 s leader + 0.03 s break + 8 × 0.03 s bits + 0.03 s stop = 0.6 s nominal.
+        // (with no pre-silence)
+        // synth_vis calls synth_tone 11 times (1 leader + 10 data/stop windows), each
+        // independently rounding to the nearest sample, so the actual total may differ
+        // from round(0.6 × sr) by up to ±11 samples.  We use a tolerance of ±11.
+        let samples = synth_vis(0x5F, 0.0);
+        let expected_len = (0.6 * f64::from(WORKING_SAMPLE_RATE_HZ)).round() as usize;
+        assert!(
+            (samples.len() as isize - expected_len as isize).abs() <= 11,
+            "len={} expected≈{expected_len}",
+            samples.len()
+        );
     }
 
     #[test]
