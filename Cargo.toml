@@ -31,5 +31,7 @@ panic = "warn"
 expect_used = "warn"
 
 [dependencies]
+thiserror = "2"
 
 [dev-dependencies]
+proptest = "1"
