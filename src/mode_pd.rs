@@ -20,7 +20,6 @@ use rustfft::{num_complex::Complex, FftPlanner};
 /// `StoredLum[SampleNum] = clip((Freq - 1500) / 3.1372549);`
 /// where `3.1372549 = (2300 - 1500) / 255`.
 #[must_use]
-#[allow(dead_code)] // Consumed by the upcoming PD line decoder (Task 2.3+).
 pub(crate) fn freq_to_luminance(freq_hz: f64) -> u8 {
     let v = (freq_hz - 1500.0) / 3.137_254_9;
     // Truncation-via-`as` matches slowrx's clip() semantics
@@ -40,7 +39,6 @@ pub(crate) fn freq_to_luminance(freq_hz: f64) -> u8 {
 /// ```
 #[must_use]
 #[doc(hidden)]
-#[allow(dead_code)] // Consumed by the upcoming PD line decoder (Task 2.3+).
 pub fn ycbcr_to_rgb(y: u8, cr: u8, cb: u8) -> [u8; 3] {
     let yi = i32::from(y);
     let cri = i32::from(cr);
