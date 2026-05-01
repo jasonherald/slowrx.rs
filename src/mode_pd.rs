@@ -8,6 +8,8 @@
 //! Channel layout: video.c lines 81-93. YUV→RGB matrix: video.c lines
 //! 446-451. See `NOTICE.md` for full attribution.
 
+use rustfft::{num_complex::Complex, FftPlanner};
+
 /// Map a demodulated FM frequency (Hz) to an 8-bit luminance value.
 ///
 /// SSTV video lives in 1500–2300 Hz: 1500 Hz = black (0), 2300 Hz = white (255).
@@ -37,8 +39,9 @@ pub(crate) fn freq_to_luminance(freq_hz: f64) -> u8 {
 /// B = clip((100*Y + 178*Cb - 22695) / 100)
 /// ```
 #[must_use]
+#[doc(hidden)]
 #[allow(dead_code)] // Consumed by the upcoming PD line decoder (Task 2.3+).
-pub(crate) fn ycbcr_to_rgb(y: u8, cr: u8, cb: u8) -> [u8; 3] {
+pub fn ycbcr_to_rgb(y: u8, cr: u8, cb: u8) -> [u8; 3] {
     let yi = i32::from(y);
     let cri = i32::from(cr);
     let cbi = i32::from(cb);
@@ -53,8 +56,345 @@ pub(crate) fn ycbcr_to_rgb(y: u8, cr: u8, cb: u8) -> [u8; 3] {
     [r, g, b]
 }
 
+/// FFT length used for per-pixel demod. Matches slowrx's bin spacing:
+/// 256/11025 Hz = 43.07 Hz/bin, equal to slowrx's 1024/44100 Hz.
+pub(crate) const FFT_LEN: usize = 256;
+
+/// Hann window of length [`FFT_LEN`], precomputed once per decoder invocation.
+#[allow(clippy::cast_precision_loss)]
+fn hann_window() -> Vec<f32> {
+    (0..FFT_LEN)
+        .map(|i| {
+            let m = (FFT_LEN - 1) as f32;
+            0.5 * (1.0 - (2.0 * std::f32::consts::PI * (i as f32) / m).cos())
+        })
+        .collect()
+}
+
+/// Per-pixel demod context: holds an FFT plan + a reusable scratch buffer.
+/// Construct once per decoder; reuse for many `pixel_freq` calls.
+pub(crate) struct PdDemod {
+    fft: std::sync::Arc<dyn rustfft::Fft<f32>>,
+    hann: Vec<f32>,
+    scratch: Vec<Complex<f32>>,
+}
+
+impl PdDemod {
+    pub fn new() -> Self {
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(FFT_LEN);
+        let scratch_len = fft.get_inplace_scratch_len();
+        Self {
+            fft,
+            hann: hann_window(),
+            scratch: vec![Complex { re: 0.0, im: 0.0 }; scratch_len.max(FFT_LEN)],
+        }
+    }
+
+    /// Estimate the dominant tone frequency in a 256-sample window centered
+    /// near `center_sample` of the working-rate audio buffer. The actual
+    /// window is `audio[center_sample - FFT_LEN/2 .. center_sample + FFT_LEN/2]`,
+    /// clamped at audio boundaries.
+    ///
+    /// Returns the estimated frequency in Hz. Uses Gaussian-log peak
+    /// interpolation matching slowrx `video.c:391-394`.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_wrap
+    )]
+    pub fn pixel_freq(&mut self, audio: &[f32], center_sample: i64) -> f64 {
+        // Build a 256-sample windowed buffer.
+        let half = (FFT_LEN as i64) / 2;
+        let mut buf: Vec<Complex<f32>> = (0..FFT_LEN)
+            .map(|i| {
+                let idx = center_sample - half + i as i64;
+                let s = if idx >= 0 && (idx as usize) < audio.len() {
+                    audio[idx as usize]
+                } else {
+                    0.0
+                };
+                Complex {
+                    re: s * self.hann[i],
+                    im: 0.0,
+                }
+            })
+            .collect();
+
+        self.fft
+            .process_with_scratch(&mut buf, &mut self.scratch[..]);
+
+        // Search peak in bins corresponding to 1500..2300 Hz.
+        let bin_for = |hz: f64| -> usize {
+            (hz * (FFT_LEN as f64) / f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ)).round()
+                as usize
+        };
+        let lo = bin_for(1500.0).saturating_sub(1).max(1);
+        let hi = bin_for(2300.0).saturating_add(1).min(FFT_LEN / 2 - 1);
+
+        let power = |c: Complex<f32>| -> f64 {
+            let r = f64::from(c.re);
+            let i = f64::from(c.im);
+            r * r + i * i
+        };
+
+        let mut max_bin = lo;
+        let mut max_p = power(buf[lo]);
+        for (k, &c) in buf.iter().enumerate().take(hi + 1).skip(lo + 1) {
+            let p = power(c);
+            if p > max_p {
+                max_p = p;
+                max_bin = k;
+            }
+        }
+
+        // Gaussian-log peak interpolation (slowrx video.c:391-394).
+        // Freq_bin = MaxBin + log(P[k+1]/P[k-1]) / (2 * log(P[k]^2 / (P[k+1] * P[k-1])))
+        let p_prev = power(buf[max_bin - 1]);
+        let p_curr = max_p;
+        let p_next = power(buf[max_bin + 1]);
+
+        // If any neighbor power is non-positive, skip interpolation
+        // (log of zero blows up). slowrx falls back to a clipped centre.
+        let interp_ok = p_prev > 0.0 && p_curr > 0.0 && p_next > 0.0;
+        let freq_bin = if interp_ok {
+            let num = (p_next / p_prev).ln();
+            let denom = 2.0 * (p_curr * p_curr / (p_next * p_prev)).ln();
+            if denom.abs() > 1e-12 {
+                (max_bin as f64) + num / denom
+            } else {
+                max_bin as f64
+            }
+        } else {
+            max_bin as f64
+        };
+
+        freq_bin * f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ) / (FFT_LEN as f64)
+    }
+}
+
+/// Decode one PD radio frame (one Y(odd)/Cr/Cb/Y(even) sequence) into two
+/// image rows of `image`. Translated from slowrx `video.c:81-93` (channel
+/// layout) + `video.c:411-450` (per-pixel demod + chroma combine).
+///
+/// Per channel, we extract a copy of just that channel's samples and run
+/// the FFT against that isolated slice. This prevents the per-pixel FFT
+/// window from leaking into the adjacent channel at the channel edges
+/// (where the other tone would otherwise corrupt the peak search). The
+/// trade-off is a per-channel allocation; for V1's PD120/PD180 sizes
+/// this is negligible (<3 KB / channel / line pair).
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap
+)]
+pub(crate) fn decode_pd_line_pair(
+    spec: crate::modespec::ModeSpec,
+    pair_index: u32,
+    window: &[f32],
+    image: &mut crate::image::SstvImage,
+    demod: &mut PdDemod,
+) {
+    let work_rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
+    let sync_secs = spec.sync_seconds;
+    let porch_secs = spec.porch_seconds;
+    let pixel_secs = spec.pixel_seconds;
+    let width = spec.line_pixels;
+
+    // PD channel time offsets (seconds from start of line pair):
+    // Y(odd) → Cr → Cb → Y(even). slowrx video.c:81-93.
+    let chan_starts_sec = [
+        sync_secs + porch_secs,                                       // Y(odd)
+        sync_secs + porch_secs + f64::from(width) * pixel_secs,       // Cr
+        sync_secs + porch_secs + 2.0 * f64::from(width) * pixel_secs, // Cb
+        sync_secs + porch_secs + 3.0 * f64::from(width) * pixel_secs, // Y(even)
+    ];
+
+    let row0 = pair_index * 2;
+    let row1 = row0 + 1;
+
+    let mut y_odd = vec![0_u8; width as usize];
+    let mut cr = vec![0_u8; width as usize];
+    let mut cb = vec![0_u8; width as usize];
+    let mut y_even = vec![0_u8; width as usize];
+
+    for (chan_idx, channel_buf) in [&mut y_odd, &mut cr, &mut cb, &mut y_even]
+        .iter_mut()
+        .enumerate()
+    {
+        let start_sec = chan_starts_sec[chan_idx];
+        let end_sec = start_sec + f64::from(width) * pixel_secs;
+        let chan_start = (start_sec * work_rate).round() as i64;
+        let chan_end = (end_sec * work_rate).round() as i64;
+
+        // Extract just this channel's samples (zero-pad if the input window
+        // doesn't fully cover the channel — happens at line-pair end-of-input).
+        let chan_len = (chan_end - chan_start).max(0) as usize;
+        let mut chan_samples = vec![0.0_f32; chan_len];
+        for (i, dst) in chan_samples.iter_mut().enumerate() {
+            let src_idx = chan_start + i as i64;
+            if src_idx >= 0 && (src_idx as usize) < window.len() {
+                *dst = window[src_idx as usize];
+            }
+        }
+
+        for x in 0..width as usize {
+            // Center sample relative to the channel slice.
+            let center_sec_rel = (x as f64 + 0.5) * pixel_secs;
+            let center_sample_rel = (center_sec_rel * work_rate).round() as i64;
+            let freq = demod.pixel_freq(&chan_samples, center_sample_rel);
+            channel_buf[x] = freq_to_luminance(freq);
+        }
+    }
+
+    for x in 0..width as usize {
+        let rgb_odd = ycbcr_to_rgb(y_odd[x], cr[x], cb[x]);
+        let rgb_even = ycbcr_to_rgb(y_even[x], cr[x], cb[x]);
+        image.put_pixel(x as u32, row0, rgb_odd);
+        image.put_pixel(x as u32, row1, rgb_even);
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap
+)]
+pub mod test_encoder {
+    //! Synthetic PD encoder for round-trip testing. Produces continuous-phase
+    //! FM audio matching the encoder side of the SSTV protocol.
+
+    use crate::modespec::SstvMode;
+    use crate::resample::WORKING_SAMPLE_RATE_HZ;
+    use std::f64::consts::PI;
+
+    const SYNC_HZ: f64 = 1200.0;
+    const PORCH_HZ: f64 = 1500.0;
+    const BLACK_HZ: f64 = 1500.0;
+    const WHITE_HZ: f64 = 2300.0;
+
+    fn lum_to_freq(lum: u8) -> f64 {
+        BLACK_HZ + (WHITE_HZ - BLACK_HZ) * f64::from(lum) / 255.0
+    }
+
+    /// Encoder helper: emit samples up to sample index `target_n` (exclusive)
+    /// at frequency `freq_hz`, advancing both the running sample count `n`
+    /// and the running phase. Using cumulative sample targets prevents the
+    /// per-tone rounding error that would otherwise compound over the line
+    /// (640 pixels × ~0.094 sample/pixel rounding error per pixel adds up to
+    /// 60+ samples per line at PD120, breaking decoder line alignment).
+    fn fill_to(out: &mut Vec<f32>, freq_hz: f64, target_n: usize, phase: &mut f64) {
+        let dphi = 2.0 * PI * freq_hz / f64::from(WORKING_SAMPLE_RATE_HZ);
+        while out.len() < target_n {
+            out.push(phase.sin() as f32);
+            *phase += dphi;
+            if *phase > 2.0 * PI {
+                *phase -= 2.0 * PI;
+            }
+        }
+    }
+
+    /// Encode an image as PD120 / PD180 audio. `ycrcb` is row-major
+    /// `[Y, Cr, Cb]` triples of length `width * height`. Pairs of rows
+    /// share averaged chroma, matching how the decoder will recover them.
+    #[must_use]
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub fn encode_pd(mode: SstvMode, ycrcb: &[[u8; 3]]) -> Vec<f32> {
+        assert!(matches!(mode, SstvMode::Pd120 | SstvMode::Pd180));
+        let spec = crate::modespec::for_mode(mode);
+        let w = spec.line_pixels;
+        let h = spec.image_lines;
+        assert_eq!(ycrcb.len() as u32, w * h);
+        assert_eq!(h % 2, 0);
+
+        let sr = f64::from(WORKING_SAMPLE_RATE_HZ);
+        let mut out = Vec::new();
+        let mut phase = 0.0_f64;
+
+        // Cumulative time tracker (seconds). Targets are computed as
+        // `(running_t * sr).round()` so per-event rounding doesn't drift.
+        let mut t = 0.0_f64;
+        let advance = |t: &mut f64, secs: f64| -> usize {
+            *t += secs;
+            (*t * sr).round() as usize
+        };
+
+        for y_pair in 0..h / 2 {
+            fill_to(
+                &mut out,
+                SYNC_HZ,
+                advance(&mut t, spec.sync_seconds),
+                &mut phase,
+            );
+            fill_to(
+                &mut out,
+                PORCH_HZ,
+                advance(&mut t, spec.porch_seconds),
+                &mut phase,
+            );
+
+            // Y(odd row).
+            for x in 0..w {
+                let lum = ycrcb[((y_pair * 2) * w + x) as usize][0];
+                fill_to(
+                    &mut out,
+                    lum_to_freq(lum),
+                    advance(&mut t, spec.pixel_seconds),
+                    &mut phase,
+                );
+            }
+            // Cr (averaged across pair).
+            for x in 0..w {
+                let cr_a = ycrcb[((y_pair * 2) * w + x) as usize][1];
+                let cr_b = ycrcb[((y_pair * 2 + 1) * w + x) as usize][1];
+                let cr = u8::midpoint(cr_a, cr_b);
+                fill_to(
+                    &mut out,
+                    lum_to_freq(cr),
+                    advance(&mut t, spec.pixel_seconds),
+                    &mut phase,
+                );
+            }
+            // Cb (averaged).
+            for x in 0..w {
+                let cb_a = ycrcb[((y_pair * 2) * w + x) as usize][2];
+                let cb_b = ycrcb[((y_pair * 2 + 1) * w + x) as usize][2];
+                let cb = u8::midpoint(cb_a, cb_b);
+                fill_to(
+                    &mut out,
+                    lum_to_freq(cb),
+                    advance(&mut t, spec.pixel_seconds),
+                    &mut phase,
+                );
+            }
+            // Y(even row).
+            for x in 0..w {
+                let lum = ycrcb[((y_pair * 2 + 1) * w + x) as usize][0];
+                fill_to(
+                    &mut out,
+                    lum_to_freq(lum),
+                    advance(&mut t, spec.pixel_seconds),
+                    &mut phase,
+                );
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap
+)]
 mod tests {
     use super::*;
 
@@ -107,5 +447,54 @@ mod tests {
         let rgb = ycbcr_to_rgb(76, 255, 85);
         assert!(rgb[0] > 200, "red channel should dominate, got {rgb:?}");
         assert!(rgb[2] < 100);
+    }
+
+    use crate::resample::WORKING_SAMPLE_RATE_HZ;
+    use std::f64::consts::PI;
+
+    fn synth_tone(freq_hz: f64, secs: f64) -> Vec<f32> {
+        let n = (secs * f64::from(WORKING_SAMPLE_RATE_HZ)).round() as usize;
+        (0..n)
+            .map(|i| {
+                let t = (i as f64) / f64::from(WORKING_SAMPLE_RATE_HZ);
+                (2.0 * PI * freq_hz * t).sin() as f32
+            })
+            .collect()
+    }
+
+    #[test]
+    fn pdfft_recovers_known_tone_within_5hz() {
+        let mut d = PdDemod::new();
+        // 100 ms of pure tone at 1900 Hz; ample for FFT_LEN=256.
+        let audio = synth_tone(1900.0, 0.100);
+        let center = (audio.len() / 2) as i64;
+        let est = d.pixel_freq(&audio, center);
+        assert!((est - 1900.0).abs() < 5.0, "expected ≈1900, got {est}");
+    }
+
+    #[test]
+    fn pdfft_recovers_band_edges() {
+        let mut d = PdDemod::new();
+        for &f in &[1500.0_f64, 1700.0, 2100.0, 2300.0] {
+            let audio = synth_tone(f, 0.100);
+            let center = (audio.len() / 2) as i64;
+            let est = d.pixel_freq(&audio, center);
+            assert!(
+                (est - f).abs() < 8.0,
+                "f={f} estimate={est} (band edge precision)"
+            );
+        }
+    }
+
+    #[test]
+    fn pdfft_returns_finite_for_silence() {
+        let mut d = PdDemod::new();
+        let audio = vec![0.0_f32; 1024];
+        let est = d.pixel_freq(&audio, 512);
+        assert!(est.is_finite(), "got {est}");
+        // Silence has no peak; the search expands by ±1 bin around the
+        // 1500-2300 band, and bin width is ~43 Hz, so the fallback may
+        // land within ~50 Hz of either edge.
+        assert!((1450.0..=2350.0).contains(&est), "out of band: {est}");
     }
 }

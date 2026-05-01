@@ -40,3 +40,18 @@ pub use crate::error::{Error, Result};
 pub use crate::image::SstvImage;
 pub use crate::modespec::{for_mode, lookup as lookup_vis, ChannelLayout, ModeSpec, SstvMode};
 pub use crate::resample::{Resampler, WORKING_SAMPLE_RATE_HZ};
+
+/// Test-support — exposed under the `test-support` feature for integration
+/// tests in this crate (e.g., `tests/roundtrip.rs`). NOT part of the stable
+/// public API; will be hidden behind `#[doc(hidden)]` until V1 publishes.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod __test_support {
+    pub mod vis {
+        pub use crate::vis::tests::synth_vis;
+    }
+    pub mod mode_pd {
+        pub use crate::mode_pd::test_encoder::encode_pd;
+        pub use crate::mode_pd::ycbcr_to_rgb;
+    }
+}

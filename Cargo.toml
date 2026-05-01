@@ -37,3 +37,10 @@ rustfft = "6"
 
 [dev-dependencies]
 proptest = "1"
+
+[features]
+test-support = []
+
+[[test]]
+name = "roundtrip"
+required-features = ["test-support"]
