@@ -30,6 +30,7 @@
 pub mod decoder;
 pub mod error;
 pub mod image;
+pub mod mode_pd;
 pub mod modespec;
 pub mod resample;
 pub mod vis;
