@@ -45,19 +45,20 @@ impl SstvImage {
     /// Read a single pixel. Returns `None` if `(x, y)` is out of bounds.
     #[must_use]
     pub fn pixel(&self, x: u32, y: u32) -> Option<[u8; 3]> {
-        self.index(x, y).map(|i| self.pixels[i])
+        self.index(x, y).and_then(|i| self.pixels.get(i).copied())
     }
 
     /// Write a single pixel. Silently no-ops on out-of-bounds coordinates.
     pub fn put_pixel(&mut self, x: u32, y: u32, rgb: [u8; 3]) {
-        if let Some(i) = self.index(x, y) {
-            self.pixels[i] = rgb;
+        if let Some(px) = self.index(x, y).and_then(|i| self.pixels.get_mut(i)) {
+            *px = rgb;
         }
     }
 
     fn index(&self, x: u32, y: u32) -> Option<usize> {
         if x < self.width && y < self.height {
-            Some((y as usize) * (self.width as usize) + (x as usize))
+            let row = (y as usize).checked_mul(self.width as usize)?;
+            row.checked_add(x as usize)
         } else {
             None
         }
@@ -97,5 +98,18 @@ mod tests {
         let mut img = SstvImage::new(SstvMode::Pd120, 4, 3);
         img.put_pixel(99, 99, [255, 255, 255]);
         assert!(img.pixels.iter().all(|p| *p == [0, 0, 0]));
+    }
+
+    #[test]
+    fn metadata_buffer_desync_does_not_panic() {
+        // Caller mutated `pixels` to a length shorter than width*height
+        // (a misuse, but should degrade gracefully).
+        let mut img = SstvImage::new(SstvMode::Pd120, 4, 3);
+        img.pixels.truncate(2); // width*height was 12, now 2; pixel() returns None past the buffer.
+        assert_eq!(img.pixel(3, 2), None);
+        assert_eq!(img.pixel(0, 0), Some([0, 0, 0]));
+        // put_pixel() must silently no-op on indices past the buffer.
+        img.put_pixel(3, 2, [1, 2, 3]);
+        assert_eq!(img.pixels.len(), 2); // no growth
     }
 }

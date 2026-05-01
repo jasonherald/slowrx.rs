@@ -3,12 +3,12 @@
 //! Translated from slowrx's `modespec.c` (Oona Räisänen, ISC License).
 //! See `NOTICE.md` for full attribution.
 //!
-//! V1 implements PD120 + PD180. V2 entries (PD240, Robot 36/72, Scottie 1/2/DX,
-//! Martin 1/2) are listed in the enum but their `ModeSpec` lookups return
-//! `None` until each mode's PR lands.
+//! V1 implements PD120 + PD180. V2 modes (PD240, Robot 36/72, Scottie 1/2/DX,
+//! Martin 1/2) are planned but not yet present in the [`SstvMode`] enum or
+//! the lookup tables; each will land with its own PR.
 
 /// SSTV operating mode. V1 implements [`SstvMode::Pd120`] and
-/// [`SstvMode::Pd180`]; V2 variants are reserved.
+/// [`SstvMode::Pd180`]; additional modes are planned for V2.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SstvMode {

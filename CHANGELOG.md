@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `SstvImage::pixel` and `SstvImage::put_pixel` now degrade gracefully
+  (return `None` / no-op) when caller-mutated metadata desyncs from the
+  pixel buffer length. Previously could panic from safe code paths.
+- `modespec.rs` module rustdoc clarified — V2 modes are planned, not
+  "listed in the enum."
+
 ### Added
 - Public API skeleton: `SstvDecoder`, `SstvEvent`, `SstvImage`, `SstvMode`,
   `ModeSpec`, `Error`, `Result`, `Resampler`.
