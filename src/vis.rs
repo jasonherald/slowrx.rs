@@ -373,4 +373,41 @@ pub(crate) mod tests {
         det.process(&audio, audio.len() as u64);
         assert!(det.take_detected().is_none());
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn detector_does_not_panic_on_arbitrary_audio(
+            len in 0usize..32_000,
+            seed in 0u64..u64::MAX,
+        ) {
+            // Deterministic pseudo-random audio in [-1, 1].
+            let mut x = seed;
+            let mut audio = Vec::with_capacity(len);
+            for _ in 0..len {
+                // xorshift
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                let v = ((x as i64) as f64) / (i64::MAX as f64);
+                audio.push(v as f32);
+            }
+            let mut det = VisDetector::new();
+            det.process(&audio, audio.len() as u64);
+            // Whatever it returns is fine; it just must not panic.
+            let _ = det.take_detected();
+        }
+
+        #[test]
+        fn every_valid_vis_code_decodes_correctly(code in 0u8..0x80) {
+            let mut det = VisDetector::new();
+            let audio = synth_vis(code, 0.0);
+            det.process(&audio, audio.len() as u64);
+            let d = det.take_detected().expect("clean VIS always decodes");
+            prop_assert_eq!(d.code, code);
+        }
+    }
 }
