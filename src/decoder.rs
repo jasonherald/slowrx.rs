@@ -147,6 +147,19 @@ impl SstvDecoder {
                 } => {
                     buffer.extend_from_slice(remaining);
 
+                    // TODO(future): mid-image VIS detection. When a new VIS
+                    // burst arrives during decoding the spec calls for flushing
+                    // the in-flight image as `partial: true` and restarting.
+                    // The straightforward approach — running `self.vis` against
+                    // `buffer` each call — fails because the decoding buffer is
+                    // not aligned to 30 ms window boundaries: the residual from
+                    // the previous VIS detection starts at an arbitrary sample
+                    // offset, so the first classifier window is a mix of silence
+                    // and leader tone and does not reliably pass the 5× dominance
+                    // threshold. A correct implementation would re-align the VIS
+                    // window scan to the next 30 ms boundary, or run a separate
+                    // correlator tuned to the 1900 Hz leader. Deferred to PR-3.
+
                     let work_rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
                     // Per-pixel FFT window is centered on the pixel's
                     // expected sample, so we need FFT_LEN/2 trailing
@@ -401,4 +414,36 @@ mod tests {
         let est = estimate_freq(&window);
         assert!((est - 1450.0).abs() < 30.0, "expected ≈1450, got {est}");
     }
+
+    #[test]
+    fn reset_during_decoding_emits_partial_via_subsequent_process() {
+        let mut d = SstvDecoder::new(crate::resample::WORKING_SAMPLE_RATE_HZ).unwrap();
+        // Push a VIS so the decoder transitions to Decoding.
+        let burst = crate::vis::tests::synth_vis(0x5F, 0.0);
+        let _ = d.process(&burst);
+        // We're now in Decoding (post-VIS state assertion via the next call's
+        // outputs not being VisDetected events).
+        d.reset();
+        // After reset, the decoder is back in AwaitingVis. The next process
+        // call with quiet audio yields no events.
+        let events = d.process(&[0.0_f32; 100]);
+        assert!(
+            events.is_empty(),
+            "reset should clear in-flight; got {events:?}"
+        );
+    }
+
+    // TODO(future/PR-3): mid_image_vis_emits_partial_then_new_vis
+    //
+    // When a new VIS burst arrives during Decoding the spec calls for
+    // emitting `ImageComplete { partial: true }` for the in-flight image,
+    // then transitioning to AwaitingVis.
+    //
+    // The naive approach (running `self.vis` against the decoding buffer
+    // each call) fails because the residual buffer from a previous VIS
+    // detection is not aligned to 30 ms window boundaries: the first
+    // classifier window is a mix of silence and leader tone and does not
+    // reliably pass the 5× dominance threshold. A correct implementation
+    // would re-align the scan to the next 30 ms boundary or run a separate
+    // 1900 Hz energy detector. Deferred to PR-3 (cross-validation).
 }
