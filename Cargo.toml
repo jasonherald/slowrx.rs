@@ -33,6 +33,7 @@ expect_used = "warn"
 
 [dependencies]
 thiserror = "2"
+rustfft = "6"
 
 [dev-dependencies]
 proptest = "1"
