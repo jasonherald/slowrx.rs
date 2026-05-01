@@ -7,10 +7,6 @@
 //! (1900 / 1200 / 1100 / 1300 Hz). The result is mathematically equivalent
 //! for VIS purposes and dramatically simpler to test in isolation.
 
-// Items below are consumed by later VIS tasks (1.3 / 1.4); until those land
-// they're only exercised from tests, so silence dead-code at module level.
-#![allow(dead_code)]
-
 use crate::resample::WORKING_SAMPLE_RATE_HZ;
 
 /// VIS leader / sync tones in Hz.
