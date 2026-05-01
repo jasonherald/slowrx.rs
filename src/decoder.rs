@@ -254,6 +254,8 @@ impl SstvDecoder {
         self.samples_processed = 0;
         self.working_samples_emitted = 0;
         self.vis = crate::vis::VisDetector::new();
+        self.resampler.reset_state();
+        self.pd_demod = crate::mode_pd::PdDemod::new();
     }
 
     /// Total samples processed since construction (or last `reset`).
@@ -428,14 +430,24 @@ mod tests {
     #[test]
     fn reset_during_decoding_emits_partial_via_subsequent_process() {
         let mut d = SstvDecoder::new(crate::resample::WORKING_SAMPLE_RATE_HZ).unwrap();
-        // Push a VIS so the decoder transitions to Decoding.
-        let burst = crate::vis::tests::synth_vis(0x5F, 0.0);
-        let _ = d.process(&burst);
-        // We're now in Decoding (post-VIS state assertion via the next call's
-        // outputs not being VisDetected events).
+        // Push a VIS so the decoder transitions to Decoding. Trailing zeros
+        // accommodate the FIR group delay so the burst actually triggers
+        // detection (without the padding the test would mask Finding 1
+        // by never entering Decoding).
+        let mut burst = crate::vis::tests::synth_vis(0x5F, 0.0);
+        burst.extend(std::iter::repeat_n(0.0_f32, 512));
+        let events = d.process(&burst);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, SstvEvent::VisDetected { .. })),
+            "expected VIS detection before reset, got {events:?}"
+        );
+        // We're now in Decoding state.
         d.reset();
-        // After reset, the decoder is back in AwaitingVis. The next process
-        // call with quiet audio yields no events.
+        // After reset, the decoder is back in AwaitingVis with FIR resampler
+        // and PdDemod state cleared. The next process call with quiet audio
+        // yields no events.
         let events = d.process(&[0.0_f32; 100]);
         assert!(
             events.is_empty(),

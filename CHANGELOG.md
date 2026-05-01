@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (PR-2 CR round 2)
+- `SstvDecoder::reset()` now also clears polyphase FIR resampler state and
+  PdDemod state. Previously residual FIR history could contaminate audio
+  after a user reset.
+- Strengthened `reset_during_decoding` test to actually trigger VIS detection
+  (added FIR-group-delay padding + explicit VIS assertion) before testing reset.
+- Fixed CHANGELOG symbol path: `SstvDecoder.sample_offset` →
+  `SstvEvent::VisDetected.sample_offset`.
+
 ### Fixed (PR-2 CR round 1)
 - `SstvDecoder::process` now preserves trailing audio after `ImageComplete`,
   so a back-to-back VIS burst (ARISS multi-image case) is not lost.
@@ -27,8 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SstvEvent::LineDecoded { mode, line_index, pixels }` and
   `SstvEvent::ImageComplete { image, partial }` are now produced during a
   decoded pass.
-- `SstvDecoder.sample_offset` field on `VisDetected` documents working-rate
-  units (was inconsistent across input rates).
+- `SstvEvent::VisDetected.sample_offset` documents working-rate (11025 Hz)
+  units; was inconsistent across input rates before this PR.
 - Synthetic encode → decode round-trip integration tests
   (`tests/roundtrip.rs`, gated on `test-support` cargo feature).
 - VIS detector now preserves leading post-stop-bit audio for the decoder

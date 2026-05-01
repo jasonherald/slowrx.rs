@@ -126,6 +126,14 @@ impl Resampler {
     pub fn input_rate(&self) -> u32 {
         self.input_rate
     }
+
+    /// Clear FIR tail buffer + phase accumulator so a subsequent call to
+    /// `process` starts with a clean state. Keeps the input rate, kernel,
+    /// and stride — the rate doesn't change across `reset_state` calls.
+    pub(crate) fn reset_state(&mut self) {
+        self.tail.clear();
+        self.phase = 0.0;
+    }
 }
 
 #[cfg(test)]
