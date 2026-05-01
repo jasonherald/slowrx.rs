@@ -169,7 +169,10 @@ mod tests {
         use crate::resample::WORKING_SAMPLE_RATE_HZ;
         use crate::vis::tests::synth_vis;
         let mut d = SstvDecoder::new(WORKING_SAMPLE_RATE_HZ).expect("decoder");
-        let burst = synth_vis(0x5F, 0.0);
+        // Pad with trailing silence so the polyphase FIR's ~64-sample group
+        // delay still yields a full set of stop-bit windows (PR-2 T2.1).
+        let mut burst = synth_vis(0x5F, 0.0);
+        burst.extend(std::iter::repeat_n(0.0_f32, 512));
         let events = d.process(&burst);
         let any_vis = events.iter().any(|e| {
             matches!(
@@ -188,7 +191,8 @@ mod tests {
         use crate::resample::WORKING_SAMPLE_RATE_HZ;
         use crate::vis::tests::synth_vis;
         let mut d = SstvDecoder::new(WORKING_SAMPLE_RATE_HZ).expect("decoder");
-        let burst = synth_vis(0x60, 0.0);
+        let mut burst = synth_vis(0x60, 0.0);
+        burst.extend(std::iter::repeat_n(0.0_f32, 512));
         let events = d.process(&burst);
         assert!(events.iter().any(|e| matches!(
             e,
