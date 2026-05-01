@@ -23,37 +23,42 @@ const FIR_TAPS: usize = 64;
 /// glitches across `process` calls.
 pub struct Resampler {
     input_rate: u32,
-    // ratio = input_rate / WORKING_SAMPLE_RATE_HZ, expressed as a stride
-    // we walk through input audio per output sample.
+    /// `input_rate / WORKING_SAMPLE_RATE_HZ`, expressed as a stride.
     stride: f64,
-    // Position into the input buffer (fractional, accumulates across calls).
+    /// Position into the input buffer (fractional, accumulates across calls).
     phase: f64,
-    // Carry-over input samples from the previous call.
+    /// Carry-over input samples from the previous call.
     tail: Vec<f32>,
-    // Pre-computed FIR kernel.
-    kernel: Vec<f32>,
+    /// Cutoff frequency normalized to input rate (taps spaced at `1/input_rate`).
+    cutoff_norm: f64,
 }
 
+/// Cutoff frequency (Hz) for the resampler, derived from the input rate.
+/// Min of (`input_rate/2`, `working_rate/2`) × 0.45, hard-capped at 4500 Hz.
+fn cutoff_hz(input_rate: u32) -> f64 {
+    (f64::from(input_rate.min(WORKING_SAMPLE_RATE_HZ)) * 0.45).min(4500.0)
+}
+
+/// Compute one FIR tap value for a given tap index and fractional phase.
+/// `tap_index` is in 0..`FIR_TAPS`. `frac` is in [0, 1) — the sub-sample
+/// offset of the output sample's center from the integer input grid.
+/// `fc` is the cutoff normalized to input rate (`cutoff_hz / input_rate`).
+///
+/// Sinc shifts with `frac`; Hann window stays anchored to the tap grid.
+/// This is the standard windowed-sinc fractional-delay formulation —
+/// see e.g. Smith, "Digital Audio Resampling Home Page" (CCRMA, 2002).
 #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
-fn build_kernel(input_rate: u32) -> Vec<f32> {
-    // Cutoff = min(in/2, working/2) * 0.45, hard-capped at 4500 Hz. Then
-    // normalize to input rate (taps spaced at 1/input_rate seconds).
-    let cutoff_hz = (f64::from(input_rate.min(WORKING_SAMPLE_RATE_HZ)) * 0.45).min(4500.0);
-    let fc = cutoff_hz / f64::from(input_rate);
+fn fir_tap(tap_index: usize, frac: f64, fc: f64) -> f32 {
     let m = FIR_TAPS as f64;
-    let mut k = Vec::with_capacity(FIR_TAPS);
-    for i in 0..FIR_TAPS {
-        let n = i as f64 - (m - 1.0) / 2.0;
-        let sinc = if n == 0.0 {
-            2.0 * fc
-        } else {
-            (2.0 * std::f64::consts::PI * fc * n).sin() / (std::f64::consts::PI * n)
-        };
-        let w = 0.5 * (1.0 - (2.0 * std::f64::consts::PI * (i as f64) / (m - 1.0)).cos());
-        // Kernel values are bounded in [-1, 1]; the f32 cast is exact-enough.
-        k.push((sinc * w) as f32);
-    }
-    k
+    let n = (tap_index as f64) - (m - 1.0) / 2.0 - frac;
+    let sinc = if n.abs() < 1e-12 {
+        2.0 * fc
+    } else {
+        (2.0 * std::f64::consts::PI * fc * n).sin() / (std::f64::consts::PI * n)
+    };
+    let w = 0.5 * (1.0 - (2.0 * std::f64::consts::PI * (tap_index as f64) / (m - 1.0)).cos());
+    // Tap values are bounded in [-1, 1]; the f32 cast is exact-enough.
+    (sinc * w) as f32
 }
 
 impl Resampler {
@@ -71,7 +76,7 @@ impl Resampler {
             stride: f64::from(input_rate) / f64::from(WORKING_SAMPLE_RATE_HZ),
             phase: 0.0,
             tail: Vec::new(),
-            kernel: build_kernel(input_rate),
+            cutoff_norm: cutoff_hz(input_rate) / f64::from(input_rate),
         })
     }
 
@@ -96,10 +101,15 @@ impl Resampler {
             if needed_end > buf.len() {
                 break;
             }
-            let start = (center - half).floor() as isize;
-            // Convolve.
+            let frac = self.phase.fract();
+            let start = self.phase.floor() as isize;
+
+            // Convolve, computing each tap on-the-fly with the fractional
+            // phase shift. This makes the resampler a true fractional-delay
+            // FIR rather than the quantized integer-delay version.
             let mut acc: f32 = 0.0;
-            for (k, &tap) in self.kernel.iter().enumerate() {
+            for k in 0..FIR_TAPS {
+                let tap = fir_tap(k, frac, self.cutoff_norm);
                 let idx = start + k as isize;
                 if (0..buf.len() as isize).contains(&idx) {
                     acc += tap * buf[idx as usize];
@@ -128,7 +138,7 @@ impl Resampler {
     }
 
     /// Clear FIR tail buffer + phase accumulator so a subsequent call to
-    /// `process` starts with a clean state. Keeps the input rate, kernel,
+    /// `process` starts with a clean state. Keeps the input rate, cutoff,
     /// and stride — the rate doesn't change across `reset_state` calls.
     pub(crate) fn reset_state(&mut self) {
         self.tail.clear();
@@ -234,6 +244,25 @@ mod tests {
         let out = r.process(&in_audio);
         let expected = (WORKING_SAMPLE_RATE_HZ / 2) as usize;
         assert!((out.len() as isize - expected as isize).abs() < 200);
+    }
+
+    #[test]
+    fn resamples_48000_to_11025_preserves_tone_quality() {
+        // 0.5 s of 1900 Hz at 48 kHz, non-integer ratio (4.354...).
+        // Pre-fix this test would have shown ~10× signal-to-noise margin
+        // around 1900 Hz; with proper polyphase the margin should be 100×+.
+        let mut r = Resampler::new(48_000).expect("48k resampler");
+        let in_audio = synth_tone_at(48_000, 1900.0, 0.5);
+        let out = r.process(&in_audio);
+        let p_target = crate::vis::goertzel_power(&out, 1900.0);
+        let p_off1 = crate::vis::goertzel_power(&out, 1700.0);
+        let p_off2 = crate::vis::goertzel_power(&out, 2100.0);
+        // Tighter than the integer-ratio 10× threshold — non-integer
+        // ratios with broken polyphase would NOT meet this.
+        assert!(
+            p_target > 50.0 * p_off1.max(p_off2),
+            "p1900={p_target} p1700={p_off1} p2100={p_off2} (polyphase quality)"
+        );
     }
 
     #[test]

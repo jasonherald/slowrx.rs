@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (PR-2 CR round 3)
+- Polyphase FIR resampler: `build_kernel` was generating a single
+  fixed-phase kernel and `process()` was dropping `center.fract()`,
+  making the resampler a quantized integer-delay FIR rather than a
+  true fractional-delay polyphase. For non-integer ratios (48k →
+  11.025k), this injected ~0.5 samples of phase jitter per output =
+  ~10 Hz wobble at the recovered tone = ~3 grey levels of pixel
+  noise. Now computes each tap on-the-fly using `frac = phase.fract()`
+  to shift the sinc, with the Hann window staying anchored to the
+  kernel grid. Added a 48k → 11.025k quality test asserting >50×
+  SNR ratio at 1900 Hz that would have caught this regression.
+
 ### Fixed (PR-2 CR round 2)
 - `SstvDecoder::reset()` now also clears polyphase FIR resampler state and
   PdDemod state. Previously residual FIR history could contaminate audio
