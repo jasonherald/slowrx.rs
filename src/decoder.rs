@@ -120,12 +120,58 @@ impl SstvDecoder {
     }
 }
 
+/// Estimate the dominant tone frequency in `window` (working-rate samples).
+/// Returns the estimated frequency in Hz, biased toward 1500-2300 Hz
+/// (the SSTV video band).
+///
+/// Algorithm: Goertzel-bank evaluated at 25-Hz steps from 1450 to 2350 Hz,
+/// then quadratic peak interpolation around the maximum bin.
+#[must_use]
+#[allow(clippy::cast_precision_loss, dead_code)]
+pub(crate) fn estimate_freq(window: &[f32]) -> f64 {
+    const STEP_HZ: f64 = 25.0;
+    const FIRST_HZ: f64 = 1450.0;
+    const N_BINS: usize = 37; // 1450..2350 inclusive at 25 Hz steps
+
+    let mut powers = [0.0_f64; N_BINS];
+    for (i, p) in powers.iter_mut().enumerate() {
+        let f = FIRST_HZ + (i as f64) * STEP_HZ;
+        *p = crate::vis::goertzel_power(window, f);
+    }
+    let (mut max_i, mut max_p) = (0_usize, powers[0]);
+    for (i, &p) in powers.iter().enumerate().skip(1) {
+        if p > max_p {
+            max_p = p;
+            max_i = i;
+        }
+    }
+    let center_hz = FIRST_HZ + (max_i as f64) * STEP_HZ;
+    // Quadratic interpolation if we have both neighbours.
+    if max_i > 0 && max_i < N_BINS - 1 && max_p > 0.0 {
+        let a = powers[max_i - 1];
+        let b = max_p;
+        let c = powers[max_i + 1];
+        let denom = a - 2.0 * b + c;
+        if denom.abs() > 1e-12 {
+            let delta = 0.5 * (a - c) / denom;
+            return center_hz + delta * STEP_HZ;
+        }
+    }
+    center_hz
+}
+
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 mod tests {
     use super::*;
     use crate::error::Error;
-    use crate::resample::MAX_INPUT_SAMPLE_RATE_HZ;
+    use crate::resample::{MAX_INPUT_SAMPLE_RATE_HZ, WORKING_SAMPLE_RATE_HZ};
 
     #[test]
     fn rejects_invalid_sample_rates() {
@@ -166,7 +212,6 @@ mod tests {
 
     #[test]
     fn process_emits_vis_detected_for_pd120_burst() {
-        use crate::resample::WORKING_SAMPLE_RATE_HZ;
         use crate::vis::tests::synth_vis;
         let mut d = SstvDecoder::new(WORKING_SAMPLE_RATE_HZ).expect("decoder");
         // Pad with trailing silence so the polyphase FIR's ~64-sample group
@@ -188,7 +233,6 @@ mod tests {
 
     #[test]
     fn process_emits_vis_detected_for_pd180_burst() {
-        use crate::resample::WORKING_SAMPLE_RATE_HZ;
         use crate::vis::tests::synth_vis;
         let mut d = SstvDecoder::new(WORKING_SAMPLE_RATE_HZ).expect("decoder");
         let mut burst = synth_vis(0x60, 0.0);
@@ -209,5 +253,32 @@ mod tests {
         let _ = d.process(&[0.0_f32; 1024]);
         d.reset();
         assert_eq!(d.samples_processed(), 0);
+    }
+
+    // 40 ms tones make every 25-Hz bank bin map to a unique Goertzel k
+    // (11025/441 = 25.0). Production windows are ~5 ms; ~50 Hz suffices.
+    fn synth_tone_at_working(freq_hz: f64, secs: f64) -> Vec<f32> {
+        let sr = f64::from(WORKING_SAMPLE_RATE_HZ);
+        let n = (secs * sr).round() as usize;
+        (0..n)
+            .map(|i| (2.0 * std::f64::consts::PI * freq_hz * (i as f64) / sr).sin() as f32)
+            .collect()
+    }
+
+    #[test]
+    fn estimate_freq_recovers_known_tone() {
+        for &f in &[1500.0_f64, 1700.0, 1900.0, 2100.0, 2300.0] {
+            let window = synth_tone_at_working(f, 0.040);
+            let est = estimate_freq(&window);
+            assert!((est - f).abs() < 30.0, "freq={f} estimate={est}");
+        }
+    }
+
+    #[test]
+    fn estimate_freq_no_interp_at_left_boundary() {
+        // Tone at 1450 Hz lands on bin 0; no left neighbour → no interp.
+        let window = synth_tone_at_working(1450.0, 0.040);
+        let est = estimate_freq(&window);
+        assert!((est - 1450.0).abs() < 30.0, "expected ≈1450, got {est}");
     }
 }
