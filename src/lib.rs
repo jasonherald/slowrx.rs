@@ -13,7 +13,9 @@
 //! [NOTICE file]: https://github.com/jasonherald/slowrx.rs/blob/main/NOTICE.md
 
 pub mod error;
+pub mod image;
 pub mod modespec;
 
 pub use crate::error::{Error, Result};
+pub use crate::image::SstvImage;
 pub use crate::modespec::{for_mode, lookup as lookup_vis, ChannelLayout, ModeSpec, SstvMode};
