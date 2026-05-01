@@ -33,13 +33,16 @@ pub enum SstvEvent {
         /// Row pixels in `[r, g, b]` order, length = mode's `line_pixels`.
         pixels: Vec<[u8; 3]>,
     },
-    /// Image complete. `partial: true` when the in-flight image was
-    /// closed via [`SstvDecoder::reset`] rather than reaching its
-    /// natural line count.
+    /// Image complete (`LineDecoded` for the final line was just emitted).
+    /// `partial` is reserved for future mid-image VIS handling — V1 always
+    /// emits `partial: false`. `reset()` discards in-flight images silently
+    /// without emitting any event.
     ImageComplete {
         /// Final pixel buffer.
         image: SstvImage,
-        /// `true` if the image was cut short by reset/mid-image VIS.
+        /// Reserved for future mid-image VIS handling. V1 always sets this
+        /// to `false`. See the deferred mid-image VIS TODO in
+        /// [`SstvDecoder::process`] for details.
         partial: bool,
     },
 }
@@ -227,7 +230,14 @@ impl SstvDecoder {
                                 image: final_image,
                                 partial: false,
                             });
+                            // Preserve trailing audio not consumed by the last line pair — it
+                            // may contain the leading edge of a follow-up VIS burst (ARISS
+                            // multi-image case). Feed it into the VIS detector so the next
+                            // process() call sees that audio already buffered.
+                            let trailing = std::mem::take(buffer);
                             self.state = State::AwaitingVis;
+                            self.vis = crate::vis::VisDetector::new();
+                            self.vis.process(&trailing, self.working_samples_emitted);
                             break;
                         }
                     }

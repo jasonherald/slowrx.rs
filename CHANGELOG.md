@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (PR-2 CR round 1)
+- `SstvDecoder::process` now preserves trailing audio after `ImageComplete`,
+  so a back-to-back VIS burst (ARISS multi-image case) is not lost.
+- `PdDemod::pixel_freq` no longer allocates a `Vec<Complex<f32>>` per pixel
+  — reuses a preallocated `fft_buf` field. ~635k allocs/image saved on PD180.
+- `SstvEvent::ImageComplete::partial` doc clarified — V1 always emits
+  `partial: false`; `reset()` discards in-flight state silently. The
+  `partial: true` case is reserved for future mid-image VIS handling.
+
 ### Added (PR-2)
 - PD120 and PD180 mode decoding: `mode_pd::PdDemod` (256-pt FFT-based per-pixel
   demod with Gaussian-log peak interpolation, matching slowrx `video.c:391-394`),

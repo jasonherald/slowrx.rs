@@ -69,11 +69,12 @@ fn hann_window() -> Vec<f32> {
         .collect()
 }
 
-/// Per-pixel demod context: holds an FFT plan + a reusable scratch buffer.
+/// Per-pixel demod context: holds an FFT plan + reusable buffers.
 /// Construct once per decoder; reuse for many `pixel_freq` calls.
 pub(crate) struct PdDemod {
     fft: std::sync::Arc<dyn rustfft::Fft<f32>>,
     hann: Vec<f32>,
+    fft_buf: Vec<Complex<f32>>,
     scratch: Vec<Complex<f32>>,
 }
 
@@ -85,6 +86,7 @@ impl PdDemod {
         Self {
             fft,
             hann: hann_window(),
+            fft_buf: vec![Complex { re: 0.0, im: 0.0 }; FFT_LEN],
             scratch: vec![Complex { re: 0.0, im: 0.0 }; scratch_len.max(FFT_LEN)],
         }
     }
@@ -103,25 +105,23 @@ impl PdDemod {
         clippy::cast_possible_wrap
     )]
     pub fn pixel_freq(&mut self, audio: &[f32], center_sample: i64) -> f64 {
-        // Build a 256-sample windowed buffer.
+        // Fill the reusable buffer in-place — avoids a per-call Vec allocation.
         let half = (FFT_LEN as i64) / 2;
-        let mut buf: Vec<Complex<f32>> = (0..FFT_LEN)
-            .map(|i| {
-                let idx = center_sample - half + i as i64;
-                let s = if idx >= 0 && (idx as usize) < audio.len() {
-                    audio[idx as usize]
-                } else {
-                    0.0
-                };
-                Complex {
-                    re: s * self.hann[i],
-                    im: 0.0,
-                }
-            })
-            .collect();
+        for i in 0..FFT_LEN {
+            let idx = center_sample - half + i as i64;
+            let s = if idx >= 0 && (idx as usize) < audio.len() {
+                audio[idx as usize]
+            } else {
+                0.0
+            };
+            self.fft_buf[i] = Complex {
+                re: s * self.hann[i],
+                im: 0.0,
+            };
+        }
 
         self.fft
-            .process_with_scratch(&mut buf, &mut self.scratch[..]);
+            .process_with_scratch(&mut self.fft_buf, &mut self.scratch[..]);
 
         // Search peak in bins corresponding to 1500..2300 Hz.
         let bin_for = |hz: f64| -> usize {
@@ -138,8 +138,8 @@ impl PdDemod {
         };
 
         let mut max_bin = lo;
-        let mut max_p = power(buf[lo]);
-        for (k, &c) in buf.iter().enumerate().take(hi + 1).skip(lo + 1) {
+        let mut max_p = power(self.fft_buf[lo]);
+        for (k, &c) in self.fft_buf.iter().enumerate().take(hi + 1).skip(lo + 1) {
             let p = power(c);
             if p > max_p {
                 max_p = p;
@@ -149,9 +149,9 @@ impl PdDemod {
 
         // Gaussian-log peak interpolation (slowrx video.c:391-394).
         // Freq_bin = MaxBin + log(P[k+1]/P[k-1]) / (2 * log(P[k]^2 / (P[k+1] * P[k-1])))
-        let p_prev = power(buf[max_bin - 1]);
+        let p_prev = power(self.fft_buf[max_bin - 1]);
         let p_curr = max_p;
-        let p_next = power(buf[max_bin + 1]);
+        let p_next = power(self.fft_buf[max_bin + 1]);
 
         // If any neighbor power is non-positive, skip interpolation
         // (log of zero blows up). slowrx falls back to a clipped centre.
