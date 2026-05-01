@@ -32,6 +32,7 @@ pub mod error;
 pub mod image;
 pub mod modespec;
 pub mod resample;
+pub mod vis;
 
 pub use crate::decoder::{SstvDecoder, SstvEvent};
 pub use crate::error::{Error, Result};

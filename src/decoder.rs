@@ -55,6 +55,7 @@ enum State {
 /// [`Self::process`]; consume the returned events.
 pub struct SstvDecoder {
     resampler: Resampler,
+    vis: crate::vis::VisDetector,
     state: State,
     samples_processed: u64,
 }
@@ -68,6 +69,7 @@ impl SstvDecoder {
     pub fn new(input_sample_rate_hz: u32) -> Result<Self> {
         Ok(Self {
             resampler: Resampler::new(input_sample_rate_hz)?,
+            vis: crate::vis::VisDetector::new(),
             state: State::AwaitingVis,
             samples_processed: 0,
         })
@@ -76,19 +78,39 @@ impl SstvDecoder {
     /// Process a chunk of mono `f32` audio samples in caller's rate.
     ///
     /// Returns events produced during this call's processing window.
-    /// In PR-0 this returns an empty `Vec` (decoder is a state-machine
-    /// shell); PR-1/PR-2 plug in real detection + decoding.
     pub fn process(&mut self, audio: &[f32]) -> Vec<SstvEvent> {
-        let _resampled = self.resampler.process(audio);
+        let working = self.resampler.process(audio);
         self.samples_processed = self.samples_processed.saturating_add(audio.len() as u64);
-        // PR-1 + PR-2 fill in real event production.
-        Vec::new()
+
+        let mut out = Vec::new();
+        if matches!(self.state, State::AwaitingVis) {
+            // NOTE: in passthrough mode (input_rate == WORKING_SAMPLE_RATE_HZ),
+            // samples_processed and the VisDetector's working-rate counter are
+            // unit-equivalent. PR-2 Task 2.1 introduces real resampling and will
+            // need to track working-rate samples separately for correct
+            // sample-offset reporting in non-passthrough mode.
+            self.vis.process(&working, self.samples_processed);
+            if let Some(detected) = self.vis.take_detected() {
+                if let Some(spec) = crate::modespec::lookup(detected.code) {
+                    out.push(SstvEvent::VisDetected {
+                        mode: spec.mode,
+                        sample_offset: detected.end_sample,
+                    });
+                    // PR-2 transitions to State::Decoding(spec.mode) here.
+                }
+                // Unknown VIS codes silently drop (we already validated parity,
+                // so an unknown code means an SSTV mode not yet implemented in V1
+                // — V2 will unlock these via modespec table additions).
+            }
+        }
+        out
     }
 
     /// Reset to `AwaitingVis`; discard any in-flight image.
     pub fn reset(&mut self) {
         self.state = State::AwaitingVis;
         self.samples_processed = 0;
+        self.vis = crate::vis::VisDetector::new();
     }
 
     /// Total samples processed since construction (or last `reset`).
@@ -135,11 +157,46 @@ mod tests {
     }
 
     #[test]
-    fn process_returns_no_events_in_pr0_skeleton() {
+    fn process_returns_no_events_for_silence() {
         let mut d = SstvDecoder::new(11_025).expect("decoder");
-        // Even with audio fed in, PR-0 emits nothing.
+        // Silence produces no VIS match.
         let events = d.process(&[0.5_f32; 512]);
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn process_emits_vis_detected_for_pd120_burst() {
+        use crate::resample::WORKING_SAMPLE_RATE_HZ;
+        use crate::vis::tests::synth_vis;
+        let mut d = SstvDecoder::new(WORKING_SAMPLE_RATE_HZ).expect("decoder");
+        let burst = synth_vis(0x5F, 0.0);
+        let events = d.process(&burst);
+        let any_vis = events.iter().any(|e| {
+            matches!(
+                e,
+                SstvEvent::VisDetected {
+                    mode: SstvMode::Pd120,
+                    ..
+                }
+            )
+        });
+        assert!(any_vis, "expected VisDetected for PD120, got {events:?}");
+    }
+
+    #[test]
+    fn process_emits_vis_detected_for_pd180_burst() {
+        use crate::resample::WORKING_SAMPLE_RATE_HZ;
+        use crate::vis::tests::synth_vis;
+        let mut d = SstvDecoder::new(WORKING_SAMPLE_RATE_HZ).expect("decoder");
+        let burst = synth_vis(0x60, 0.0);
+        let events = d.process(&burst);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            SstvEvent::VisDetected {
+                mode: SstvMode::Pd180,
+                ..
+            }
+        )));
     }
 
     #[test]
