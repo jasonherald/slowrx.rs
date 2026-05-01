@@ -15,7 +15,9 @@
 pub mod error;
 pub mod image;
 pub mod modespec;
+pub mod resample;
 
 pub use crate::error::{Error, Result};
 pub use crate::image::SstvImage;
 pub use crate::modespec::{for_mode, lookup as lookup_vis, ChannelLayout, ModeSpec, SstvMode};
+pub use crate::resample::{Resampler, WORKING_SAMPLE_RATE_HZ};
