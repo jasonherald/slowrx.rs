@@ -1,0 +1,21 @@
+# Rust
+/target
+**/*.rs.bk
+
+# IDE / editor scratch
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local-only
+.env
+.claude/
+
+# Local reference clone of slowrx (not committed; use clone-slowrx.sh
+# or clone manually from https://github.com/windytan/slowrx)
+/original

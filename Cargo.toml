@@ -1,0 +1,35 @@
+[package]
+name = "slowrx"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Pure-Rust SSTV (Slow-Scan TV) decoder library — a port of slowrx by Oona Räisänen"
+authors = ["Jason Herald <jason.herald@gmail.com>"]
+license = "MIT"
+repository = "https://github.com/jasonherald/slowrx.rs"
+homepage = "https://github.com/jasonherald/slowrx.rs"
+documentation = "https://docs.rs/slowrx"
+readme = "README.md"
+keywords = ["sstv", "ham-radio", "amateur-radio", "decoder", "dsp"]
+categories = ["multimedia", "science"]
+include = [
+    "src/**/*",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE",
+    "NOTICE.md",
+]
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+panic = "warn"
+expect_used = "warn"
+
+[dependencies]
+
+[dev-dependencies]
