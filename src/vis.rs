@@ -45,13 +45,162 @@ pub(crate) fn goertzel_power(samples: &[f32], target_hz: f64) -> f64 {
     s_prev2.mul_add(s_prev2, s_prev.mul_add(s_prev, -coeff * s_prev * s_prev2))
 }
 
+/// Each VIS bit lasts 30 ms; at 11025 Hz that is `WINDOW_SAMPLES`
+/// audio samples per bit.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub(crate) const WINDOW_SAMPLES: usize = (0.030 * WORKING_SAMPLE_RATE_HZ as f64) as usize; // 330
+
+/// VIS detection state machine. Operates on audio at the
+/// [`WORKING_SAMPLE_RATE_HZ`] working rate.
+///
+/// Slides a 30-ms window across input audio. For each window, runs the
+/// four Goertzel filters and records the dominant tone. When the last
+/// 14 windows match the VIS pattern (leader · break · 8 bits · stop),
+/// emits the decoded 7-bit code via [`Self::take_detected`].
+pub(crate) struct VisDetector {
+    buffer: Vec<f32>,
+    tones: Vec<Tone>,
+    detected: Option<DetectedVis>,
+}
+
+/// Categorical tone classification for a single 30 ms window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tone {
+    Leader,  // 1900 Hz
+    Break,   // 1200 Hz
+    BitZero, // 1300 Hz
+    BitOne,  // 1100 Hz
+    Other,
+}
+
+/// Result of a successful VIS detection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DetectedVis {
+    /// 7-bit VIS code (LSB-first decoded).
+    pub code: u8,
+    /// Decoder-relative sample index where the stop-bit ended.
+    pub end_sample: u64,
+}
+
+impl VisDetector {
+    pub fn new() -> Self {
+        Self {
+            buffer: Vec::with_capacity(WINDOW_SAMPLES * 4),
+            tones: Vec::new(),
+            detected: None,
+        }
+    }
+
+    /// Push working-rate audio samples into the detector.
+    ///
+    /// `total_samples_consumed` is the running sample count from the
+    /// caller's perspective (used to populate `DetectedVis::end_sample`).
+    pub fn process(&mut self, samples: &[f32], total_samples_consumed: u64) {
+        self.buffer.extend_from_slice(samples);
+
+        while self.buffer.len() >= WINDOW_SAMPLES && self.detected.is_none() {
+            let window: Vec<f32> = self.buffer.drain(..WINDOW_SAMPLES).collect();
+            let tone = classify(&window);
+            self.tones.push(tone);
+            if self.tones.len() > 14 {
+                self.tones.remove(0);
+            }
+            if self.tones.len() == 14 {
+                if let Some(code) = match_vis_pattern(&self.tones) {
+                    // The window we just consumed is the stop bit.
+                    // `total_samples_consumed` is the running counter
+                    // AFTER the caller's chunk was appended; subtracting
+                    // the not-yet-consumed remainder of `buffer` gives
+                    // the sample boundary at the end of the just-drained
+                    // (stop-bit) window — the exact end of the burst.
+                    let end_sample =
+                        total_samples_consumed.saturating_sub(self.buffer.len() as u64);
+                    self.detected = Some(DetectedVis { code, end_sample });
+                }
+            }
+        }
+    }
+
+    /// Take the detected VIS (if any) and clear internal state to
+    /// resume awaiting a new VIS.
+    pub fn take_detected(&mut self) -> Option<DetectedVis> {
+        let d = self.detected.take();
+        if d.is_some() {
+            self.tones.clear();
+            self.buffer.clear();
+        }
+        d
+    }
+}
+
+fn classify(window: &[f32]) -> Tone {
+    let p_leader = goertzel_power(window, LEADER_HZ);
+    let p_break = goertzel_power(window, BREAK_HZ);
+    let p0 = goertzel_power(window, BIT_ZERO_HZ);
+    let p1 = goertzel_power(window, BIT_ONE_HZ);
+    // Pick the maximum; require at least 5× margin over the second-place
+    // tone to avoid mis-classifying noise. The 5× threshold is empirical;
+    // slowrx uses ±25 Hz frequency tolerance which translates to a similar
+    // power ratio in tone-classifier terms.
+    let mut ranked = [
+        (Tone::Leader, p_leader),
+        (Tone::Break, p_break),
+        (Tone::BitZero, p0),
+        (Tone::BitOne, p1),
+    ];
+    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    if ranked[0].1 > 5.0 * ranked[1].1 {
+        ranked[0].0
+    } else {
+        Tone::Other
+    }
+}
+
+/// Match the 14-window VIS pattern: 4 leader + 1 break + 8 bits + 1 stop.
+/// Returns the recovered 7-bit code on parity-OK, otherwise `None`.
+fn match_vis_pattern(tones: &[Tone]) -> Option<u8> {
+    debug_assert_eq!(tones.len(), 14);
+    // Windows [0..4] = leader, [4] = break, [5..13] = bits, [13] = stop.
+    if !(tones[0] == Tone::Leader
+        && tones[1] == Tone::Leader
+        && tones[2] == Tone::Leader
+        && tones[3] == Tone::Leader)
+    {
+        return None;
+    }
+    if tones[4] != Tone::Break || tones[13] != Tone::Break {
+        return None;
+    }
+    let mut code = 0u8;
+    let mut parity = 0u8;
+    for (i, tone) in tones[5..12].iter().enumerate() {
+        let bit = match tone {
+            Tone::BitOne => 1,
+            Tone::BitZero => 0,
+            _ => return None,
+        };
+        code |= bit << i;
+        parity ^= bit;
+    }
+    let parity_bit = match tones[12] {
+        Tone::BitOne => 1,
+        Tone::BitZero => 0,
+        _ => return None,
+    };
+    if parity != parity_bit {
+        return None;
+    }
+    Some(code)
+}
+
 #[cfg(test)]
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap,
-    clippy::float_cmp
+    clippy::float_cmp,
+    clippy::expect_used
 )]
 pub(crate) mod tests {
     use super::*;
@@ -158,5 +307,70 @@ pub(crate) mod tests {
         let target = f64::from(WORKING_SAMPLE_RATE_HZ) / 4.0;
         let p = goertzel_power(&samples, target);
         assert!((p - 4.0).abs() < 1e-9, "expected 4.0, got {p}");
+    }
+
+    #[test]
+    fn detects_pd120_vis_clean_signal() {
+        let mut det = VisDetector::new();
+        let audio = synth_vis(0x5F, 0.0);
+        let n = audio.len();
+        det.process(&audio, n as u64);
+        let d = det.take_detected().expect("PD120 detected");
+        assert_eq!(d.code, 0x5F);
+    }
+
+    #[test]
+    fn detects_pd180_vis_clean_signal() {
+        let mut det = VisDetector::new();
+        let audio = synth_vis(0x60, 0.0);
+        let n = audio.len();
+        det.process(&audio, n as u64);
+        let d = det.take_detected().expect("PD180 detected");
+        assert_eq!(d.code, 0x60);
+    }
+
+    #[test]
+    fn detects_vis_after_pre_silence() {
+        // Pre-silence is a whole multiple of WINDOW_SAMPLES so the burst
+        // aligns with detector window boundaries. Sub-window alignment is
+        // a follow-up task (FrameSync realigns at 10 ms granularity).
+        let mut det = VisDetector::new();
+        let pre_secs = (WINDOW_SAMPLES as f64 * 7.0) / f64::from(WORKING_SAMPLE_RATE_HZ);
+        let audio = synth_vis(0x5F, pre_secs);
+        let n = audio.len();
+        det.process(&audio, n as u64);
+        let d = det.take_detected().expect("PD120 detected after silence");
+        assert_eq!(d.code, 0x5F);
+    }
+
+    #[test]
+    fn rejects_random_noise() {
+        let mut det = VisDetector::new();
+        // 1 second of mid-band noise that doesn't match VIS.
+        let n = WORKING_SAMPLE_RATE_HZ as usize;
+        let audio: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f64 / f64::from(WORKING_SAMPLE_RATE_HZ);
+                (0.3 * (2.0 * PI * 1750.0 * t).sin()) as f32
+            })
+            .collect();
+        det.process(&audio, n as u64);
+        assert!(det.take_detected().is_none());
+    }
+
+    #[test]
+    fn parity_failure_is_rejected() {
+        let mut det = VisDetector::new();
+        // Build a clean burst, then overwrite bit-0's detector window
+        // with the break tone so the bit decoder rejects the slot.
+        // synth_vis emits 300 ms of leader (10 detector windows) + 30 ms
+        // break (1 window), so bit-0 lives at detector window 11.
+        let mut audio = synth_vis(0x5F, 0.0);
+        let start = WINDOW_SAMPLES * 11;
+        let end = start + WINDOW_SAMPLES;
+        let break_window = synth_tone(BREAK_HZ, 0.030);
+        audio[start..end].copy_from_slice(&break_window[..WINDOW_SAMPLES]);
+        det.process(&audio, audio.len() as u64);
+        assert!(det.take_detected().is_none());
     }
 }
