@@ -65,6 +65,15 @@ pub enum ChannelLayout {
 ///
 /// VIS codes are taken from Dave Jones (KB4YZ), 1998: "List of SSTV
 /// Modes with VIS Codes".
+///
+/// **Parity-audit note (#27):** `0x00` is intentionally unmapped and
+/// returns `None`. In slowrx (`vis.c:172-174`), an unknown VIS code causes
+/// `GetVIS()` to return 0 and `Listen()` loops back to re-detect
+/// (`do { ... } while (Mode == 0)`). Rust's equivalent is `None` from
+/// this function: the caller in `SstvDecoder::process` drains the VIS
+/// detector's buffer and stays in `AwaitingVis`, which has the same
+/// effect as slowrx's re-detect loop. Both treat an unknown code as a
+/// silent "try again" rather than an error.
 #[must_use]
 pub fn lookup(vis_code: u8) -> Option<ModeSpec> {
     match vis_code {

@@ -276,6 +276,13 @@ impl SstvDecoder {
                     // it may contain the leading edge of a follow-up VIS
                     // burst (ARISS multi-image case). Feed it into a fresh
                     // VIS detector so the next process() call sees it.
+                    //
+                    // V2: After ImageComplete, this decoder re-enters
+                    // AwaitingVis automatically (continuous monitoring).
+                    // For true multi-image streams (back-to-back transmissions
+                    // on the same connection) the trailing audio here is fed
+                    // into a fresh VisDetector, so the next VIS burst is
+                    // detected without any caller intervention. Closes #31.
                     let trailing = std::mem::take(&mut d.audio);
                     self.state = State::AwaitingVis;
                     self.vis = crate::vis::VisDetector::new();

@@ -169,6 +169,26 @@ impl VisDetector {
 
     /// Take any audio still buffered (post-stop-bit residue). The detector
     /// keeps an empty buffer; the next `process` call re-anchors the origin.
+    ///
+    /// **Window-semantics note (#28):** slowrx (`vis.c:169`) explicitly calls
+    /// `readPcm(20e-3 * 44100)` after detection to "skip the rest of the stop
+    /// bit" because its `pcm.WindowPtr` is at the *centre* of the stop-bit
+    /// analysis window (10 ms past + 10 ms future). Rust uses a purely past
+    /// window (each 20 ms window drains from the buffer head), so by the time
+    /// detection fires the `audio_buffer` head is already past the stop bit.
+    /// No extra skip is needed here; the residual is already aligned to the
+    /// start of post-VIS image audio. The behaviors converge to the same
+    /// post-stop-bit buffer state without the explicit skip.
+    ///
+    /// **Re-anchor contract (#40):** After calling `take_residual_buffer`,
+    /// the calling code MUST construct a fresh `VisDetector::new()` rather
+    /// than re-using this instance for subsequent VIS detection. The persisted
+    /// `hops_completed` and `history` / `history_ptr` / `history_filled` state
+    /// are not reset here. Re-using a spent detector would corrupt `end_sample`
+    /// calculations and the pattern-match window on the second detection.
+    /// (In V1 `SstvDecoder::process` always creates a new `VisDetector` after
+    /// each image; this contract must be preserved if mid-image VIS detection
+    /// is reactivated in V2.)
     pub fn take_residual_buffer(&mut self) -> Vec<f32> {
         std::mem::take(&mut self.audio_buffer)
     }
