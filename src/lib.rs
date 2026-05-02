@@ -27,6 +27,8 @@
 //!
 //! [NOTICE file]: https://github.com/jasonherald/slowrx.rs/blob/main/NOTICE.md
 
+#![warn(missing_docs)]
+
 pub mod decoder;
 pub mod error;
 pub mod image;

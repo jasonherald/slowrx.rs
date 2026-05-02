@@ -6,16 +6,54 @@
 > ecosystem with a library-first API while preserving the algorithmic
 > work that made slowrx great.
 
+[![Crates.io](https://img.shields.io/crates/v/slowrx.svg)](https://crates.io/crates/slowrx)
+[![Docs.rs](https://docs.rs/slowrx/badge.svg)](https://docs.rs/slowrx)
 [![CI](https://github.com/jasonherald/slowrx.rs/actions/workflows/ci.yml/badge.svg)](https://github.com/jasonherald/slowrx.rs/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
 ## Status
 
-🚧 **Pre-0.1 — under active development.**
+🛰️ **0.1.0 — V1 published.** PD120 and PD180 decoding from raw audio.
 
-The implementation roadmap is tracked in [GitHub Issues](https://github.com/jasonherald/slowrx.rs/issues).
-The first published release on [crates.io](https://crates.io/) will land
-once V1 (PD120 + PD180) decodes ARISS reception audio cleanly end-to-end.
+Validated end-to-end against ARISS Dec-2017 captures: 6 of 7 fixtures
+decode to images visually matching the reference JPGs (the 7th is a
+truncated capture missing the VIS leader). V2 mode coverage (Robot,
+Scottie, Martin, PD240) is on the [roadmap](https://github.com/jasonherald/slowrx.rs/issues/9).
+
+## Install
+
+```bash
+# library
+cargo add slowrx
+
+# CLI tool (decodes WAV → PNG)
+cargo install slowrx --features cli
+```
+
+## Quick start
+
+```rust
+use slowrx::{SstvDecoder, SstvEvent};
+
+// Construct a decoder at the caller's audio sample rate.
+let mut decoder = SstvDecoder::new(44_100).expect("valid sample rate");
+
+// Feed audio chunks; consume events as images complete.
+let audio: Vec<f32> = vec![0.0; 1024]; // mono samples in [-1.0, 1.0]
+for event in decoder.process(&audio) {
+    if let SstvEvent::ImageComplete { image, .. } = event {
+        println!("decoded {}×{} {:?} image",
+                 image.width, image.height, image.mode);
+    }
+}
+```
+
+CLI:
+
+```bash
+slowrx-cli --input recording.wav --output ./out
+# → out/img-001-pd120.png, out/img-002-pd180.png, ...
+```
 
 ## What it does
 
