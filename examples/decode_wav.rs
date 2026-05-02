@@ -90,7 +90,13 @@ fn main() -> ExitCode {
             buf
         }
     };
-    let mono = collapse_to_mono(raw, spec.channels as usize);
+    let mono = match collapse_to_mono(raw, spec.channels as usize) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(1);
+        }
+    };
 
     let mut decoder = match SstvDecoder::new(spec.sample_rate) {
         Ok(d) => d,
@@ -150,16 +156,21 @@ fn main() -> ExitCode {
     }
 }
 
-fn collapse_to_mono(samples: Vec<f32>, channels: usize) -> Vec<f32> {
+fn collapse_to_mono(samples: Vec<f32>, channels: usize) -> Result<Vec<f32>, &'static str> {
     if channels <= 1 {
-        return samples;
+        return Ok(samples);
+    }
+    // Reject truncated final frames — a decode that quietly drops
+    // 1-N samples from a corrupt WAV would mask real bugs.
+    if samples.len() % channels != 0 {
+        return Err("sample count is not divisible by channel count (truncated WAV?)");
     }
     #[allow(clippy::cast_precision_loss)]
     let inv = 1.0 / (channels as f32);
-    samples
+    Ok(samples
         .chunks_exact(channels)
         .map(|frame| frame.iter().sum::<f32>() * inv)
-        .collect()
+        .collect())
 }
 
 fn save_image(image: &slowrx::SstvImage, path: &str) -> Result<(), Box<dyn std::error::Error>> {
