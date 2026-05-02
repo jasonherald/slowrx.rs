@@ -3,12 +3,12 @@
 //! Translated from slowrx's `modespec.c` (Oona Räisänen, ISC License).
 //! See `NOTICE.md` for full attribution.
 //!
-//! V1 implements PD120 + PD180. V2 modes (PD240, Robot 36/72, Scottie 1/2/DX,
-//! Martin 1/2) are planned but not yet present in the [`SstvMode`] enum or
-//! the lookup tables; each will land with its own PR.
+//! Implemented as of V2.1 (0.2.0): PD120, PD180, PD240. Remaining V2 modes
+//! (Robot 36/72, Scottie 1/2/DX, Martin 1/2) are not yet present in the
+//! [`SstvMode`] enum or the lookup tables; each will land with its own PR.
 
-/// SSTV operating mode. V1 implements [`SstvMode::Pd120`] and
-/// [`SstvMode::Pd180`]; additional modes are planned for V2.
+/// SSTV operating mode. Implemented: [`SstvMode::Pd120`], [`SstvMode::Pd180`],
+/// [`SstvMode::Pd240`]. Additional V2 modes (Robot, Scottie, Martin) planned.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SstvMode {
@@ -74,7 +74,7 @@ pub enum ChannelLayout {
 /// time, surfacing the V1 line-clock-advance assumption that sync ==
 /// line start.
 ///
-/// V1 + V2.1 only emit [`SyncPosition::LineStart`]; [`SyncPosition::Scottie`]
+/// V1 + V2.1 only emit [`SyncPosition::LineStart`]; the `Scottie` variant
 /// lands with the V2.3 Scottie family epic.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -85,7 +85,7 @@ pub enum SyncPosition {
 
 /// Look up the [`ModeSpec`] for a given 7-bit VIS code. Returns `None`
 /// if the code is reserved, undefined, or maps to a mode not yet
-/// implemented in this V1 release.
+/// implemented in this release.
 ///
 /// VIS codes are taken from Dave Jones (KB4YZ), 1998: "List of SSTV
 /// Modes with VIS Codes".
@@ -123,7 +123,7 @@ pub fn for_mode(mode: SstvMode) -> ModeSpec {
 }
 
 // Mode timing constants — translated row-for-row from slowrx's
-// modespec.c (PD120 lines 260-271, PD180 lines 286-297).
+// modespec.c (PD120 lines 260-271, PD180 lines 286-297, PD240 lines 299-310).
 
 const PD120: ModeSpec = ModeSpec {
     mode: SstvMode::Pd120,
