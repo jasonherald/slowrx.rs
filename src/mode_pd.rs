@@ -36,26 +36,40 @@ pub(crate) fn freq_to_luminance(freq_hz: f64, hedr_shift_hz: f64) -> u8 {
 
 /// Convert a single PD-family `[Y, Cr, Cb]` triple to `[R, G, B]`.
 ///
-/// Translated from slowrx's `video.c:447-450`:
+/// Translated from slowrx's `video.c:447-450` + `common.c:49-53`:
 /// ```text
-/// R = clip((100*Y + 140*Cr - 17850) / 100)
-/// G = clip((100*Y -  71*Cr -  33*Cb + 13260) / 100)
-/// B = clip((100*Y + 178*Cb - 22695) / 100)
+/// R = clip((100*Y + 140*Cr - 17850) / 100.0)
+/// G = clip((100*Y -  71*Cr -  33*Cb + 13260) / 100.0)
+/// B = clip((100*Y + 178*Cb - 22695) / 100.0)
 /// ```
+/// where `clip(a)` is `(guchar)round(a)` clamped to \[0, 255\] (`common.c:49-53`).
+///
+/// slowrx uses `/ 100.0` (float division), which produces a `double` that is
+/// then **rounded** by `clip()` before clamping. The previous implementation
+/// used integer division (`/ 100`), which **truncates toward zero** — this
+/// produced a 1-LSB darker bias on R and B channels for neutral grey and many
+/// other combinations. Fixed in round-2 audit Finding 1.
 #[must_use]
 #[doc(hidden)]
 pub fn ycbcr_to_rgb(y: u8, cr: u8, cb: u8) -> [u8; 3] {
-    let yi = i32::from(y);
-    let cri = i32::from(cr);
-    let cbi = i32::from(cb);
-    // i32 multiplications: max magnitude is 255 * 178 = 45_390, well within i32.
-    // Integer division truncates toward zero (matches slowrx's `(int)` cast).
+    let yi = f64::from(y);
+    let cri = f64::from(cr);
+    let cbi = f64::from(cb);
+    // Float divide then round, matching slowrx's `clip(double)` in common.c:49-53:
+    //   `return (guchar)round(a)` after clamping to [0, 255].
+    // i32 intermediate magnitudes are well within f64 precision (max 255*178=45390).
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let r = ((100 * yi + 140 * cri - 17_850) / 100).clamp(0, 255) as u8;
+    let r = ((100.0 * yi + 140.0 * cri - 17_850.0) / 100.0)
+        .clamp(0.0, 255.0)
+        .round() as u8;
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let g = ((100 * yi - 71 * cri - 33 * cbi + 13_260) / 100).clamp(0, 255) as u8;
+    let g = ((100.0 * yi - 71.0 * cri - 33.0 * cbi + 13_260.0) / 100.0)
+        .clamp(0.0, 255.0)
+        .round() as u8;
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let b = ((100 * yi + 178 * cbi - 22_695) / 100).clamp(0, 255) as u8;
+    let b = ((100.0 * yi + 178.0 * cbi - 22_695.0) / 100.0)
+        .clamp(0.0, 255.0)
+        .round() as u8;
     [r, g, b]
 }
 
@@ -136,9 +150,10 @@ impl PdDemod {
             .process_with_scratch(&mut self.fft_buf, &mut self.scratch[..]);
 
         // Search peak in bins corresponding to (1500+HedrShift)..(2300+HedrShift) Hz.
+        // Use slowrx-equivalent truncation (not `.round()`) via `crate::get_bin`.
+        // See `crate::get_bin` for rationale.
         let bin_for = |hz: f64| -> usize {
-            (hz * (FFT_LEN as f64) / f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ)).round()
-                as usize
+            crate::get_bin(hz, FFT_LEN, crate::resample::WORKING_SAMPLE_RATE_HZ)
         };
         let lo = bin_for(1500.0 + hedr_shift_hz).saturating_sub(1).max(1);
         let hi = bin_for(2300.0 + hedr_shift_hz)
@@ -161,7 +176,29 @@ impl PdDemod {
             }
         }
 
-        // Gaussian-log peak interpolation (slowrx video.c:391-394).
+        // Boundary clip + Gaussian-log peak interpolation (slowrx video.c:389-398).
+        //
+        // slowrx's guard (`video.c:390`):
+        //   if (MaxBin > GetBin(1500+HedrShift) - 1 &&
+        //       MaxBin < GetBin(2300+HedrShift) + 1) { interpolate }
+        //   else { Freq = (MaxBin > GetBin(1900+HedrShift)) ? 2300 : 1500 + HedrShift; }
+        //
+        // `lo` = GetBin(1500+hedr) - 1 and `hi` = GetBin(2300+hedr) + 1 (as above),
+        // so the guard translates to: `max_bin > lo && max_bin < hi`. When the peak
+        // lands on one of the padded boundary bins, slowrx returns a hard-clipped
+        // value rather than interpolating into the neighbor noise bin (round-2 audit
+        // Finding 9).
+        let mid_bin = bin_for(1900.0 + hedr_shift_hz);
+        if max_bin <= lo || max_bin >= hi {
+            // Clip to band edge (slowrx video.c:397).
+            let clipped_hz = if max_bin > mid_bin {
+                2300.0 + hedr_shift_hz
+            } else {
+                1500.0 + hedr_shift_hz
+            };
+            return clipped_hz;
+        }
+
         // Freq_bin = MaxBin + log(P[k+1]/P[k-1]) / (2 * log(P[k]^2 / (P[k+1] * P[k-1])))
         let p_prev = power(self.fft_buf[max_bin - 1]);
         let p_curr = max_p;
@@ -563,14 +600,37 @@ mod tests {
 
     #[test]
     fn ycbcr_neutral_grey_is_grey() {
-        // Y=128, Cr=128, Cb=128 → grey (no chroma offset)
-        // R = (100*128 + 140*128 - 17850)/100 = (12800 + 17920 - 17850)/100 = 128.7 → 128
-        // G = (100*128 -  71*128 -  33*128 + 13260)/100 = (12800-9088-4224+13260)/100 = 127.48 → 127
-        // B = (100*128 + 178*128 - 22695)/100 = (12800+22784-22695)/100 = 128.89 → 128
+        // Y=128, Cr=128, Cb=128 → neutral grey.
+        // Exact values (slowrx float-divide + round):
+        //   R = (100*128 + 140*128 - 17850) / 100.0 = 12870/100.0 = 128.7 → round → 129
+        //   G = (100*128 -  71*128 -  33*128 + 13260)/100.0 = 12748/100.0 = 127.48 → round → 127
+        //   B = (100*128 + 178*128 - 22695)/100.0 = 12889/100.0 = 128.89 → round → 129
         let rgb = ycbcr_to_rgb(128, 128, 128);
         for ch in &rgb {
             assert!((i32::from(*ch) - 128).abs() <= 2, "got {rgb:?}");
         }
+    }
+
+    /// Verify round-to-nearest parity with slowrx's `clip()` (`common.c:49-53`).
+    ///
+    /// slowrx uses `clip((100*Y + 140*Cr - 17850) / 100.0)` where `clip` calls
+    /// `round()`. Y=128, Cr=128, Cb=128 produces:
+    ///   R numerator = 12870 → 128.70 → round → **129** (not 128 from integer division)
+    ///   B numerator = 12889 → 128.89 → round → **129** (not 128 from integer division)
+    ///
+    /// This test would fail with the old integer-division implementation.
+    #[test]
+    fn ycbcr_rounds_to_nearest_matching_slowrx_clip() {
+        let [r, g, b] = ycbcr_to_rgb(128, 128, 128);
+        assert_eq!(
+            r, 129,
+            "R should be 129 (round(128.70)), not 128 (truncate)"
+        );
+        assert_eq!(g, 127, "G should be 127 (round(127.48))");
+        assert_eq!(
+            b, 129,
+            "B should be 129 (round(128.89)), not 128 (truncate)"
+        );
     }
 
     #[test]
@@ -682,6 +742,33 @@ mod tests {
         assert!(
             (1500.0..=2300.0).contains(&est),
             "short-window estimate {est} out of video band"
+        );
+    }
+
+    /// Verify that a tone below the search band clips to 1500 Hz (round-2 audit
+    /// Finding 9 — boundary clip matching slowrx `video.c:395-397`).
+    ///
+    /// At 1480 Hz the FFT peak lands on the padded boundary bin (lo) or below.
+    /// slowrx's guard:
+    ///   `if (MaxBin > GetBin(1500+HedrShift)-1 && MaxBin < GetBin(2300+HedrShift)+1)`
+    /// fails, so it returns `1500 + HedrShift` (the lower clip).
+    /// The estimate must be ≤ 1500 Hz and within one bin-width (~43 Hz) of 1500 Hz.
+    #[test]
+    fn pixel_freq_clips_below_band_to_1500hz() {
+        let mut d = PdDemod::new();
+        // 1480 Hz is 1 bin-width (~43 Hz) below the search range start (1500 Hz).
+        // The FFT peak for this tone will land at or below the padded lo boundary.
+        let audio = synth_tone(1480.0, 0.100);
+        let center = (audio.len() / 2) as i64;
+        let est = d.pixel_freq(&audio, center, 0.0, DEFAULT_WIN_IDX);
+        // Must be clipped to ≈1500 Hz, not freely interpolated toward a DC neighbor.
+        assert!(
+            est <= 1500.0 + 50.0,
+            "below-band tone should clip to ≈1500 Hz, got {est}"
+        );
+        assert!(
+            est >= 1400.0,
+            "clip floor should be near 1500 Hz, got {est}"
         );
     }
 }
