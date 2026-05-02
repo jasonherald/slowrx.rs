@@ -85,7 +85,7 @@ impl Default for HannBank {
 /// SNR ≥ 10 → 1
 /// SNR ≥  9 → 2
 /// SNR ≥  3 → 3
-/// SNR ≥ -5 → 4   (default 256-sample window)
+/// SNR ≥ -5 → 4   (64-sample window at 11_025 Hz; 256 in slowrx at 44_100 Hz)
 /// SNR ≥ -10 → 5
 /// otherwise → 6  (longest window, max noise rejection)
 /// ```
