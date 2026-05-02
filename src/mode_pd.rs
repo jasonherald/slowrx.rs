@@ -14,14 +14,16 @@ use rustfft::{num_complex::Complex, FftPlanner};
 ///
 /// SSTV video lives in 1500–2300 Hz: 1500 Hz = black (0), 2300 Hz = white (255).
 /// Linear scaling: `lum = (freq - 1500) / (2300 - 1500) * 255`.
-/// Out-of-band frequencies are clamped.
+/// Out-of-band frequencies are clamped. `hedr_shift_hz` shifts the band
+/// to compensate for radio mistuning detected at VIS time:
+/// `lum = (freq - 1500 - hedr_shift_hz) / 3.1372549`.
 ///
 /// Translated from slowrx's `video.c:406`:
-/// `StoredLum[SampleNum] = clip((Freq - 1500) / 3.1372549);`
+/// `StoredLum[SampleNum] = clip((Freq - 1500 - HedrShift) / 3.1372549);`
 /// where `3.1372549 = (2300 - 1500) / 255`.
 #[must_use]
-pub(crate) fn freq_to_luminance(freq_hz: f64) -> u8 {
-    let v = (freq_hz - 1500.0) / 3.137_254_9;
+pub(crate) fn freq_to_luminance(freq_hz: f64, hedr_shift_hz: f64) -> u8 {
+    let v = (freq_hz - 1500.0 - hedr_shift_hz) / 3.137_254_9;
     // Truncation-via-`as` matches slowrx's clip() semantics
     // (slowrx uses `(unsigned char)a` which truncates the fractional part).
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -96,6 +98,11 @@ impl PdDemod {
     /// window is `audio[center_sample - FFT_LEN/2 .. center_sample + FFT_LEN/2]`,
     /// clamped at audio boundaries.
     ///
+    /// `hedr_shift_hz` shifts the peak-search range from 1500..2300 Hz to
+    /// `(1500 + hedr_shift) .. (2300 + hedr_shift)` so a mistuned radio's
+    /// pixel band lines up with the search window. Translated from slowrx
+    /// `video.c:382` where the search starts at `GetBin(1500 + HedrShift)`.
+    ///
     /// Returns the estimated frequency in Hz. Uses Gaussian-log peak
     /// interpolation matching slowrx `video.c:391-394`.
     #[allow(
@@ -104,7 +111,7 @@ impl PdDemod {
         clippy::cast_sign_loss,
         clippy::cast_possible_wrap
     )]
-    pub fn pixel_freq(&mut self, audio: &[f32], center_sample: i64) -> f64 {
+    pub fn pixel_freq(&mut self, audio: &[f32], center_sample: i64, hedr_shift_hz: f64) -> f64 {
         // Fill the reusable buffer in-place — avoids a per-call Vec allocation.
         let half = (FFT_LEN as i64) / 2;
         for i in 0..FFT_LEN {
@@ -123,13 +130,15 @@ impl PdDemod {
         self.fft
             .process_with_scratch(&mut self.fft_buf, &mut self.scratch[..]);
 
-        // Search peak in bins corresponding to 1500..2300 Hz.
+        // Search peak in bins corresponding to (1500+HedrShift)..(2300+HedrShift) Hz.
         let bin_for = |hz: f64| -> usize {
             (hz * (FFT_LEN as f64) / f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ)).round()
                 as usize
         };
-        let lo = bin_for(1500.0).saturating_sub(1).max(1);
-        let hi = bin_for(2300.0).saturating_add(1).min(FFT_LEN / 2 - 1);
+        let lo = bin_for(1500.0 + hedr_shift_hz).saturating_sub(1).max(1);
+        let hi = bin_for(2300.0 + hedr_shift_hz)
+            .saturating_add(1)
+            .min(FFT_LEN / 2 - 1);
 
         let power = |c: Complex<f32>| -> f64 {
             let r = f64::from(c.re);
@@ -194,6 +203,7 @@ pub(crate) fn decode_pd_line_pair(
     window: &[f32],
     image: &mut crate::image::SstvImage,
     demod: &mut PdDemod,
+    hedr_shift_hz: f64,
 ) {
     let work_rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
     let sync_secs = spec.sync_seconds;
@@ -242,8 +252,8 @@ pub(crate) fn decode_pd_line_pair(
             // Center sample relative to the channel slice.
             let center_sec_rel = (x as f64 + 0.5) * pixel_secs;
             let center_sample_rel = (center_sec_rel * work_rate).round() as i64;
-            let freq = demod.pixel_freq(&chan_samples, center_sample_rel);
-            channel_buf[x] = freq_to_luminance(freq);
+            let freq = demod.pixel_freq(&chan_samples, center_sample_rel, hedr_shift_hz);
+            channel_buf[x] = freq_to_luminance(freq, hedr_shift_hz);
         }
     }
 
@@ -398,32 +408,49 @@ mod tests {
 
     #[test]
     fn freq_1500_is_black() {
-        assert_eq!(freq_to_luminance(1500.0), 0);
+        assert_eq!(freq_to_luminance(1500.0, 0.0), 0);
     }
 
     #[test]
     fn freq_2300_is_white() {
-        assert_eq!(freq_to_luminance(2300.0), 255);
+        assert_eq!(freq_to_luminance(2300.0, 0.0), 255);
     }
 
     #[test]
     fn freq_below_band_clamps_to_zero() {
-        assert_eq!(freq_to_luminance(1000.0), 0);
-        assert_eq!(freq_to_luminance(0.0), 0);
+        assert_eq!(freq_to_luminance(1000.0, 0.0), 0);
+        assert_eq!(freq_to_luminance(0.0, 0.0), 0);
     }
 
     #[test]
     fn freq_above_band_clamps_to_max() {
-        assert_eq!(freq_to_luminance(3000.0), 255);
+        assert_eq!(freq_to_luminance(3000.0, 0.0), 255);
     }
 
     #[test]
     fn freq_midband_is_midgrey() {
         // 1900 Hz is exactly halfway → ~127.5 → 127 after truncation
-        let v = freq_to_luminance(1900.0);
+        let v = freq_to_luminance(1900.0, 0.0);
         assert!(
             (i32::from(v) - 127).abs() <= 1,
             "midband should be ~127, got {v}"
+        );
+    }
+
+    #[test]
+    fn freq_to_luminance_with_hedr_shift_scales_band() {
+        // With +50 Hz HedrShift, the band shifts to 1550..2350.
+        // freq=1550 should be black, freq=2350 should be white.
+        assert_eq!(freq_to_luminance(1550.0, 50.0), 0);
+        assert_eq!(freq_to_luminance(2350.0, 50.0), 255);
+        // 1500 (would be black at zero shift) is now sub-band, still clamps to 0.
+        assert_eq!(freq_to_luminance(1500.0, 50.0), 0);
+        // 1950 with +50 shift is the new midband ≈ same as 1900 with 0 shift.
+        let a = freq_to_luminance(1950.0, 50.0);
+        let b = freq_to_luminance(1900.0, 0.0);
+        assert!(
+            i32::from(a).abs_diff(i32::from(b)) <= 1,
+            "shifted midband {a} vs unshifted {b}"
         );
     }
 
@@ -466,7 +493,7 @@ mod tests {
         // 100 ms of pure tone at 1900 Hz; ample for FFT_LEN=256.
         let audio = synth_tone(1900.0, 0.100);
         let center = (audio.len() / 2) as i64;
-        let est = d.pixel_freq(&audio, center);
+        let est = d.pixel_freq(&audio, center, 0.0);
         assert!((est - 1900.0).abs() < 5.0, "expected ≈1900, got {est}");
     }
 
@@ -476,7 +503,7 @@ mod tests {
         for &f in &[1500.0_f64, 1700.0, 2100.0, 2300.0] {
             let audio = synth_tone(f, 0.100);
             let center = (audio.len() / 2) as i64;
-            let est = d.pixel_freq(&audio, center);
+            let est = d.pixel_freq(&audio, center, 0.0);
             assert!(
                 (est - f).abs() < 8.0,
                 "f={f} estimate={est} (band edge precision)"
@@ -488,11 +515,35 @@ mod tests {
     fn pdfft_returns_finite_for_silence() {
         let mut d = PdDemod::new();
         let audio = vec![0.0_f32; 1024];
-        let est = d.pixel_freq(&audio, 512);
+        let est = d.pixel_freq(&audio, 512, 0.0);
         assert!(est.is_finite(), "got {est}");
         // Silence has no peak; the search expands by ±1 bin around the
         // 1500-2300 band, and bin width is ~43 Hz, so the fallback may
         // land within ~50 Hz of either edge.
         assert!((1450.0..=2350.0).contains(&est), "out of band: {est}");
+    }
+
+    #[test]
+    fn pixel_freq_with_hedr_shift() {
+        // A 1950 Hz tone with hedr_shift=+50 should yield the same luminance
+        // as a 1900 Hz tone with hedr_shift=0, since the search band shifts.
+        let mut d = PdDemod::new();
+        let audio = synth_tone(1950.0, 0.100);
+        let center = (audio.len() / 2) as i64;
+        let est_shifted = d.pixel_freq(&audio, center, 50.0);
+        let est_unshifted_baseline = {
+            let baseline = synth_tone(1900.0, 0.100);
+            d.pixel_freq(&baseline, (baseline.len() / 2) as i64, 0.0)
+        };
+        // Tone-frequency itself is recovered correctly; what matters is that
+        // the shifted estimator finds 1950, the unshifted finds 1900, and
+        // mapping each to luminance gives ≈ same value.
+        assert!((est_shifted - 1950.0).abs() < 5.0, "got {est_shifted}");
+        let lum_shifted = freq_to_luminance(est_shifted, 50.0);
+        let lum_unshifted = freq_to_luminance(est_unshifted_baseline, 0.0);
+        assert!(
+            i32::from(lum_shifted).abs_diff(i32::from(lum_unshifted)) <= 2,
+            "lum_shifted={lum_shifted} lum_unshifted={lum_unshifted}"
+        );
     }
 }
