@@ -18,16 +18,19 @@ use rustfft::{num_complex::Complex, FftPlanner};
 /// to compensate for radio mistuning detected at VIS time:
 /// `lum = (freq - 1500 - hedr_shift_hz) / 3.1372549`.
 ///
-/// Translated from slowrx's `video.c:406`:
+/// Translated from slowrx's `video.c:406` + `common.c:49-53`:
 /// `StoredLum[SampleNum] = clip((Freq - 1500 - HedrShift) / 3.1372549);`
-/// where `3.1372549 = (2300 - 1500) / 255`.
+/// where `clip(a)` returns `(guchar)round(a)` clamped to \[0, 255\].
+/// The `round()` call means values like 127.7 map to 128, not 127.
+///
+/// `3.1372549 = (2300 - 1500) / 255`.
 #[must_use]
 pub(crate) fn freq_to_luminance(freq_hz: f64, hedr_shift_hz: f64) -> u8 {
     let v = (freq_hz - 1500.0 - hedr_shift_hz) / 3.137_254_9;
-    // Truncation-via-`as` matches slowrx's clip() semantics
-    // (slowrx uses `(unsigned char)a` which truncates the fractional part).
+    // Round-to-nearest before casting, matching slowrx's `(guchar)round(a)`
+    // in `common.c::clip()`.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let lum = v.clamp(0.0, 255.0) as u8;
+    let lum = v.clamp(0.0, 255.0).round() as u8;
     lum
 }
 
@@ -472,11 +475,24 @@ mod tests {
 
     #[test]
     fn freq_midband_is_midgrey() {
-        // 1900 Hz is exactly halfway → ~127.5 → 127 after truncation
+        // 1900 Hz: v = (1900 - 1500) / 3.1372549 ≈ 127.5 → rounds to 128
         let v = freq_to_luminance(1900.0, 0.0);
         assert!(
-            (i32::from(v) - 127).abs() <= 1,
-            "midband should be ~127, got {v}"
+            (i32::from(v) - 128).abs() <= 1,
+            "midband should be ~128 after rounding, got {v}"
+        );
+    }
+
+    #[test]
+    fn freq_to_luminance_rounds_to_nearest_not_truncates() {
+        // Slowrx uses `(guchar)round(a)` in common.c::clip(), not truncation.
+        // Solve (freq - 1500) / 3.1372549 = 127.7 → freq ≈ 1900.6294 Hz.
+        // round(127.7) = 128, not 127.
+        let freq = 1500.0 + 127.7 * 3.137_254_9; // ≈ 1900.629...
+        assert_eq!(
+            freq_to_luminance(freq, 0.0),
+            128,
+            "127.7 should round to 128, not truncate to 127"
         );
     }
 
