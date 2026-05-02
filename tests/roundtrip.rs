@@ -1,4 +1,4 @@
-//! Synthetic encode → decode round-trip for PD120 and PD180.
+//! Synthetic encode → decode round-trip for PD-family modes (PD120, PD180, PD240).
 
 #![cfg(feature = "test-support")]
 #![allow(clippy::expect_used, clippy::cast_possible_truncation)]

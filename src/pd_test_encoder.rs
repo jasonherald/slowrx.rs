@@ -42,9 +42,10 @@ fn fill_to(out: &mut Vec<f32>, freq_hz: f64, target_n: usize, phase: &mut f64) {
     }
 }
 
-/// Encode an image as PD120 / PD180 audio. `ycrcb` is row-major
-/// `[Y, Cr, Cb]` triples of length `width * height`. Pairs of rows
-/// share averaged chroma, matching how the decoder will recover them.
+/// Encode an image as PD-family audio (PD120 / PD180 / PD240). `ycrcb`
+/// is row-major `[Y, Cr, Cb]` triples of length `width * height`. Pairs
+/// of rows share averaged chroma, matching how the decoder will recover
+/// them.
 #[must_use]
 #[doc(hidden)]
 #[allow(dead_code)]
