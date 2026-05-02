@@ -1,5 +1,3 @@
-I have enough context from the source code to perform a thorough audit without reading the design docs cover-to-cover. Now I'll write the comprehensive audit report.
-
 # slowrx ↔ slowrx.rs Side-by-Side Parity Audit
 
 ## Section 1 — Coverage table (mandatory enumeration)
