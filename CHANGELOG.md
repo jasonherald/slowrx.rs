@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (Phase 1: VIS parity)
+
+Faithful rewrite of `vis.rs` to mirror slowrx's `vis.c` algorithm
+(closes #13, #14, #15, #17, #30, #36, #37, #38). The PR-1/PR-2 detector
+classified non-overlapping 30 ms Goertzel windows against absolute
+1900/1200/1300/1100 Hz tones with a 5× dominance threshold, never saw
+the leader's actual frequency, and so could not catch real-radio bursts
+mistuned by tens of Hz. The new detector matches slowrx exactly:
+
+- 10 ms hop / 20 ms Hann-windowed sliding window (slowrx vis.c lines 30,
+  45-48). Closes #13 (no Hann window) and #14 (no overlap).
+- 512-FFT (zero-padded from 220 samples), Gaussian-log peak interpolation
+  in 500-3300 Hz (slowrx vis.c lines 54-70). Closes #37 (Goertzel-bank
+  vs FFT) and #30 (FIR-transient sensitivity — overlap dominates).
+- 45-entry circular frequency history feeding a 9-iteration `i × j`
+  pattern matcher with **relative** ±25 Hz tolerance from the observed
+  leader (slowrx vis.c lines 82-104). Closes #15 (absolute-vs-relative
+  tolerance), #36 (5× dominance threshold), #38 (single-alignment scan).
+- `HedrShift = leader_observed - 1900` is now extracted at VIS time
+  (slowrx vis.c line 106) and plumbed through `SstvEvent::VisDetected`,
+  the decoder state, `decode_pd_line_pair`, `PdDemod::pixel_freq`
+  (peak-search range), and `freq_to_luminance` (luminance base) — so a
+  mistuned radio's pixel band shifts in lock-step. Closes #17.
+- New tests: `detects_pd120_with_50hz_offset`,
+  `detects_pd180_with_minus_70hz_offset`,
+  `handles_misaligned_burst` (off-grid pre-silence proves overlap),
+  `rejects_constant_off_band_tone`, `pixel_freq_with_hedr_shift`,
+  `freq_to_luminance_with_hedr_shift_scales_band`.
+- `synth_vis` is now continuous-phase across tone boundaries — phase
+  discontinuities at bit edges previously pulled FFT peaks off-tone
+  enough to mask alignment bugs in 30 ms-window unit tests.
+
+`SstvEvent::VisDetected` gains a `hedr_shift_hz: f64` field. The struct
+is `#[non_exhaustive]` so this is additive at the wire level for callers
+that match by name; positional `match` patterns must add the new field.
+The synthetic round-trip integration tests for PD120/PD180 still pass
+unchanged (max_diff ≤ 25, mean < 5 per-channel against encoder source).
+
 ### Fixed (PR-2 CR round 3)
 - Polyphase FIR resampler: `build_kernel` was generating a single
   fixed-phase kernel and `process()` was dropping `center.fract()`,
