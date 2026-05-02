@@ -30,14 +30,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `round()`. Previous integer division `/ 100` truncated, producing a 1-LSB
   darker bias on R and B channels for neutral grey and many other combinations.
   This was round-1 Finding #4 partially fixed by PR #47 (`freq_to_luminance`
-  was fixed then; `ycbcr_to_rgb` was missed). Test: `ycbcr_rounds_to_nearest_
-  matching_slowrx_clip` verifies Y=128/Cr=128/Cb=128 → R=129, G=127, B=129.
+  was fixed then; `ycbcr_to_rgb` was missed).
+  Test: `ycbcr_rounds_to_nearest_matching_slowrx_clip` verifies
+  Y=128/Cr=128/Cb=128 → R=129, G=127, B=129.
 
 - **#53 — `max_convd` init** (`src/sync.rs`): Changed from `i32::MIN` to `0`,
   matching slowrx `sync.c:29`: `double maxconvd=0`. With zero input every
   `convd==0` beat `i32::MIN`, placing `xmax=4` (not 0) — 1 ms divergence from
-  slowrx's degenerate-input Skip. Test: `find_sync_empty_track_has_no_slant_
-  detected` verifies skip is negative (xmax=0) on all-false input.
+  slowrx's degenerate-input Skip.
+  Test: `find_sync_empty_track_has_no_slant_detected` verifies skip is
+  negative (xmax=0) on all-false input.
 
 - **#54 — Slant-lock exclusive interval** (`src/sync.rs`): Replaced
   `(SLANT_OK_LO_DEG..SLANT_OK_HI_DEG).contains(&slant_angle)` (half-open `[89,91)`)
@@ -98,9 +100,12 @@ Nine findings from the slowrx parity audit (#12) addressed in one bundle —
   now uses `.round() as u8` instead of plain `as u8` (truncation), matching
   slowrx's `(guchar)round(a)` in `common.c::clip()`. Worst-case off-by-one
   per pixel; images were systematically 0.5 units darker on average.
-  `ycbcr_to_rgb` is unaffected: its C equivalents call `clip()` on an already-
-  integer division result, so `round()` of an integer is a no-op. New test
-  `freq_to_luminance_rounds_to_nearest_not_truncates` verifies 127.7 → 128.
+  At the time we believed `ycbcr_to_rgb` was unaffected — that turned out
+  to be wrong: slowrx's `video.c:447-449` does `clip(double / 100.0)` (float
+  divide → `round()` via clip's tail call), not `clip()` on an integer-divide
+  result. The `ycbcr_to_rgb` correction is shipped in the round-2 bundle
+  above (#48). New test `freq_to_luminance_rounds_to_nearest_not_truncates`
+  verifies 127.7 → 128.
 
 - **#25 — `septr_seconds` field for V2 parity** (`src/modespec.rs`,
   `src/mode_pd.rs`): Added `septr_seconds: f64` to `ModeSpec` (= 0.0 for
