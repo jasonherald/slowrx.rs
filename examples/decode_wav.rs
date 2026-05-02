@@ -12,6 +12,7 @@ use slowrx::{SstvDecoder, SstvEvent};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+#[allow(clippy::too_many_lines)]
 fn main() -> ExitCode {
     let mut args = std::env::args();
     let _ = args.next();
@@ -46,21 +47,50 @@ fn main() -> ExitCode {
     );
 
     // Read all samples as f32 in [-1, 1], collapse to mono if stereo.
-    let mono: Vec<f32> = match spec.sample_format {
+    // Read errors fail the example rather than silently dropping samples;
+    // a partial decode of a corrupted WAV would mask real bugs.
+    let raw: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Int => {
-            let max = f32::from(i16::MAX);
-            let raw: Vec<f32> = reader
-                .samples::<i16>()
-                .filter_map(Result::ok)
-                .map(|s| f32::from(s) / max)
-                .collect();
-            collapse_to_mono(raw, spec.channels as usize)
+            let bits = spec.bits_per_sample;
+            if !matches!(bits, 8 | 16 | 24 | 32) {
+                eprintln!("error: unsupported integer bit depth: {bits}-bit");
+                return ExitCode::from(1);
+            }
+            // Normalize signed PCM by its positive full-scale magnitude.
+            // Matches what `samples::<i16>() / i16::MAX` did before, generalized.
+            #[allow(clippy::cast_precision_loss)]
+            let divisor = ((1_i64 << (bits - 1)) - 1) as f32;
+            let mut buf = Vec::with_capacity(reader.len() as usize);
+            for sample in reader.samples::<i32>() {
+                match sample {
+                    Ok(s) => {
+                        #[allow(clippy::cast_precision_loss)]
+                        let f = (s as f32) / divisor;
+                        buf.push(f);
+                    }
+                    Err(e) => {
+                        eprintln!("error: sample read failed: {e}");
+                        return ExitCode::from(1);
+                    }
+                }
+            }
+            buf
         }
         hound::SampleFormat::Float => {
-            let raw: Vec<f32> = reader.samples::<f32>().filter_map(Result::ok).collect();
-            collapse_to_mono(raw, spec.channels as usize)
+            let mut buf = Vec::with_capacity(reader.len() as usize);
+            for sample in reader.samples::<f32>() {
+                match sample {
+                    Ok(s) => buf.push(s),
+                    Err(e) => {
+                        eprintln!("error: sample read failed: {e}");
+                        return ExitCode::from(1);
+                    }
+                }
+            }
+            buf
         }
     };
+    let mono = collapse_to_mono(raw, spec.channels as usize);
 
     let mut decoder = match SstvDecoder::new(spec.sample_rate) {
         Ok(d) => d,
