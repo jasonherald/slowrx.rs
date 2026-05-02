@@ -47,6 +47,10 @@ pub struct ModeSpec {
     pub septr_seconds: f64,
     /// Channel layout used by per-mode decoders.
     pub channel_layout: ChannelLayout,
+    /// Where the sync pulse sits within a radio line. See [`SyncPosition`]
+    /// for the rationale (V2 carve-out forcing mid-line sync to be
+    /// explicit when V2.3 Scottie lands).
+    pub sync_position: SyncPosition,
 }
 
 /// Per-mode channel arrangement. PD-family modes use [`ChannelLayout::PdYcbcr`].
@@ -57,6 +61,24 @@ pub enum ChannelLayout {
     /// PD-family: Y(odd) → Cr → Cb → Y(even). One radio line carries
     /// two image rows; chroma is shared between paired rows.
     PdYcbcr,
+}
+
+/// Where the sync pulse sits within a radio line.
+///
+/// PD/Robot/Martin all place sync at line start (the standard SSTV
+/// convention). Scottie modes are the exception — sync sits between G
+/// and B channels, not at line start. Stored here so future mode
+/// decoders are forced to make their sync placement explicit at dispatch
+/// time, surfacing the V1 line-clock-advance assumption that sync ==
+/// line start.
+///
+/// V1 + V2.1 only emit [`SyncPosition::LineStart`]; [`SyncPosition::Scottie`]
+/// lands with the V2.3 Scottie family epic.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SyncPosition {
+    /// Sync pulse at the start of each radio line. PD, Robot, Martin.
+    LineStart,
 }
 
 /// Look up the [`ModeSpec`] for a given 7-bit VIS code. Returns `None`
@@ -110,6 +132,7 @@ const PD120: ModeSpec = ModeSpec {
     pixel_seconds: 0.000_19,
     septr_seconds: 0.0, // modespec.c: SeptrTime = 0e-3 for PD-family
     channel_layout: ChannelLayout::PdYcbcr,
+    sync_position: SyncPosition::LineStart,
 };
 
 const PD180: ModeSpec = ModeSpec {
@@ -123,6 +146,7 @@ const PD180: ModeSpec = ModeSpec {
     pixel_seconds: 0.000_286,
     septr_seconds: 0.0, // modespec.c: SeptrTime = 0e-3 for PD-family
     channel_layout: ChannelLayout::PdYcbcr,
+    sync_position: SyncPosition::LineStart,
 };
 
 #[cfg(test)]
@@ -173,5 +197,17 @@ mod tests {
         let pd180 = lookup(0x60).expect("PD180");
         assert_eq!(pd120.septr_seconds, 0.0);
         assert_eq!(pd180.septr_seconds, 0.0);
+    }
+
+    #[test]
+    fn pd_modes_have_line_start_sync_position() {
+        // V2 carve-out: ModeSpec.sync_position lets V2.3 Scottie declare
+        // mid-line sync without retrofitting V1. PD120/PD180/PD240 all use
+        // line-start sync (slowrx video.c:88-92 places sync at the start of
+        // each line for PD modes).
+        for mode in [SstvMode::Pd120, SstvMode::Pd180] {
+            let spec = for_mode(mode);
+            assert_eq!(spec.sync_position, SyncPosition::LineStart);
+        }
     }
 }
