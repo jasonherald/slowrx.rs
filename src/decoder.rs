@@ -11,6 +11,7 @@ use crate::error::Result;
 use crate::image::SstvImage;
 use crate::modespec::SstvMode;
 use crate::resample::Resampler;
+use crate::sync::{find_sync, SyncTracker, SYNC_PROBE_STRIDE};
 
 /// One observable event emitted by [`SstvDecoder::process`].
 #[derive(Clone, Debug)]
@@ -57,18 +58,51 @@ pub enum SstvEvent {
 /// Internal state of the decoder.
 enum State {
     AwaitingVis,
-    Decoding {
-        mode: SstvMode,
-        spec: crate::modespec::ModeSpec,
-        line_pair_index: u32,
-        image: SstvImage,
-        /// Buffered working-rate samples not yet consumed by per-pixel decode.
-        buffer: Vec<f32>,
-        /// Radio mistuning offset in Hz extracted at VIS time. Plumbed to
-        /// per-pixel demod so the pixel band shifts with radio tuning.
-        hedr_shift_hz: f64,
-    },
+    /// Boxed because [`DecodingState`] contains the working FFT plans +
+    /// audio buffer and dwarfs the unit `AwaitingVis` variant; clippy
+    /// warns about size disparity otherwise.
+    Decoding(Box<DecodingState>),
 }
+
+/// Two-pass decoding state.
+///
+/// While `audio.len() < target_audio_samples`, the decoder accumulates
+/// audio and probes the 1200 Hz sync band into `has_sync`. When the
+/// buffer is full, [`find_sync`] runs once to recover the
+/// slant-corrected rate + line-zero `Skip`; per-pair decode then runs in
+/// a single fast burst, emitting [`SstvEvent::LineDecoded`] for every
+/// row.
+struct DecodingState {
+    mode: SstvMode,
+    spec: crate::modespec::ModeSpec,
+    image: SstvImage,
+    /// Working-rate audio captured from VIS-stop-bit forward.
+    audio: Vec<f32>,
+    /// Per-stride boolean track from [`SyncTracker::has_sync_at`]. One
+    /// entry per [`SYNC_PROBE_STRIDE`] working-rate samples.
+    has_sync: Vec<bool>,
+    /// Next sample index in `audio` to probe. Always a multiple of
+    /// [`SYNC_PROBE_STRIDE`].
+    next_probe_sample: usize,
+    /// Sync-band tracker. Constructed when `Decoding` is entered so the
+    /// hedr-shift bin offsets match the detected mistuning.
+    sync_tracker: SyncTracker,
+    /// Radio mistuning offset in Hz extracted at VIS time. Plumbed to
+    /// per-pixel demod so the pixel band shifts with radio tuning.
+    hedr_shift_hz: f64,
+    /// Total audio samples we must accumulate before running
+    /// [`find_sync`] and per-pair decode. Computed at state-entry as
+    /// `image_lines / 2 × line_seconds × FINDSYNC_AUDIO_HEADROOM × work_rate`.
+    target_audio_samples: usize,
+}
+
+/// Headroom factor on the buffered audio length before [`find_sync`]
+/// runs. 1.00 = exactly the nominal image length. The Hough transform
+/// re-anchors the rate against whatever sync pulses are present, so
+/// trailing audio beyond the last line is not strictly required. We
+/// keep this knob in case future modes (Scottie pre-line skip) want to
+/// pad the buffer to absorb additional offset.
+const FINDSYNC_AUDIO_HEADROOM: f64 = 1.00;
 
 /// Streaming SSTV decoder. Push audio buffers in via
 /// [`Self::process`]; consume the returned events.
@@ -136,14 +170,28 @@ impl SstvDecoder {
                             // detector buffered but did not consume — it is
                             // the leading edge of the image data.
                             let residual = self.vis.take_residual_buffer();
-                            self.state = State::Decoding {
+                            let work_rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
+                            // PD modes pack 2 image rows per radio frame, so
+                            // the audio duration is `image_lines/2 *
+                            // line_seconds * rate`. Matches slowrx's
+                            // `Length = LineTime * NumLines/2 * 44100`
+                            // path in video.c:252 (for NumChans == 4).
+                            let nominal_samples =
+                                (f64::from(spec.image_lines / 2) * spec.line_seconds * work_rate)
+                                    as usize;
+                            let target =
+                                ((nominal_samples as f64) * FINDSYNC_AUDIO_HEADROOM) as usize;
+                            self.state = State::Decoding(Box::new(DecodingState {
                                 mode: spec.mode,
                                 spec,
-                                line_pair_index: 0,
                                 image,
-                                buffer: residual,
+                                audio: residual,
+                                has_sync: Vec::new(),
+                                next_probe_sample: 0,
+                                sync_tracker: SyncTracker::new(detected.hedr_shift_hz),
                                 hedr_shift_hz: detected.hedr_shift_hz,
-                            };
+                                target_audio_samples: target,
+                            }));
                             continue; // re-enter loop to process leftover audio
                         }
                         // Unknown VIS codes silently drop. Reset the
@@ -153,21 +201,12 @@ impl SstvDecoder {
                     }
                     break;
                 }
-                State::Decoding {
-                    mode,
-                    spec,
-                    line_pair_index,
-                    image,
-                    buffer,
-                    hedr_shift_hz,
-                } => {
-                    buffer.extend_from_slice(remaining);
-
+                State::Decoding(d) => {
                     // TODO(future): mid-image VIS detection. When a new VIS
                     // burst arrives during decoding the spec calls for flushing
                     // the in-flight image as `partial: true` and restarting.
                     // The straightforward approach — running `self.vis` against
-                    // `buffer` each call — fails because the decoding buffer is
+                    // `audio` each call — fails because the decoding buffer is
                     // not aligned to 30 ms window boundaries: the residual from
                     // the previous VIS detection starts at an arbitrary sample
                     // offset, so the first classifier window is a mix of silence
@@ -176,90 +215,99 @@ impl SstvDecoder {
                     // window scan to the next 30 ms boundary, or run a separate
                     // correlator tuned to the 1900 Hz leader. Deferred to PR-3.
 
-                    let work_rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
-                    // Per-pixel FFT window is centered on the pixel's
-                    // expected sample, so we need FFT_LEN/2 trailing
-                    // samples beyond the last pixel of the pair.
-                    let lookahead = crate::mode_pd::FFT_LEN / 2;
+                    d.audio.extend_from_slice(remaining);
 
-                    // Compute the cumulative sample boundary for the
-                    // CURRENT pair's start vs. the NEXT pair's start.
-                    // Using rounded-cumulative-time matches how a
-                    // continuous-phase encoder would lay out samples,
-                    // and prevents a per-pair rounding bias from
-                    // accumulating (PD180 drifts ~0.05 samples/pair, so
-                    // by row 250 a fixed `samples_per_pair` is off by
-                    // ~12 samples — enough to misalign the line pair).
-                    loop {
-                        let cur_pair = u64::from(*line_pair_index);
-                        // buffer always begins at the current pair's start sample.
-                        // The next pair begins at:
-                        //   round((cur_pair + 1) * line_seconds * sr) -
-                        //   round(cur_pair * line_seconds * sr)
-                        // samples after the current start.
-                        let cur_off = (cur_pair as f64 * spec.line_seconds * work_rate).round();
-                        let next_off =
-                            ((cur_pair + 1) as f64 * spec.line_seconds * work_rate).round();
-                        let samples_per_pair = (next_off - cur_off) as usize;
-                        let needed = samples_per_pair + lookahead;
-                        if buffer.len() < needed {
-                            break;
-                        }
-
-                        // Pass a window that overlaps the next pair's
-                        // leading samples so the rightmost pixels see
-                        // a full FFT window.
-                        crate::mode_pd::decode_pd_line_pair(
-                            *spec,
-                            *line_pair_index,
-                            &buffer[..needed],
-                            image,
-                            &mut self.pd_demod,
-                            *hedr_shift_hz,
-                        );
-
-                        let row0 = *line_pair_index * 2;
-                        let row1 = row0 + 1;
-                        let line_pixels = spec.line_pixels as usize;
-                        for r in [row0, row1] {
-                            let start = (r as usize) * line_pixels;
-                            let end = start + line_pixels;
-                            out.push(SstvEvent::LineDecoded {
-                                mode: *mode,
-                                line_index: r,
-                                pixels: image.pixels[start..end].to_vec(),
-                            });
-                        }
-
-                        buffer.drain(..samples_per_pair);
-                        *line_pair_index += 1;
-
-                        if *line_pair_index * 2 >= spec.image_lines {
-                            // Image complete.
-                            let final_image = std::mem::replace(
-                                image,
-                                SstvImage::new(*mode, spec.line_pixels, spec.image_lines),
-                            );
-                            out.push(SstvEvent::ImageComplete {
-                                image: final_image,
-                                partial: false,
-                            });
-                            // Preserve trailing audio not consumed by the last line pair — it
-                            // may contain the leading edge of a follow-up VIS burst (ARISS
-                            // multi-image case). Feed it into the VIS detector so the next
-                            // process() call sees that audio already buffered.
-                            let trailing = std::mem::take(buffer);
-                            self.state = State::AwaitingVis;
-                            self.vis = crate::vis::VisDetector::new();
-                            self.vis.process(&trailing, self.working_samples_emitted);
-                            break;
-                        }
+                    // Probe sync-band for every newly available stride
+                    // window. The probe needs SYNC_FFT_WINDOW_SAMPLES/2
+                    // trailing samples beyond the center; rather than
+                    // depend on that constant, we conservatively wait
+                    // until the audio extends `SYNC_PROBE_STRIDE * 2`
+                    // beyond the next probe center.
+                    while d.next_probe_sample + SYNC_PROBE_STRIDE * 2 <= d.audio.len() {
+                        let center = d.next_probe_sample + SYNC_PROBE_STRIDE / 2;
+                        let has = d.sync_tracker.has_sync_at(&d.audio, center);
+                        d.has_sync.push(has);
+                        d.next_probe_sample += SYNC_PROBE_STRIDE;
                     }
+
+                    if d.audio.len() < d.target_audio_samples {
+                        break;
+                    }
+
+                    // Buffer is full → run FindSync once, then per-pair decode.
+                    Self::run_findsync_and_decode(d, &mut self.pd_demod, &mut out);
+
+                    // Image complete. Preserve trailing audio not consumed —
+                    // it may contain the leading edge of a follow-up VIS
+                    // burst (ARISS multi-image case). Feed it into a fresh
+                    // VIS detector so the next process() call sees it.
+                    let trailing = std::mem::take(&mut d.audio);
+                    self.state = State::AwaitingVis;
+                    self.vis = crate::vis::VisDetector::new();
+                    self.vis.process(&trailing, self.working_samples_emitted);
                     break;
                 }
             }
         }
         out
+    }
+
+    /// Run [`find_sync`] over the buffered sync track, then decode every
+    /// PD line pair against the corrected `(rate, skip)`. Pushes
+    /// [`SstvEvent::LineDecoded`] for every row + a final
+    /// [`SstvEvent::ImageComplete`] into `out`.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_wrap
+    )]
+    fn run_findsync_and_decode(
+        d: &mut DecodingState,
+        pd_demod: &mut crate::mode_pd::PdDemod,
+        out: &mut Vec<SstvEvent>,
+    ) {
+        let work_rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
+        let result = find_sync(&d.has_sync, work_rate, d.spec);
+        let rate = result.adjusted_rate_hz;
+        let skip = result.skip_samples;
+
+        let line_pixels = d.spec.line_pixels as usize;
+        let pair_count = d.spec.image_lines / 2;
+        for pair in 0..pair_count {
+            let pair_offset = (f64::from(pair) * d.spec.line_seconds * rate).round() as i64;
+            let pair_start_sample = pair_offset + skip;
+            crate::mode_pd::decode_pd_line_pair(
+                d.spec,
+                pair,
+                &d.audio,
+                pair_start_sample,
+                rate,
+                &mut d.image,
+                pd_demod,
+                d.hedr_shift_hz,
+            );
+            let row0 = pair * 2;
+            let row1 = row0 + 1;
+            for r in [row0, row1] {
+                let start = (r as usize) * line_pixels;
+                let end = start + line_pixels;
+                out.push(SstvEvent::LineDecoded {
+                    mode: d.mode,
+                    line_index: r,
+                    pixels: d.image.pixels[start..end].to_vec(),
+                });
+            }
+        }
+
+        let final_image = std::mem::replace(
+            &mut d.image,
+            SstvImage::new(d.mode, d.spec.line_pixels, d.spec.image_lines),
+        );
+        out.push(SstvEvent::ImageComplete {
+            image: final_image,
+            partial: false,
+        });
     }
 
     /// Reset to `AwaitingVis`; discard any in-flight image.

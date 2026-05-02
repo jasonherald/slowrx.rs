@@ -33,6 +33,7 @@ pub mod image;
 pub mod mode_pd;
 pub mod modespec;
 pub mod resample;
+pub(crate) mod sync;
 pub mod vis;
 
 pub use crate::decoder::{SstvDecoder, SstvEvent};

@@ -181,31 +181,30 @@ impl PdDemod {
     }
 }
 
-/// Decode one PD radio frame (one Y(odd)/Cr/Cb/Y(even) sequence) into two
-/// image rows of `image`. Translated from slowrx `video.c:81-93` (channel
-/// layout) + `video.c:411-450` (per-pixel demod + chroma combine).
-///
-/// Per channel, we extract a copy of just that channel's samples and run
-/// the FFT against that isolated slice. This prevents the per-pixel FFT
-/// window from leaking into the adjacent channel at the channel edges
-/// (where the other tone would otherwise corrupt the peak search). The
-/// trade-off is a per-channel allocation; for V1's PD120/PD180 sizes
-/// this is negligible (<3 KB / channel / line pair).
+/// Decode one PD radio frame (one `Y(odd)/Cr/Cb/Y(even)` sequence) into two
+/// image rows of `image`. Translated from slowrx `video.c` lines 81-93
+/// (channel layout) and `video.c` lines 411-450 (per-pixel demod + chroma
+/// combine). `pair_start_sample` is where this pair's sync pulse begins
+/// inside `audio`; `rate_hz` is the slant-corrected rate from
+/// [`crate::sync::find_sync`]. We extract a per-channel slice so the
+/// per-pixel FFT window does not bleed across channel edges.
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_possible_wrap
+    clippy::cast_possible_wrap,
+    clippy::too_many_arguments
 )]
 pub(crate) fn decode_pd_line_pair(
     spec: crate::modespec::ModeSpec,
     pair_index: u32,
-    window: &[f32],
+    audio: &[f32],
+    pair_start_sample: i64,
+    rate_hz: f64,
     image: &mut crate::image::SstvImage,
     demod: &mut PdDemod,
     hedr_shift_hz: f64,
 ) {
-    let work_rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
     let sync_secs = spec.sync_seconds;
     let porch_secs = spec.porch_seconds;
     let pixel_secs = spec.pixel_seconds;
@@ -234,24 +233,25 @@ pub(crate) fn decode_pd_line_pair(
     {
         let start_sec = chan_starts_sec[chan_idx];
         let end_sec = start_sec + f64::from(width) * pixel_secs;
-        let chan_start = (start_sec * work_rate).round() as i64;
-        let chan_end = (end_sec * work_rate).round() as i64;
+        // Channel start in audio (absolute sample index).
+        let chan_start_abs = pair_start_sample + (start_sec * rate_hz).round() as i64;
+        let chan_end_abs = pair_start_sample + (end_sec * rate_hz).round() as i64;
 
         // Extract just this channel's samples (zero-pad if the input window
         // doesn't fully cover the channel — happens at line-pair end-of-input).
-        let chan_len = (chan_end - chan_start).max(0) as usize;
+        let chan_len = (chan_end_abs - chan_start_abs).max(0) as usize;
         let mut chan_samples = vec![0.0_f32; chan_len];
         for (i, dst) in chan_samples.iter_mut().enumerate() {
-            let src_idx = chan_start + i as i64;
-            if src_idx >= 0 && (src_idx as usize) < window.len() {
-                *dst = window[src_idx as usize];
+            let src_idx = chan_start_abs + i as i64;
+            if src_idx >= 0 && (src_idx as usize) < audio.len() {
+                *dst = audio[src_idx as usize];
             }
         }
 
         for x in 0..width as usize {
             // Center sample relative to the channel slice.
             let center_sec_rel = (x as f64 + 0.5) * pixel_secs;
-            let center_sample_rel = (center_sec_rel * work_rate).round() as i64;
+            let center_sample_rel = (center_sec_rel * rate_hz).round() as i64;
             let freq = demod.pixel_freq(&chan_samples, center_sample_rel, hedr_shift_hz);
             channel_buf[x] = freq_to_luminance(freq, hedr_shift_hz);
         }
