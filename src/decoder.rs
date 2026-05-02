@@ -23,6 +23,13 @@ pub enum SstvEvent {
         /// Working-rate (11025 Hz) sample offset where the VIS stop bit ended.
         /// Useful for callers that want to align audio captures with decoder events.
         sample_offset: u64,
+        /// Radio mistuning offset in Hz: `observed_leader_hz - 1900`. The
+        /// decoder applies this offset internally to per-pixel demod so the
+        /// downstream pixel band shifts with the radio's tuning. Surfaced
+        /// here purely for caller diagnostics; consumers do not need to do
+        /// anything with it. Translated from slowrx's `CurrentPic.HedrShift`
+        /// (`vis.c` line 106 → `video.c` line 406).
+        hedr_shift_hz: f64,
     },
     /// One scan line completed (callers may render incrementally).
     LineDecoded {
@@ -57,6 +64,9 @@ enum State {
         image: SstvImage,
         /// Buffered working-rate samples not yet consumed by per-pixel decode.
         buffer: Vec<f32>,
+        /// Radio mistuning offset in Hz extracted at VIS time. Plumbed to
+        /// per-pixel demod so the pixel band shifts with radio tuning.
+        hedr_shift_hz: f64,
     },
 }
 
@@ -118,6 +128,7 @@ impl SstvDecoder {
                             out.push(SstvEvent::VisDetected {
                                 mode: spec.mode,
                                 sample_offset: detected.end_sample,
+                                hedr_shift_hz: detected.hedr_shift_hz,
                             });
                             let image =
                                 SstvImage::new(spec.mode, spec.line_pixels, spec.image_lines);
@@ -131,6 +142,7 @@ impl SstvDecoder {
                                 line_pair_index: 0,
                                 image,
                                 buffer: residual,
+                                hedr_shift_hz: detected.hedr_shift_hz,
                             };
                             continue; // re-enter loop to process leftover audio
                         }
@@ -147,6 +159,7 @@ impl SstvDecoder {
                     line_pair_index,
                     image,
                     buffer,
+                    hedr_shift_hz,
                 } => {
                     buffer.extend_from_slice(remaining);
 
@@ -202,6 +215,7 @@ impl SstvDecoder {
                             &buffer[..needed],
                             image,
                             &mut self.pd_demod,
+                            *hedr_shift_hz,
                         );
 
                         let row0 = *line_pair_index * 2;
@@ -364,16 +378,21 @@ mod tests {
         let mut burst = synth_vis(0x5F, 0.0);
         burst.extend(std::iter::repeat_n(0.0_f32, 512));
         let events = d.process(&burst);
-        let any_vis = events.iter().any(|e| {
-            matches!(
-                e,
+        let hedr = events
+            .iter()
+            .find_map(|e| match e {
                 SstvEvent::VisDetected {
                     mode: SstvMode::Pd120,
+                    hedr_shift_hz,
                     ..
-                }
-            )
-        });
-        assert!(any_vis, "expected VisDetected for PD120, got {events:?}");
+                } => Some(*hedr_shift_hz),
+                _ => None,
+            })
+            .expect("expected VisDetected for PD120");
+        assert!(
+            hedr.abs() < 10.0,
+            "synthetic burst should report ~0 Hz shift, got {hedr}"
+        );
     }
 
     #[test]
@@ -383,13 +402,18 @@ mod tests {
         let mut burst = synth_vis(0x60, 0.0);
         burst.extend(std::iter::repeat_n(0.0_f32, 512));
         let events = d.process(&burst);
-        assert!(events.iter().any(|e| matches!(
-            e,
-            SstvEvent::VisDetected {
-                mode: SstvMode::Pd180,
-                ..
-            }
-        )));
+        let hedr = events
+            .iter()
+            .find_map(|e| match e {
+                SstvEvent::VisDetected {
+                    mode: SstvMode::Pd180,
+                    hedr_shift_hz,
+                    ..
+                } => Some(*hedr_shift_hz),
+                _ => None,
+            })
+            .expect("expected VisDetected for PD180");
+        assert!(hedr.abs() < 10.0);
     }
 
     #[test]
