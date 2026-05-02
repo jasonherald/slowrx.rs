@@ -33,8 +33,14 @@ pub mod image;
 pub mod mode_pd;
 pub mod modespec;
 pub mod resample;
+#[allow(dead_code)]
+pub(crate) mod snr;
 pub(crate) mod sync;
 pub mod vis;
+
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod pd_test_encoder;
 
 pub use crate::decoder::{SstvDecoder, SstvEvent};
 pub use crate::error::{Error, Result};
@@ -52,7 +58,7 @@ pub mod __test_support {
         pub use crate::vis::tests::synth_vis;
     }
     pub mod mode_pd {
-        pub use crate::mode_pd::test_encoder::encode_pd;
         pub use crate::mode_pd::ycbcr_to_rgb;
+        pub use crate::pd_test_encoder::encode_pd;
     }
 }

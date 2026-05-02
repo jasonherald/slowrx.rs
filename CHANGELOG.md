@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (Phase 3: per-pixel demod parity)
+
+Brings the per-pixel demod path closer to slowrx's `video.c::GetVideo`
+(closes #23, #24; partial #18; partial #32). The previous code sliced
+each radio channel into its own audio buffer, ran ONE per-pixel FFT
+with a fixed 256-sample Hann window, and computed pixel times relative
+to each channel slice — three issues that diverged from slowrx:
+
+- **#24 — time-base alignment.** Pixel sample times now use slowrx's
+  exact single-`round()` formula (`video.c:140-142`):
+  `Skip + round(rate * (y/2 * line_seconds + chan_start_sec + (x +
+  0.5) * pixel_secs))`. Previously the decoder rounded the per-pair
+  offset and then `decode_pd_line_pair` rounded again — accumulating
+  ~5 samples of drift by pair 11 of PD180.
+- **#23 — FFT-every-N + StoredLum cache.** A single sweep over the
+  line-pair audio runs an FFT every `PIXEL_FFT_STRIDE` samples and
+  fills `stored_lum[s - sweep_start]` at every sample (slowrx
+  `video.c:350-406`). Pixel times read out of the cache. At our
+  11_025 Hz working rate `PIXEL_FFT_STRIDE = 1` (slowrx's `% 6` at
+  44_100 Hz scales to ~1.5; stride=1 has the cleanest pixel-center
+  alignment).
+- **#18 (partial) — SNR estimator.** New `src/snr.rs` module
+  implementing slowrx `video.c:302-343` (bandwidth-corrected
+  `Psignal/Pnoise` over the video band 1500–2300 Hz vs noise bands
+  400–800 ∪ 2700–3400 Hz, floored at -20 dB) plus a 7-window Hann
+  bank with slowrx's exact threshold table
+  (`window_idx_for_snr`). The estimator is wired into
+  `decode_pd_line_pair` and runs every `SNR_REESTIMATE_STRIDE = 64`
+  samples. **Deviation:** the per-pixel `win_idx` is currently
+  hard-coded to 6 (longest, length 256) rather than driven by the
+  SNR-adaptive selector; the synthetic round-trip's
+  instant-frequency-step encoder reports ~12-19 dB SNR on clean
+  tones, which would select shorter windows whose wider main lobe
+  degrades peak interpolation against synthetic data. The selector
+  should engage once a realistic FM-modulator-slewing synthetic
+  encoder lands.
+- **#32 (partial) — channel-bounded FFT input.** The new
+  `decode_one_channel_into` helper builds a `scratch_audio` buffer
+  that zero-pads samples outside the active channel's
+  `[chan_lo, chan_hi)` range. **Deviation:** slowrx FFTs across
+  channel boundaries (its `pcm.Buffer` is a continuous PCM stream
+  and real-radio FM-modulator slewing softens cross-channel tone
+  steps). With our synthetic encoder's hard tonal cliffs at
+  channel boundaries, allowing cross-channel reads creates
+  secondary FFT peaks that confuse the bin search. Revisit
+  alongside the synthetic-encoder slewing work.
+
+**New module:** `src/snr.rs` — `SnrEstimator`, `HannBank`,
+`window_idx_for_snr`, `HANN_LENS`, `FFT_LEN`. Eleven unit tests
+covering Hann bank shape, threshold boundaries, silence floor,
+pure-tone behaviour, hedr-shift tracking, and degenerate-input
+safety.
+
+**File reorganization:** `mode_pd::test_encoder` moved to a new
+`src/pd_test_encoder.rs` (test-support gated) so the production
+decoder doesn't grow further past the 500-LOC ceiling. Re-export
+path `__test_support::mode_pd::encode_pd` preserved.
+
+**Round-trip stats — Phase 2 baseline preserved:**
+* PD120 max_diff=11, mean=0.728 (was 11/0.75)
+* PD180 max_diff=11, mean=0.560 (was 11/0.55)
+
+**Tests:** 11 new SNR unit tests (`snr_silence_floors_at_minus_twenty`,
+`snr_pure_video_tone_is_high`, `snr_pure_noise_band_is_negative`,
+`snr_tone_plus_noise_intermediate`, `snr_hedr_shift_tracks_band`,
+`window_idx_thresholds_match_slowrx`, `hann_bank_lengths_correct`,
+`hann_window_endpoints_are_zero`, `hann_lens_match_slowrx_at_workingrate`,
+`build_hann_zero_and_one_length_safe`, `snr_estimator_default_constructs`)
++ 2 new mode_pd tests (`pixel_freq_clamps_out_of_range_win_idx`,
+`pixel_freq_short_window_still_recovers_tone`).
+
 ### Changed (Phase 2: FindSync parity)
 
 Faithful translation of slowrx's `sync.c::FindSync` (Hough-transform
