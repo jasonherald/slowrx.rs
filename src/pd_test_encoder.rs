@@ -49,7 +49,10 @@ fn fill_to(out: &mut Vec<f32>, freq_hz: f64, target_n: usize, phase: &mut f64) {
 #[doc(hidden)]
 #[allow(dead_code)]
 pub fn encode_pd(mode: SstvMode, ycrcb: &[[u8; 3]]) -> Vec<f32> {
-    assert!(matches!(mode, SstvMode::Pd120 | SstvMode::Pd180));
+    assert!(matches!(
+        mode,
+        SstvMode::Pd120 | SstvMode::Pd180 | SstvMode::Pd240
+    ));
     let spec = crate::modespec::for_mode(mode);
     let w = spec.line_pixels;
     let h = spec.image_lines;

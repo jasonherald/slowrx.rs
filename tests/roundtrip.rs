@@ -41,6 +41,7 @@ fn run_roundtrip(mode: SstvMode) {
     let vis_code = match mode {
         SstvMode::Pd120 => 0x5F,
         SstvMode::Pd180 => 0x60,
+        SstvMode::Pd240 => 0x61,
         _ => unreachable!(),
     };
     let mut audio = slowrx::__test_support::vis::synth_vis(vis_code, 0.0);
@@ -106,4 +107,9 @@ fn pd120_roundtrip() {
 #[test]
 fn pd180_roundtrip() {
     run_roundtrip(SstvMode::Pd180);
+}
+
+#[test]
+fn pd240_roundtrip() {
+    run_roundtrip(SstvMode::Pd240);
 }
