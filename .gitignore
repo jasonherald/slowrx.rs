@@ -26,3 +26,5 @@ Thumbs.db
 # license for community-shared captures is unclear, and we don't want to
 # bloat the published crate with ~250 MB of fixtures.
 /docs/wav_files
+
+original
