@@ -328,38 +328,74 @@ impl SstvDecoder {
         let skip = result.skip_samples;
 
         let line_pixels = d.spec.line_pixels as usize;
-        let pair_count = d.spec.image_lines / 2;
-        for pair in 0..pair_count {
-            // slowrx `video.c:140-142` computes pixel time as
-            // `Skip + round(Rate * (y/2 * LineTime + ChanStart +
-            // PixelTime * (x + 0.5)))`. Compute `pair_seconds = y/2 *
-            // LineTime` here (un-rounded) and let
-            // [`crate::mode_pd::decode_pd_line_pair`] fold it into its
-            // own `round()`, so per-pair rounding error never
-            // accumulates.
-            let pair_seconds = f64::from(pair) * d.spec.line_seconds;
-            crate::mode_pd::decode_pd_line_pair(
-                d.spec,
-                pair,
-                &d.audio,
-                skip,
-                pair_seconds,
-                rate,
-                &mut d.image,
-                pd_demod,
-                snr_est,
-                d.hedr_shift_hz,
-            );
-            let row0 = pair * 2;
-            let row1 = row0 + 1;
-            for r in [row0, row1] {
-                let start = (r as usize) * line_pixels;
-                let end = start + line_pixels;
-                out.push(SstvEvent::LineDecoded {
-                    mode: d.mode,
-                    line_index: r,
-                    pixels: d.image.pixels[start..end].to_vec(),
-                });
+        match d.spec.channel_layout {
+            crate::modespec::ChannelLayout::PdYcbcr => {
+                let pair_count = d.spec.image_lines / 2;
+                for pair in 0..pair_count {
+                    // slowrx `video.c:140-142` computes pixel time as
+                    // `Skip + round(Rate * (y/2 * LineTime + ChanStart +
+                    // PixelTime * (x + 0.5)))`. Compute `pair_seconds = y/2 *
+                    // LineTime` here (un-rounded) and let
+                    // [`crate::mode_pd::decode_pd_line_pair`] fold it into its
+                    // own `round()`, so per-pair rounding error never
+                    // accumulates.
+                    let pair_seconds = f64::from(pair) * d.spec.line_seconds;
+                    crate::mode_pd::decode_pd_line_pair(
+                        d.spec,
+                        pair,
+                        &d.audio,
+                        skip,
+                        pair_seconds,
+                        rate,
+                        &mut d.image,
+                        pd_demod,
+                        snr_est,
+                        d.hedr_shift_hz,
+                    );
+                    let row0 = pair * 2;
+                    let row1 = row0 + 1;
+                    for r in [row0, row1] {
+                        let start = (r as usize) * line_pixels;
+                        let end = start + line_pixels;
+                        out.push(SstvEvent::LineDecoded {
+                            mode: d.mode,
+                            line_index: r,
+                            pixels: d.image.pixels[start..end].to_vec(),
+                        });
+                    }
+                }
+            }
+            crate::modespec::ChannelLayout::RobotYuv => {
+                // Robot is per-line (no PD line-pairing). For R36/R24 the
+                // chroma-duplication writes to the next image row; that's
+                // handled inside mode_robot::decode_line. LineDecoded for image
+                // row N is emitted after radio-line N's decode — for R36/R24
+                // row 0 the Cb channel is at zero-init at this point (slowrx
+                // C does the same; final ImageComplete carries the populated
+                // state).
+                for line in 0..d.spec.image_lines {
+                    let line_seconds_offset = f64::from(line) * d.spec.line_seconds;
+                    crate::mode_robot::decode_line(
+                        d.spec,
+                        d.mode,
+                        line,
+                        &d.audio,
+                        skip,
+                        line_seconds_offset,
+                        rate,
+                        &mut d.image,
+                        pd_demod,
+                        snr_est,
+                        d.hedr_shift_hz,
+                    );
+                    let start = (line as usize) * line_pixels;
+                    let end = start + line_pixels;
+                    out.push(SstvEvent::LineDecoded {
+                        mode: d.mode,
+                        line_index: line,
+                        pixels: d.image.pixels[start..end].to_vec(),
+                    });
+                }
             }
         }
 
