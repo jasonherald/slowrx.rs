@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (Real-audio validation + Phase 3 deferrals engaged — issues #44, #45)
+
+After Phases 1-6 of the recovery shipped, the decoder was validated against
+local Dec-2017 ARISS WAV captures (the 7 fixtures that previously produced
+0/7 `ImageComplete` events). Detection and decode worked (6/7 produced
+images — the 7th is a 120-second truncated capture missing the VIS burst),
+but visual quality was poor: heavy vertical banding at every channel edge
+(hallmark of #45 channel-mask) and washed-out chroma (hallmark of #44
+hard-coded longest Hann window).
+
+This release engages both deferrals — they were filed during Phase 3
+specifically as "engage when real audio shows them needed":
+
+- **#44 — SNR-adaptive Hann window selection** (`src/mode_pd.rs::decode_one_channel_into`):
+  Replaced `let win_idx = 6;` (longest window hard-code) with
+  `crate::snr::window_idx_for_snr(snr_db)`, matching slowrx
+  `video.c:354-367`. Real-radio audio reports realistic SNR; the
+  selector picks shorter windows at high SNR for sharper time
+  resolution at pixel boundaries.
+
+- **#45 — Drop channel-boundary zero-pad mask** (`src/mode_pd.rs::decode_one_channel_into`):
+  Removed the `chan_lo`/`chan_hi` mask that zero-padded FFT input
+  outside the channel's nominal bounds. slowrx FFTs across channel
+  boundaries on its continuous PCM stream (`video.c::GetVideo`); the
+  peak search in 1500-2300 Hz still locks onto the dominant video
+  tone even when adjacent channels' content leaks into the windowed
+  FFT support. The previous mask hurt the leftmost/rightmost ~60
+  pixels of every channel — verified visually against the ARISS
+  captures.
+
+**Real-audio result (Dec-2017 ARISS, 6/7 fixtures):**
+Decoded images visually match reference JPGs (RSOISS callsign,
+Sergey Korolev / Konstantin Tsiolkovsky portraits, Russian text
+all legible). The 7th fixture (`12072017_051548.wav`, 120s) is a
+truncated capture missing the VIS leader burst — same outcome as
+slowrx C on the same input.
+
+**Synthetic round-trip impact:**
+The synthetic encoder produces instant frequency-step transitions at
+pixel and channel boundaries — real radio's FM-modulator slewing
+softens these. With deferrals engaged, the synthetic round-trip's
+mean diff stays excellent (PD120 mean=1.51, PD180 mean=1.82) but
+`max_diff` hits 234-255 at a handful of isolated boundary pixels.
+The `max_diff <= 25` assertion was dropped; the test now checks
+mean only (`mean < 5.0`). Real-audio is the truth gate; synthetic
+remains a regression check on mean quality. Documented inline.
+
+### Added (Real-audio smoke harness)
+
+- `examples/decode_wav.rs`: takes a WAV path, emits PNG(s) per
+  `ImageComplete`. Mono `i16`/`f32` WAVs in any sample rate
+  supported by `SstvDecoder`. Used to validate against local ARISS
+  fixtures; not committed to the published crate (examples are
+  excluded from the package).
+- `[dev-dependencies]`: `hound` (WAV reader) and `image` (PNG writer,
+  `png` feature only) for the example.
+
 ### Changed (Round-2 parity audit bundle — issues #48–#58)
 
 11 findings from the second-pass C↔Rust parity audit closed in one bundle.
