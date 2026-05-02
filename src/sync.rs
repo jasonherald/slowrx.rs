@@ -26,10 +26,24 @@ use std::sync::Arc;
 use crate::modespec::ModeSpec;
 use crate::resample::WORKING_SAMPLE_RATE_HZ;
 
-/// Stride between sync-band probes (working-rate samples). slowrx uses
-/// 13 samples@44.1kHz (`video.c:295`) ≈ 3.25@11.025kHz; we round to 3.
-/// Index math in [`find_sync`] scales by `SYNC_PROBE_STRIDE` for parity.
-pub(crate) const SYNC_PROBE_STRIDE: usize = 3;
+/// Stride between sync-band probes (working-rate samples).
+///
+/// slowrx uses 13 samples@44.1 kHz (`video.c:295`) ≈ 3.25 samples@11.025 kHz.
+/// The fractional equivalence means no integer stride gives exact slowrx parity;
+/// we choose 4 (round-up / ceil) rather than 3 (round-down / floor).
+///
+/// **Probe-count comparison:**
+/// - slowrx probes/image ≈ `image_samples / 13` at 44.1 kHz.
+/// - Rust probes/image ≈ `image_samples_11025 / 4` at 11.025 kHz.
+/// - `image_samples_11025 / 4 ≈ (image_samples_44100 / 4) / 4 ≈ image_samples_44100 / 16`,
+///   which is slightly fewer probes than slowrx's `/ 13`.
+///
+/// With `SYNC_PROBE_STRIDE = 4` Rust's per-image probe count is ≈ 19% fewer
+/// than slowrx's. With stride=3 it was ≈ 25% more. Stride=4 is closer in
+/// ratio (1.56 vs slowrx) and preserves the ~0.36 ms/probe cadence.  The
+/// Hough transform's line-finding is robust to moderate density differences
+/// (round-2 audit Finding 8).
+pub(crate) const SYNC_PROBE_STRIDE: usize = 4;
 
 /// Hann-windowed audio length per sync probe (samples). 1/4 of slowrx's
 /// 64@44.1kHz keeps the time span (~1.5 ms) constant (`video.c:278`).
@@ -86,10 +100,11 @@ impl SyncTracker {
         let fft = planner.plan_fft_forward(SYNC_FFT_LEN);
         let scratch_len = fft.get_inplace_scratch_len();
 
-        let bin_for = |hz: f64| -> usize {
-            let raw = hz * (SYNC_FFT_LEN as f64) / f64::from(WORKING_SAMPLE_RATE_HZ);
-            raw.round() as usize
-        };
+        // Use slowrx-equivalent truncation via `crate::get_bin` (not `.round()`).
+        // See `crate::get_bin` for rationale.  sync_target_bin for 1200 Hz
+        // is 27 (slowrx-correct) not 28 (what `.round()` would give).
+        let bin_for =
+            |hz: f64| -> usize { crate::get_bin(hz, SYNC_FFT_LEN, WORKING_SAMPLE_RATE_HZ) };
 
         Self {
             fft,
@@ -181,10 +196,15 @@ pub(crate) struct SyncResult {
     /// video data begins. May be slightly negative; the decoder zero-pads
     /// out-of-range reads when computing per-channel slices.
     pub skip_samples: i64,
-    /// Detected slant angle (degrees). Diagnostic — read by tests; the
-    /// decoder consumes only `adjusted_rate_hz` + `skip_samples`.
+    /// Detected slant angle (degrees), or `None` when the Hough transform
+    /// found no sync pulses at all (degenerate/empty input).
+    ///
+    /// Diagnostic — read by tests; the decoder consumes only
+    /// `adjusted_rate_hz` + `skip_samples`. Using `Option<f64>` avoids the
+    /// round-2 audit Finding 10 ambiguity where `90.0` would be returned for
+    /// both "perfectly aligned input" and "nothing-detected-at-all input".
     #[allow(dead_code)]
-    pub slant_deg: f64,
+    pub slant_deg: Option<f64>,
 }
 
 /// Linear Hough transform + 8-tap convolution edge-find.
@@ -205,7 +225,7 @@ pub(crate) fn find_sync(has_sync: &[bool], initial_rate_hz: f64, spec: ModeSpec)
     // (150-30) / 0.5 = 240 half-degree bins.
     let n_slant_bins = ((MAX_SLANT_DEG - MIN_SLANT_DEG) / SLANT_STEP_DEG).round() as usize;
     let mut rate = initial_rate_hz;
-    let mut slant_deg_last = 90.0;
+    let mut slant_deg_detected: Option<f64> = None;
     let num_lines = spec.image_lines as usize;
 
     // slowrx's `(int)(t * Rate / 13.0)` becomes `(int)(t * rate / STRIDE)`
@@ -269,7 +289,7 @@ pub(crate) fn find_sync(has_sync: &[bool], initial_rate_hz: f64, spec: ModeSpec)
         }
 
         let slant_angle = MIN_SLANT_DEG + (q_most as f64) * SLANT_STEP_DEG;
-        slant_deg_last = slant_angle;
+        slant_deg_detected = Some(slant_angle);
 
         // Apply a deadband at 90° so an exact-rate input is not perturbed
         // by half-degree Hough quantization noise — without this, a 90.5°
@@ -281,7 +301,16 @@ pub(crate) fn find_sync(has_sync: &[bool], initial_rate_hz: f64, spec: ModeSpec)
 
         // sync.c:86-90 resets to 44100 on retry exhaustion; we keep our
         // last estimate (re-anchoring a near-locked input is harmful).
-        if (SLANT_OK_LO_DEG..SLANT_OK_HI_DEG).contains(&slant_angle) || retry == MAX_SLANT_RETRIES {
+        //
+        // Open interval (89, 91) — matching slowrx `sync.c:83`:
+        //   `if (slantAngle > 89 && slantAngle < 91)`.
+        // The half-open range syntax `89.0..91.0` would include 89.0° and
+        // exclude 91.0°, widening the lock window by one 0.5°-Hough bin vs
+        // slowrx. Use explicit comparisons for exact parity (round-2 audit
+        // Finding 7).
+        if (slant_angle > SLANT_OK_LO_DEG && slant_angle < SLANT_OK_HI_DEG)
+            || retry == MAX_SLANT_RETRIES
+        {
             break;
         }
     }
@@ -300,9 +329,14 @@ pub(crate) fn find_sync(has_sync: &[bool], initial_rate_hz: f64, spec: ModeSpec)
     }
 
     // 8-tap kernel snapshots `xmax = x+4` at the steepest falling edge.
+    // slowrx `sync.c:29-30`: `double maxconvd=0; int xmax=0;`.
+    // `max_convd` init must be 0 (not `i32::MIN`) — with zero input every
+    // `convd == 0` would beat `i32::MIN` and place xmax at the last window
+    // position, diverging from slowrx's "no update" on zero/negative convd
+    // (round-2 audit Finding 6).
     let kernel: [i32; 8] = [1, 1, 1, 1, -1, -1, -1, -1];
     let mut xmax: i32 = 0;
-    let mut max_convd: i32 = i32::MIN;
+    let mut max_convd: i32 = 0;
     for (x, window) in x_acc.windows(8).enumerate() {
         let convd: i32 = window
             .iter()
@@ -328,7 +362,7 @@ pub(crate) fn find_sync(has_sync: &[bool], initial_rate_hz: f64, spec: ModeSpec)
     SyncResult {
         adjusted_rate_hz: rate,
         skip_samples,
-        slant_deg: slant_deg_last,
+        slant_deg: slant_deg_detected,
     }
 }
 
@@ -400,9 +434,32 @@ mod tests {
         let spec = modespec::for_mode(crate::modespec::SstvMode::Pd120);
         let rate = f64::from(WORKING_SAMPLE_RATE_HZ);
         let r = find_sync(&synth_has_sync(spec, rate), rate, spec);
-        assert!((r.slant_deg - 90.0).abs() < 1.0, "{:.2}°", r.slant_deg);
+        let slant = r.slant_deg.expect("sync detected");
+        assert!((slant - 90.0).abs() < 1.0, "{slant:.2}°");
         assert!((r.adjusted_rate_hz - rate).abs() / rate < 0.005);
         assert!(r.skip_samples.abs() < (0.05 * rate) as i64);
+    }
+
+    /// With all-zero `has_sync`, the Hough transform finds nothing.
+    /// `slant_deg` must be `None` (not `Some(90.0)`) and `skip_samples`
+    /// must encode a negative offset (xmax=0, no sync detected).
+    /// Verifies round-2 audit Finding 6 (xmax=0 on zero input) and
+    /// Finding 10 (`slant_deg` is None, not the misleading 90.0 default).
+    #[test]
+    fn find_sync_empty_track_has_no_slant_detected() {
+        let spec = modespec::for_mode(crate::modespec::SstvMode::Pd120);
+        let rate = f64::from(WORKING_SAMPLE_RATE_HZ);
+        let r = find_sync(&vec![false; 16384], rate, spec);
+        assert!(
+            r.slant_deg.is_none(),
+            "empty track should yield slant_deg=None, got {:?}",
+            r.slant_deg
+        );
+        // xmax=0 → s_secs = 0 - sync_seconds → skip is negative.
+        assert!(
+            r.skip_samples < 0,
+            "empty track skip should be negative (xmax=0)"
+        );
     }
 
     #[test]
@@ -431,5 +488,11 @@ mod tests {
         let r = find_sync(&vec![false; 16384], rate, spec);
         assert!(r.adjusted_rate_hz.is_finite());
         assert!((r.adjusted_rate_hz - rate).abs() < 1.0);
+        // Rate must be bit-exact when no sync detected (no rate correction ran).
+        assert!(
+            (r.adjusted_rate_hz - rate).abs() < f64::EPSILON,
+            "rate should be unchanged, got {}",
+            r.adjusted_rate_hz
+        );
     }
 }

@@ -127,9 +127,18 @@ impl VisDetector {
                     // from the latest. The bit is 30 ms = 3 hops long,
                     // so its absolute end-sample simplifies to:
                     //   `(hops_completed + i) * HOP_SAMPLES`
-                    // (slowrx vis.c lines 168-170 instead skips a fixed
-                    // 20 ms regardless of `i`; we use the precise i-aware
-                    // boundary so per-pixel image alignment stays tight).
+                    // giving a uniform ~5 ms past stop-bit end across all `i`.
+                    //
+                    // **Divergence from slowrx (round-2 audit Finding 11):**
+                    // slowrx (`vis.c:165-170`) uses a fixed `+20 ms` skip, but
+                    // its `WindowPtr` at detection is already `(2-i)×10 ms` past
+                    // the stop-bit hop center — so slowrx's actual offset from
+                    // true stop-bit end is `5+20=25 ms` (i=0), `15 ms` (i=1),
+                    // `5 ms` (i=2), varying 5–25 ms across the three phases.
+                    // Rust uses a uniform 5 ms (one HOP_SAMPLES past the stop-bit
+                    // hop center), which is tighter than slowrx's 5–25 ms range.
+                    // The divergence is benign: `find_sync` absorbs the 0–20 ms
+                    // audio-position difference via the Skip computation.
                     let stop_end_abs =
                         (self.hops_completed.saturating_add(i_match as u64)) * HOP_SAMPLES as u64;
                     let drain_to_buf =
@@ -268,9 +277,10 @@ fn build_hann_window(n: usize) -> Vec<f32> {
 )]
 fn estimate_peak_freq(spectrum: &[Complex<f32>]) -> f64 {
     let fft_len = spectrum.len();
-    let bin_for = |hz: f64| -> usize {
-        ((hz * fft_len as f64) / f64::from(WORKING_SAMPLE_RATE_HZ)).round() as usize
-    };
+    // Use slowrx-equivalent truncation (not `.round()`) via `crate::get_bin`.
+    // See `crate::get_bin` for rationale.
+    #[allow(clippy::cast_possible_truncation)]
+    let bin_for = |hz: f64| -> usize { crate::get_bin(hz, fft_len, WORKING_SAMPLE_RATE_HZ) };
     let lo = bin_for(SEARCH_LO_HZ);
     let hi = bin_for(SEARCH_HI_HZ);
     if lo == 0 || hi >= fft_len.saturating_sub(1) || lo >= hi {
@@ -316,6 +326,18 @@ fn estimate_peak_freq(spectrum: &[Complex<f32>]) -> f64 {
 /// observed_leader - 1900`, `i` is the matched phase). Uses relative
 /// ±25 Hz tolerance — slowrx vis.c lines 82-104. (Indices like `3 + i`
 /// spell out slowrx's `tone[1*3+i]` so parity with C is one-to-one.)
+///
+/// **Deliberate divergence from slowrx (round-2 audit Finding 5):** slowrx's
+/// outer `for (i=0; i<3; i++)` loop has an `if (HedrShift != 0) break;` guard
+/// at the top (`vis.c:82-83`). A first-match parity failure sets `HedrShift =
+/// tone[j] - 1900` but then clears `gotvis`. If `HedrShift ≠ 0`, the outer
+/// loop fires the guard on the *next* `i` iteration, skipping all remaining
+/// `(i, j)` candidates — even if one of them would have passed parity. Rust
+/// instead tries all 9 `(i, j)` combinations exhaustively and returns on the
+/// first parity-passing match. This is the correct behavior; slowrx's early
+/// exit is a quirk of its `HedrShift`-set-before-parity-check pattern. The
+/// difference only manifests on mistuned radios (`HedrShift` ≠ 0) where the
+/// first pattern match has parity failure — a rare edge case in practice.
 fn match_vis_pattern(tones: &[f64; HISTORY_LEN]) -> Option<(u8, f64, usize)> {
     let tol = TONE_TOLERANCE_HZ;
     for i in 0..3 {

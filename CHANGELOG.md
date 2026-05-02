@@ -7,6 +7,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (Round-2 parity audit bundle — issues #48–#58)
+
+11 findings from the second-pass C↔Rust parity audit closed in one bundle.
+
+**Code fixes (7):**
+
+- **#49/#50/#51 — `get_bin` shared helper** (`src/lib.rs`, `src/vis.rs`,
+  `src/mode_pd.rs`, `src/snr.rs`, `src/sync.rs`): Added `crate::get_bin(hz,
+  fft_len, sample_rate_hz) -> usize` implementing slowrx's `GetBin` truncation
+  (`common.c:39-41`). Replaced 4 local `bin_for` lambdas that incorrectly used
+  `.round()` instead of C's implicit `double → guint` truncation. Downstream:
+  SNR bandwidth-correction bins now match slowrx exactly (`video_plus_noise=20`,
+  `noise_only=27`, `receiver=69`; was 19/28/70 — Pnoise multiplier shifts from
+  2.500 to 2.5556). `sync_target_bin` for 1200 Hz is now 27 (was 28). Tests:
+  `get_bin_matches_slowrx_truncation`, `snr_bandwidth_correction_bins_match_slowrx`,
+  `sync_target_bin_for_1200hz_is_27`.
+
+- **#48 — YCbCr→RGB round-to-nearest** (`src/mode_pd.rs`): `ycbcr_to_rgb`
+  now uses `(... / 100.0).clamp(0.0, 255.0).round() as u8` (float divide +
+  round), matching slowrx's `clip(double)` in `common.c:49-53` which calls
+  `round()`. Previous integer division `/ 100` truncated, producing a 1-LSB
+  darker bias on R and B channels for neutral grey and many other combinations.
+  This was round-1 Finding #4 partially fixed by PR #47 (`freq_to_luminance`
+  was fixed then; `ycbcr_to_rgb` was missed).
+  Test: `ycbcr_rounds_to_nearest_matching_slowrx_clip` verifies
+  Y=128/Cr=128/Cb=128 → R=129, G=127, B=129.
+
+- **#53 — `max_convd` init** (`src/sync.rs`): Changed from `i32::MIN` to `0`,
+  matching slowrx `sync.c:29`: `double maxconvd=0`. With zero input every
+  `convd==0` beat `i32::MIN`, placing `xmax=4` (not 0) — 1 ms divergence from
+  slowrx's degenerate-input Skip.
+  Test: `find_sync_empty_track_has_no_slant_detected` verifies skip is
+  negative (xmax=0) on all-false input.
+
+- **#54 — Slant-lock exclusive interval** (`src/sync.rs`): Replaced
+  `(SLANT_OK_LO_DEG..SLANT_OK_HI_DEG).contains(&slant_angle)` (half-open `[89,91)`)
+  with `slant_angle > SLANT_OK_LO_DEG && slant_angle < SLANT_OK_HI_DEG` (open
+  `(89,91)`), matching slowrx `sync.c:83`.
+
+- **#55 — Sync probe stride** (`src/sync.rs`): Changed `SYNC_PROBE_STRIDE`
+  from 3 to 4. slowrx uses 13 samples@44.1 kHz ≈ 3.25@11.025 kHz. Stride=4
+  (round-up) gives probe density closer to slowrx's than stride=3 (round-down
+  gave 25% more probes; stride=4 gives ~19% fewer). Documentation updated.
+
+- **#56 — `pixel_freq` boundary clip** (`src/mode_pd.rs`): Added slowrx's
+  `video.c:390-398` boundary guard before Gaussian interpolation. When `max_bin`
+  lands on the padded edge bins (`≤ lo` or `≥ hi`), return a clipped value
+  `(1500 or 2300) + hedr_shift_hz` instead of interpolating into the noise bin.
+  Test: `pixel_freq_clips_below_band_to_1500hz` verifies a 1480 Hz tone returns
+  ≈1500 Hz.
+
+- **#57 — `slant_deg` dead-field cleanup** (`src/sync.rs`): Changed
+  `SyncResult::slant_deg` from `f64` to `Option<f64>`. Returns `None` when the
+  Hough found no pulses (previously returned 90.0 for both "perfectly aligned"
+  and "nothing detected" — indistinguishable). Drops the `slant_deg_last`
+  tracking variable; uses `slant_deg_detected: Option<f64>` directly.
+
+**Doc-only clarifications (4):**
+
+- **#52 — VIS retry divergence** (`src/vis.rs`): Added doc comment to
+  `match_vis_pattern` explaining that Rust exhausts all 9 `(i,j)` candidates
+  while slowrx terminates early after a parity failure when `HedrShift ≠ 0`
+  (a C quirk — HedrShift is set before parity check). Rust's behavior is
+  correct; the divergence is documented for future maintainers.
+
+- **#58 — Stop-bit-end uniform anchor** (`src/vis.rs`): Updated comment in
+  `VisDetector::process` to accurately describe the 5 ms uniform offset vs
+  slowrx's i-dependent 5–25 ms range. Previous comment claimed "precise i-aware
+  boundary" but slowrx is also i-aware, just differently.
+
+- **#50/#51**: Transitively closed by `get_bin` refactor — see #49 above.
+  SNR test verifies corrected bandwidth multipliers.
+
+**Round-trip stats — Phase 3 baseline preserved:**
+* PD120: max_diff ≤ 25, mean < 5 (tolerance unchanged)
+* PD180: max_diff ≤ 25, mean < 5 (tolerance unchanged)
+* Note: the `ycbcr_to_rgb` fix (#48) changes round-trip output for pixels where
+  the numerator has a fractional part ≥ 0.5. The roundtrip test compares
+  `src_rgb` (via the newly-fixed `ycbcr_to_rgb`) to decoded pixels (also via
+  the same fixed function), so the comparison remains symmetric and the existing
+  tolerance ≤25/mean<5 is preserved unchanged.
+
 ### Changed (Parity housekeeping bundle — issues #16, #25, #27, #28, #29, #31, #33, #34, #35, #40)
 
 Nine findings from the slowrx parity audit (#12) addressed in one bundle —
@@ -18,9 +100,12 @@ Nine findings from the slowrx parity audit (#12) addressed in one bundle —
   now uses `.round() as u8` instead of plain `as u8` (truncation), matching
   slowrx's `(guchar)round(a)` in `common.c::clip()`. Worst-case off-by-one
   per pixel; images were systematically 0.5 units darker on average.
-  `ycbcr_to_rgb` is unaffected: its C equivalents call `clip()` on an already-
-  integer division result, so `round()` of an integer is a no-op. New test
-  `freq_to_luminance_rounds_to_nearest_not_truncates` verifies 127.7 → 128.
+  At the time we believed `ycbcr_to_rgb` was unaffected — that turned out
+  to be wrong: slowrx's `video.c:447-449` does `clip(double / 100.0)` (float
+  divide → `round()` via clip's tail call), not `clip()` on an integer-divide
+  result. The `ycbcr_to_rgb` correction is shipped in the round-2 bundle
+  above (#48). New test `freq_to_luminance_rounds_to_nearest_not_truncates`
+  verifies 127.7 → 128.
 
 - **#25 — `septr_seconds` field for V2 parity** (`src/modespec.rs`,
   `src/mode_pd.rs`): Added `septr_seconds: f64` to `ModeSpec` (= 0.0 for

@@ -174,13 +174,14 @@ impl SnrEstimator {
         self.fft
             .process_with_scratch(&mut self.fft_buf, &mut self.scratch[..]);
 
-        // Bin helper. Bin spacing matches `crate::mode_pd::FFT_LEN` /
-        // working-rate, so `bin = round(hz * FFT_LEN / sample_rate)`.
-        let work_rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
+        // Bin helper — uses slowrx-equivalent truncation via `crate::get_bin`.
+        // **Do NOT change to `.round()`**: that shifts 5 of the 8 production
+        // frequencies by ±1 bin, changing `VideoPlusNoiseBins`, `NoiseOnlyBins`,
+        // and `ReceiverBins` by 1–4 % vs. slowrx's values (see round-2 audit
+        // Finding 2/3 for the full bandwidth-correction impact).
         let bin_for = |hz: f64| -> usize {
-            let raw = (hz * (FFT_LEN as f64) / work_rate).round();
-            let clamped = raw.clamp(0.0, (FFT_LEN / 2 - 1) as f64);
-            clamped as usize
+            crate::get_bin(hz, FFT_LEN, crate::resample::WORKING_SAMPLE_RATE_HZ)
+                .min(FFT_LEN / 2 - 1)
         };
 
         let power = |c: Complex<f32>| -> f64 {
@@ -401,5 +402,78 @@ mod tests {
         // Defensive: degenerate inputs do not panic.
         assert!(build_hann(0).is_empty());
         assert_eq!(build_hann(1), vec![0.0]);
+    }
+
+    /// Verify SNR bandwidth-correction bin counts match slowrx's `GetBin`
+    /// truncation semantics (round-2 audit Finding 2/3).
+    ///
+    /// At `FFT_LEN=256, SR=11025` with `hedr=0`:
+    ///
+    /// | Quantity                    | Expected (slowrx `GetBin` trunc) |
+    /// |-----------------------------|----------------------------------|
+    /// | `video_plus_noise_bins`     | 53 − 34 + 1 = 20                |
+    /// | `noise_only_bins`           | (18−9+1) + (78−62+1) = 10+17 = 27 |
+    /// | `receiver_bins`             | 78 − 9 = 69                      |
+    /// | Pnoise multiplier      | 69/27 ≈ 2.5556                |
+    /// | Psignal subtractor     | 20/27 ≈ 0.7407                |
+    ///
+    /// These values differ from what `.round()` would give (70/28 = 2.5 and
+    /// 19/28 ≈ 0.6786 respectively), so this test is a regression guard for
+    /// the `get_bin` truncation in `snr.rs::estimate`.
+    #[test]
+    fn snr_bandwidth_correction_bins_match_slowrx() {
+        let get_bin =
+            |hz: f64| crate::get_bin(hz, FFT_LEN, crate::resample::WORKING_SAMPLE_RATE_HZ);
+
+        let video_lo = get_bin(1500.0);
+        let video_hi = get_bin(2300.0);
+        let n_lo_a = get_bin(400.0);
+        let n_hi_a = get_bin(800.0);
+        let n_lo_b = get_bin(2700.0);
+        let n_hi_b = get_bin(3400.0);
+
+        let video_plus_noise_bins = video_hi - video_lo + 1;
+        let noise_only_bins = (n_hi_a - n_lo_a + 1) + (n_hi_b - n_lo_b + 1);
+        let receiver_bins = n_hi_b - n_lo_a;
+
+        assert_eq!(
+            video_plus_noise_bins, 20,
+            "video+noise bins: got {video_plus_noise_bins}"
+        );
+        assert_eq!(
+            noise_only_bins, 27,
+            "noise-only bins: got {noise_only_bins}"
+        );
+        assert_eq!(receiver_bins, 69, "receiver bins: got {receiver_bins}");
+
+        // Pnoise multiplier ≈ 2.5556 (slowrx) vs 2.5000 (with .round())
+        let pnoise_mult = receiver_bins as f64 / noise_only_bins as f64;
+        assert!(
+            (pnoise_mult - 69.0 / 27.0).abs() < 1e-9,
+            "Pnoise mult: {pnoise_mult}"
+        );
+
+        // Psignal subtractor ≈ 0.7407 (slowrx) vs 0.6786 (with .round())
+        let psignal_sub = video_plus_noise_bins as f64 / noise_only_bins as f64;
+        assert!(
+            (psignal_sub - 20.0 / 27.0).abs() < 1e-9,
+            "Psignal sub: {psignal_sub}"
+        );
+    }
+
+    /// Verify `sync_target_bin` for 1200 Hz is 27 (slowrx-correct truncation),
+    /// not 28 (what `.round()` gives) — round-2 audit Finding 4 / #51.
+    #[test]
+    fn sync_target_bin_for_1200hz_is_27() {
+        // At SYNC_FFT_LEN=256, SR=11025: 1200 * 256 / 11025 = 27.89... → trunc = 27.
+        let bin = crate::get_bin(
+            1200.0,
+            crate::sync::SYNC_FFT_LEN,
+            crate::resample::WORKING_SAMPLE_RATE_HZ,
+        );
+        assert_eq!(
+            bin, 27,
+            "sync_target_bin for 1200 Hz should be 27 (trunc), got {bin}"
+        );
     }
 }
