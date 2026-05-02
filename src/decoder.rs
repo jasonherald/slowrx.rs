@@ -110,6 +110,12 @@ pub struct SstvDecoder {
     resampler: Resampler,
     vis: crate::vis::VisDetector,
     pd_demod: crate::mode_pd::PdDemod,
+    /// SNR estimator. Owns its own FFT plan (separate from `pd_demod`)
+    /// so the per-pixel demod's scratch buffer is never aliased. SNR
+    /// is re-estimated periodically inside
+    /// [`crate::mode_pd::decode_pd_line_pair`] (every
+    /// [`crate::mode_pd::SNR_REESTIMATE_STRIDE`] samples).
+    snr_est: crate::snr::SnrEstimator,
     state: State,
     samples_processed: u64,
     /// Cumulative working-rate samples emitted by the resampler.
@@ -129,6 +135,7 @@ impl SstvDecoder {
             resampler: Resampler::new(input_sample_rate_hz)?,
             vis: crate::vis::VisDetector::new(),
             pd_demod: crate::mode_pd::PdDemod::new(),
+            snr_est: crate::snr::SnrEstimator::new(),
             state: State::AwaitingVis,
             samples_processed: 0,
             working_samples_emitted: 0,
@@ -235,7 +242,12 @@ impl SstvDecoder {
                     }
 
                     // Buffer is full → run FindSync once, then per-pair decode.
-                    Self::run_findsync_and_decode(d, &mut self.pd_demod, &mut out);
+                    Self::run_findsync_and_decode(
+                        d,
+                        &mut self.pd_demod,
+                        &mut self.snr_est,
+                        &mut out,
+                    );
 
                     // Image complete. Preserve trailing audio not consumed —
                     // it may contain the leading edge of a follow-up VIS
@@ -265,6 +277,7 @@ impl SstvDecoder {
     fn run_findsync_and_decode(
         d: &mut DecodingState,
         pd_demod: &mut crate::mode_pd::PdDemod,
+        snr_est: &mut crate::snr::SnrEstimator,
         out: &mut Vec<SstvEvent>,
     ) {
         let work_rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
@@ -275,16 +288,24 @@ impl SstvDecoder {
         let line_pixels = d.spec.line_pixels as usize;
         let pair_count = d.spec.image_lines / 2;
         for pair in 0..pair_count {
-            let pair_offset = (f64::from(pair) * d.spec.line_seconds * rate).round() as i64;
-            let pair_start_sample = pair_offset + skip;
+            // slowrx `video.c:140-142` computes pixel time as
+            // `Skip + round(Rate * (y/2 * LineTime + ChanStart +
+            // PixelTime * (x + 0.5)))`. Compute `pair_seconds = y/2 *
+            // LineTime` here (un-rounded) and let
+            // [`crate::mode_pd::decode_pd_line_pair`] fold it into its
+            // own `round()`, so per-pair rounding error never
+            // accumulates.
+            let pair_seconds = f64::from(pair) * d.spec.line_seconds;
             crate::mode_pd::decode_pd_line_pair(
                 d.spec,
                 pair,
                 &d.audio,
-                pair_start_sample,
+                skip,
+                pair_seconds,
                 rate,
                 &mut d.image,
                 pd_demod,
+                snr_est,
                 d.hedr_shift_hz,
             );
             let row0 = pair * 2;
@@ -318,6 +339,7 @@ impl SstvDecoder {
         self.vis = crate::vis::VisDetector::new();
         self.resampler.reset_state();
         self.pd_demod = crate::mode_pd::PdDemod::new();
+        self.snr_est = crate::snr::SnrEstimator::new();
     }
 
     /// Total samples processed since construction (or last `reset`).

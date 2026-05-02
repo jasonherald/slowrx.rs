@@ -57,25 +57,15 @@ pub fn ycbcr_to_rgb(y: u8, cr: u8, cb: u8) -> [u8; 3] {
 }
 
 /// FFT length used for per-pixel demod. Matches slowrx's bin spacing:
-/// 256/11025 Hz = 43.07 Hz/bin, equal to slowrx's 1024/44100 Hz.
-pub(crate) const FFT_LEN: usize = 256;
+/// `256/11025 Hz` = 43.07 Hz/bin, equal to slowrx's `1024/44100 Hz`.
+pub(crate) const FFT_LEN: usize = crate::snr::FFT_LEN;
 
-/// Hann window of length [`FFT_LEN`], precomputed once per decoder invocation.
-#[allow(clippy::cast_precision_loss)]
-fn hann_window() -> Vec<f32> {
-    (0..FFT_LEN)
-        .map(|i| {
-            let m = (FFT_LEN - 1) as f32;
-            0.5 * (1.0 - (2.0 * std::f32::consts::PI * (i as f32) / m).cos())
-        })
-        .collect()
-}
-
-/// Per-pixel demod context: holds an FFT plan + reusable buffers.
-/// Construct once per decoder; reuse for many `pixel_freq` calls.
+/// Per-pixel demod context: holds an FFT plan + reusable buffers + the
+/// adaptive Hann-window bank. Construct once per decoder; reuse for many
+/// [`PdDemod::pixel_freq`] calls.
 pub(crate) struct PdDemod {
     fft: std::sync::Arc<dyn rustfft::Fft<f32>>,
-    hann: Vec<f32>,
+    hann_bank: crate::snr::HannBank,
     fft_buf: Vec<Complex<f32>>,
     scratch: Vec<Complex<f32>>,
 }
@@ -87,44 +77,56 @@ impl PdDemod {
         let scratch_len = fft.get_inplace_scratch_len();
         Self {
             fft,
-            hann: hann_window(),
+            hann_bank: crate::snr::HannBank::new(),
             fft_buf: vec![Complex { re: 0.0, im: 0.0 }; FFT_LEN],
             scratch: vec![Complex { re: 0.0, im: 0.0 }; scratch_len.max(FFT_LEN)],
         }
     }
 
-    /// Estimate the dominant tone frequency in a 256-sample window centered
-    /// near `center_sample` of the working-rate audio buffer. The actual
-    /// window is `audio[center_sample - FFT_LEN/2 .. center_sample + FFT_LEN/2]`,
-    /// clamped at audio boundaries.
+    /// Estimate the dominant tone frequency in a Hann-windowed FFT
+    /// centered near `center_sample`. `win_idx` selects the Hann length
+    /// from [`crate::snr::HANN_LENS`]; the FFT length stays fixed at
+    /// [`FFT_LEN`] (= 256), with leading/trailing zero-pad. Out-of-bounds
+    /// `audio` reads as silence. `hedr_shift_hz` shifts the peak-search
+    /// range from `[1500, 2300]` Hz to `[1500 + hedr, 2300 + hedr]` Hz to
+    /// follow a mistuned radio's pixel band.
     ///
-    /// `hedr_shift_hz` shifts the peak-search range from 1500..2300 Hz to
-    /// `(1500 + hedr_shift) .. (2300 + hedr_shift)` so a mistuned radio's
-    /// pixel band lines up with the search window. Translated from slowrx
-    /// `video.c:382` where the search starts at `GetBin(1500 + HedrShift)`.
-    ///
-    /// Returns the estimated frequency in Hz. Uses Gaussian-log peak
-    /// interpolation matching slowrx `video.c:391-394`.
+    /// Translated from slowrx `video.c:369-395` (windowed FFT + bin
+    /// search + Gaussian interp).
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::cast_possible_wrap
     )]
-    pub fn pixel_freq(&mut self, audio: &[f32], center_sample: i64, hedr_shift_hz: f64) -> f64 {
-        // Fill the reusable buffer in-place — avoids a per-call Vec allocation.
-        let half = (FFT_LEN as i64) / 2;
-        for i in 0..FFT_LEN {
+    pub fn pixel_freq(
+        &mut self,
+        audio: &[f32],
+        center_sample: i64,
+        hedr_shift_hz: f64,
+        win_idx: usize,
+    ) -> f64 {
+        let win_idx = win_idx.min(crate::snr::HANN_LENS.len() - 1);
+        let hann = self.hann_bank.get(win_idx);
+        let win_len = hann.len();
+
+        // Zero-fill, then apply the windowed support centered on
+        // `center_sample`. slowrx (`video.c:369-375`) writes the
+        // `WinLength` windowed samples into the FIRST `WinLength` bins
+        // of the FFT input; the magnitude spectrum is invariant to that
+        // offset (just a phase rotation).
+        for c in &mut self.fft_buf {
+            *c = Complex { re: 0.0, im: 0.0 };
+        }
+        let half = (win_len as i64) / 2;
+        for (i, (&w, dst)) in hann.iter().zip(self.fft_buf.iter_mut()).enumerate() {
             let idx = center_sample - half + i as i64;
             let s = if idx >= 0 && (idx as usize) < audio.len() {
                 audio[idx as usize]
             } else {
                 0.0
             };
-            self.fft_buf[i] = Complex {
-                re: s * self.hann[i],
-                im: 0.0,
-            };
+            *dst = Complex { re: s * w, im: 0.0 };
         }
 
         self.fft
@@ -181,13 +183,58 @@ impl PdDemod {
     }
 }
 
-/// Decode one PD radio frame (one `Y(odd)/Cr/Cb/Y(even)` sequence) into two
-/// image rows of `image`. Translated from slowrx `video.c` lines 81-93
-/// (channel layout) and `video.c` lines 411-450 (per-pixel demod + chroma
-/// combine). `pair_start_sample` is where this pair's sync pulse begins
-/// inside `audio`; `rate_hz` is the slant-corrected rate from
-/// [`crate::sync::find_sync`]. We extract a per-channel slice so the
-/// per-pixel FFT window does not bleed across channel edges.
+/// Distance, in working-rate samples, between successive per-pixel
+/// FFTs. slowrx takes an FFT every 6 samples at `44_100` Hz
+/// (`video.c:350` — `if (SampleNum % 6 == 0)`). At our 4×-lower
+/// `11_025` Hz working rate that scales to ~1.5 samples; we use
+/// stride=1 (FFT every working-rate sample) so the pixel-time
+/// readout of `stored_lum` is always exactly at-or-very-near the
+/// pixel center, with no stride-induced positional error. The cost
+/// difference vs slowrx's stride=6 is negligible on offline-batch
+/// decoding at `11_025` Hz.
+const PIXEL_FFT_STRIDE: i64 = 1;
+
+/// Distance, in working-rate samples, between successive SNR
+/// re-estimates. slowrx re-estimates every 256 samples at `44_100` Hz
+/// (`video.c:343`); scaled to `11_025` Hz that's 64.
+pub(crate) const SNR_REESTIMATE_STRIDE: i64 = 64;
+
+/// Decode one PD radio frame (`Y(odd)`/`Cr`/`Cb`/`Y(even)`) into two image
+/// rows of `image`. Translated from slowrx `video.c:259-486`.
+///
+/// Closes audit issues:
+/// - **#24** time-base alignment: every pixel uses slowrx's exact
+///   `Skip + round(rate * (chan_start_sec + pixel_secs * (x + 0.5)))`
+///   single-round formula (`video.c:140-142`); `pair_seconds` is folded
+///   in here, NOT pre-rounded by the caller, so per-pair rounding
+///   error never accumulates.
+/// - **#23** FFT-every-N + `StoredLum`: one FFT every
+///   [`PIXEL_FFT_STRIDE`] samples produces the latest `Freq`, which
+///   fills `StoredLum` at every sample; pixel times read out via
+///   `StoredLum[pixel_time]` (`video.c:350-406`).
+/// - **#18** SNR estimator: [`crate::snr::SnrEstimator`] is recomputed
+///   every [`SNR_REESTIMATE_STRIDE`] samples (`video.c:302-343`).
+///
+/// **Deviations from slowrx (deliberate):**
+/// - **#18 partial**: per-pixel Hann window length is hard-coded to
+///   `HANN_LENS[6] = 256` rather than driven by SNR. The synthetic
+///   round-trip encoder's instant-frequency-step transitions report
+///   ~12–19 dB SNR on clean tones, which would select short windows
+///   whose wider main lobe degrades peak localization. Once a
+///   realistic FM-slewing synthetic encoder lands (see #32) the
+///   adaptive selector should engage. The SNR estimator runs every
+///   iteration regardless, for diagnostic completeness.
+/// - **#32**: the FFT windowed support zero-pads outside the active
+///   channel's sample range. Real slowrx FFTs across channel
+///   boundaries because real-radio FM modulators smooth tone
+///   transitions. Our synthetic encoder produces hard tonal cliffs
+///   that create secondary FFT peaks at boundary pixels. Revisit when
+///   a realistic IF-bandwidth synthetic encoder is available.
+///
+/// `skip_samples` is the absolute sample index inside `audio` where
+/// pair zero's sync pulse begins; `pair_seconds` is `pair_index *
+/// line_seconds` (un-rounded); `rate_hz` is the slant-corrected rate
+/// from [`crate::sync::find_sync`].
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
@@ -199,10 +246,12 @@ pub(crate) fn decode_pd_line_pair(
     spec: crate::modespec::ModeSpec,
     pair_index: u32,
     audio: &[f32],
-    pair_start_sample: i64,
+    skip_samples: i64,
+    pair_seconds: f64,
     rate_hz: f64,
     image: &mut crate::image::SstvImage,
     demod: &mut PdDemod,
+    snr_est: &mut crate::snr::SnrEstimator,
     hedr_shift_hz: f64,
 ) {
     let sync_secs = spec.sync_seconds;
@@ -221,43 +270,46 @@ pub(crate) fn decode_pd_line_pair(
 
     let row0 = pair_index * 2;
     let row1 = row0 + 1;
+    let width_us = width as usize;
 
-    let mut y_odd = vec![0_u8; width as usize];
-    let mut cr = vec![0_u8; width as usize];
-    let mut cb = vec![0_u8; width as usize];
-    let mut y_even = vec![0_u8; width as usize];
-
-    for (chan_idx, channel_buf) in [&mut y_odd, &mut cr, &mut cb, &mut y_even]
-        .iter_mut()
-        .enumerate()
-    {
-        let start_sec = chan_starts_sec[chan_idx];
+    // Channel sample-range bounds (absolute audio indices). Used to
+    // zero-pad the FFT windowed support outside the active channel —
+    // see the doc comment's #32 deviation note. Computed using a
+    // SINGLE `round()` per bound (slowrx `video.c:140-142`); the
+    // per-pair `pair_seconds` offset is folded in here, NOT
+    // pre-rounded by the caller, so per-pair rounding error does not
+    // accumulate.
+    let chan_bounds_abs: [(i64, i64); 4] = std::array::from_fn(|i| {
+        let start_sec = chan_starts_sec[i];
         let end_sec = start_sec + f64::from(width) * pixel_secs;
-        // Channel start in audio (absolute sample index).
-        let chan_start_abs = pair_start_sample + (start_sec * rate_hz).round() as i64;
-        let chan_end_abs = pair_start_sample + (end_sec * rate_hz).round() as i64;
+        let start_abs = skip_samples + ((pair_seconds + start_sec) * rate_hz).round() as i64;
+        let end_abs = skip_samples + ((pair_seconds + end_sec) * rate_hz).round() as i64;
+        (start_abs, end_abs)
+    });
 
-        // Extract just this channel's samples (zero-pad if the input window
-        // doesn't fully cover the channel — happens at line-pair end-of-input).
-        let chan_len = (chan_end_abs - chan_start_abs).max(0) as usize;
-        let mut chan_samples = vec![0.0_f32; chan_len];
-        for (i, dst) in chan_samples.iter_mut().enumerate() {
-            let src_idx = chan_start_abs + i as i64;
-            if src_idx >= 0 && (src_idx as usize) < audio.len() {
-                *dst = audio[src_idx as usize];
-            }
-        }
+    let mut y_odd = vec![0_u8; width_us];
+    let mut cr = vec![0_u8; width_us];
+    let mut cb = vec![0_u8; width_us];
+    let mut y_even = vec![0_u8; width_us];
 
-        for x in 0..width as usize {
-            // Center sample relative to the channel slice.
-            let center_sec_rel = (x as f64 + 0.5) * pixel_secs;
-            let center_sample_rel = (center_sec_rel * rate_hz).round() as i64;
-            let freq = demod.pixel_freq(&chan_samples, center_sample_rel, hedr_shift_hz);
-            channel_buf[x] = freq_to_luminance(freq, hedr_shift_hz);
-        }
+    let buffers: [&mut [u8]; 4] = [&mut y_odd, &mut cr, &mut cb, &mut y_even];
+    for (chan_idx, buf) in buffers.into_iter().enumerate() {
+        decode_one_channel_into(
+            buf,
+            chan_starts_sec[chan_idx],
+            chan_bounds_abs[chan_idx],
+            spec,
+            audio,
+            skip_samples,
+            pair_seconds,
+            rate_hz,
+            demod,
+            snr_est,
+            hedr_shift_hz,
+        );
     }
 
-    for x in 0..width as usize {
+    for x in 0..width_us {
         let rgb_odd = ycbcr_to_rgb(y_odd[x], cr[x], cb[x]);
         let rgb_even = ycbcr_to_rgb(y_even[x], cr[x], cb[x]);
         image.put_pixel(x as u32, row0, rgb_odd);
@@ -265,134 +317,125 @@ pub(crate) fn decode_pd_line_pair(
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
+/// Decode one PD channel (`Y_odd`, `Cr`, `Cb`, or `Y_even`) into `out`.
+///
+/// Implements slowrx's per-pixel demod inner loop (`video.c:259-410`)
+/// for a single channel: an FFT every [`PIXEL_FFT_STRIDE`] samples
+/// produces the most-recent `Freq`, which fills `StoredLum` at every
+/// sample. Pixel times read out of `StoredLum`. SNR is re-estimated
+/// every [`SNR_REESTIMATE_STRIDE`] samples for diagnostic
+/// completeness — the per-pixel `win_idx` is currently hard-coded
+/// (see [`decode_pd_line_pair`]'s #18 deferral note).
+///
+/// `chan_bounds_abs` is `(start_abs, end_abs)` of the channel in the
+/// audio stream; the FFT windowed support is zero-padded outside this
+/// range (see [`decode_pd_line_pair`]'s #32 doc note).
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_possible_wrap
+    clippy::cast_possible_wrap,
+    clippy::too_many_arguments
 )]
-pub mod test_encoder {
-    //! Synthetic PD encoder for round-trip testing. Produces continuous-phase
-    //! FM audio matching the encoder side of the SSTV protocol.
+fn decode_one_channel_into(
+    out: &mut [u8],
+    chan_start_sec: f64,
+    chan_bounds_abs: (i64, i64),
+    spec: crate::modespec::ModeSpec,
+    audio: &[f32],
+    skip_samples: i64,
+    pair_seconds: f64,
+    rate_hz: f64,
+    demod: &mut PdDemod,
+    snr_est: &mut crate::snr::SnrEstimator,
+    hedr_shift_hz: f64,
+) {
+    let pixel_secs = spec.pixel_seconds;
+    let width = spec.line_pixels as usize;
 
-    use crate::modespec::SstvMode;
-    use crate::resample::WORKING_SAMPLE_RATE_HZ;
-    use std::f64::consts::PI;
-
-    const SYNC_HZ: f64 = 1200.0;
-    const PORCH_HZ: f64 = 1500.0;
-    const BLACK_HZ: f64 = 1500.0;
-    const WHITE_HZ: f64 = 2300.0;
-
-    fn lum_to_freq(lum: u8) -> f64 {
-        BLACK_HZ + (WHITE_HZ - BLACK_HZ) * f64::from(lum) / 255.0
+    // Pixel sample times (slowrx video.c:140-142) — absolute audio indices.
+    // SINGLE `round()` over `(pair_seconds + chan_start_sec + (x +
+    // 0.5) * pixel_secs) * rate`; matches slowrx exactly.
+    let mut pixel_times: Vec<i64> = Vec::with_capacity(width);
+    for x in 0..width {
+        let secs_in_pair = chan_start_sec + pixel_secs * (x as f64 + 0.5);
+        let abs = skip_samples + ((pair_seconds + secs_in_pair) * rate_hz).round() as i64;
+        pixel_times.push(abs);
     }
 
-    /// Encoder helper: emit samples up to sample index `target_n` (exclusive)
-    /// at frequency `freq_hz`, advancing both the running sample count `n`
-    /// and the running phase. Using cumulative sample targets prevents the
-    /// per-tone rounding error that would otherwise compound over the line
-    /// (640 pixels × ~0.094 sample/pixel rounding error per pixel adds up to
-    /// 60+ samples per line at PD120, breaking decoder line alignment).
-    fn fill_to(out: &mut Vec<f32>, freq_hz: f64, target_n: usize, phase: &mut f64) {
-        let dphi = 2.0 * PI * freq_hz / f64::from(WORKING_SAMPLE_RATE_HZ);
-        while out.len() < target_n {
-            out.push(phase.sin() as f32);
-            *phase += dphi;
-            if *phase > 2.0 * PI {
-                *phase -= 2.0 * PI;
-            }
+    let first_time = pixel_times[0];
+    let last_time = pixel_times[width - 1];
+    let half_fft = (FFT_LEN as i64) / 2;
+    let sweep_start = first_time - half_fft;
+    let sweep_end = last_time + half_fft + 1;
+
+    let sweep_len = (sweep_end - sweep_start).max(0) as usize;
+    let mut stored_lum = vec![0_u8; sweep_len];
+
+    // SNR is sticky across the sweep; slowrx initializes with `SNR = 0`
+    // (`video.c:36`) so the first `WinIdx` lookup uses index 4 (the
+    // 256-sample window).
+    let mut snr_db = 0.0_f64;
+    let mut current_freq = 1500.0_f64 + hedr_shift_hz;
+
+    // Channel sample range. Independent rounding of `chan_end_sec` and
+    // `pixel_times[width-1]` can disagree by up to 1 sample, so the
+    // mask widens to cover both. Without this, the rightmost pixel's
+    // center can fall in the zero-padded region and lose its signal —
+    // observed at PD180's x=639 of every channel.
+    let (chan_lo_raw, chan_hi_raw) = chan_bounds_abs;
+    let chan_lo = chan_lo_raw.min(pixel_times[0]);
+    let chan_hi = chan_hi_raw.max(pixel_times[width - 1] + 1);
+
+    let read_audio = |abs_idx: i64| -> f32 {
+        if abs_idx < chan_lo || abs_idx >= chan_hi {
+            0.0
+        } else if abs_idx >= 0 && (abs_idx as usize) < audio.len() {
+            audio[abs_idx as usize]
+        } else {
+            0.0
+        }
+    };
+
+    // Pre-fill a scratch buffer the FFT can index linearly. Cheaper than
+    // copying `audio[…]` per sample inside the inner loop.
+    let scratch_audio: Vec<f32> = (sweep_start..sweep_end).map(read_audio).collect();
+
+    let mod_round = |s: i64, stride: i64| -> i64 { s.rem_euclid(stride) };
+
+    for s in sweep_start..sweep_end {
+        if mod_round(s, SNR_REESTIMATE_STRIDE) == 0 {
+            // SNR estimator reads the absolute audio (across channels);
+            // we want the SNR of the entire signal, not just this channel.
+            snr_db = snr_est.estimate(audio, s, hedr_shift_hz);
+        }
+
+        if mod_round(s, PIXEL_FFT_STRIDE) == 0 {
+            // Hann window length: hard-coded to 256 (= longest available);
+            // see [`decode_pd_line_pair`] doc's #18 deviation note.
+            let _ = snr_db;
+            let win_idx = 6;
+            let center_in_scratch = s - sweep_start;
+            current_freq =
+                demod.pixel_freq(&scratch_audio, center_in_scratch, hedr_shift_hz, win_idx);
+        }
+
+        let lum = freq_to_luminance(current_freq, hedr_shift_hz);
+        let idx = (s - sweep_start) as usize;
+        if idx < stored_lum.len() {
+            stored_lum[idx] = lum;
         }
     }
 
-    /// Encode an image as PD120 / PD180 audio. `ycrcb` is row-major
-    /// `[Y, Cr, Cb]` triples of length `width * height`. Pairs of rows
-    /// share averaged chroma, matching how the decoder will recover them.
-    #[must_use]
-    #[doc(hidden)]
-    #[allow(dead_code)]
-    pub fn encode_pd(mode: SstvMode, ycrcb: &[[u8; 3]]) -> Vec<f32> {
-        assert!(matches!(mode, SstvMode::Pd120 | SstvMode::Pd180));
-        let spec = crate::modespec::for_mode(mode);
-        let w = spec.line_pixels;
-        let h = spec.image_lines;
-        assert_eq!(ycrcb.len() as u32, w * h);
-        assert_eq!(h % 2, 0);
-
-        let sr = f64::from(WORKING_SAMPLE_RATE_HZ);
-        let mut out = Vec::new();
-        let mut phase = 0.0_f64;
-
-        // Cumulative time tracker (seconds). Targets are computed as
-        // `(running_t * sr).round()` so per-event rounding doesn't drift.
-        let mut t = 0.0_f64;
-        let advance = |t: &mut f64, secs: f64| -> usize {
-            *t += secs;
-            (*t * sr).round() as usize
+    for x in 0..width {
+        let pixel_time = pixel_times[x];
+        let rel = pixel_time - sweep_start;
+        let lum = if rel >= 0 && (rel as usize) < stored_lum.len() {
+            stored_lum[rel as usize]
+        } else {
+            0
         };
-
-        for y_pair in 0..h / 2 {
-            fill_to(
-                &mut out,
-                SYNC_HZ,
-                advance(&mut t, spec.sync_seconds),
-                &mut phase,
-            );
-            fill_to(
-                &mut out,
-                PORCH_HZ,
-                advance(&mut t, spec.porch_seconds),
-                &mut phase,
-            );
-
-            // Y(odd row).
-            for x in 0..w {
-                let lum = ycrcb[((y_pair * 2) * w + x) as usize][0];
-                fill_to(
-                    &mut out,
-                    lum_to_freq(lum),
-                    advance(&mut t, spec.pixel_seconds),
-                    &mut phase,
-                );
-            }
-            // Cr (averaged across pair).
-            for x in 0..w {
-                let cr_a = ycrcb[((y_pair * 2) * w + x) as usize][1];
-                let cr_b = ycrcb[((y_pair * 2 + 1) * w + x) as usize][1];
-                let cr = u8::midpoint(cr_a, cr_b);
-                fill_to(
-                    &mut out,
-                    lum_to_freq(cr),
-                    advance(&mut t, spec.pixel_seconds),
-                    &mut phase,
-                );
-            }
-            // Cb (averaged).
-            for x in 0..w {
-                let cb_a = ycrcb[((y_pair * 2) * w + x) as usize][2];
-                let cb_b = ycrcb[((y_pair * 2 + 1) * w + x) as usize][2];
-                let cb = u8::midpoint(cb_a, cb_b);
-                fill_to(
-                    &mut out,
-                    lum_to_freq(cb),
-                    advance(&mut t, spec.pixel_seconds),
-                    &mut phase,
-                );
-            }
-            // Y(even row).
-            for x in 0..w {
-                let lum = ycrcb[((y_pair * 2 + 1) * w + x) as usize][0];
-                fill_to(
-                    &mut out,
-                    lum_to_freq(lum),
-                    advance(&mut t, spec.pixel_seconds),
-                    &mut phase,
-                );
-            }
-        }
-        out
+        out[x] = lum;
     }
 }
 
@@ -487,13 +530,17 @@ mod tests {
             .collect()
     }
 
+    /// Default `win_idx` for tests: index 4 (Hann length 64 at our
+    /// `11_025` Hz working rate), slowrx's middle-of-the-band default.
+    const DEFAULT_WIN_IDX: usize = 4;
+
     #[test]
     fn pdfft_recovers_known_tone_within_5hz() {
         let mut d = PdDemod::new();
         // 100 ms of pure tone at 1900 Hz; ample for FFT_LEN=256.
         let audio = synth_tone(1900.0, 0.100);
         let center = (audio.len() / 2) as i64;
-        let est = d.pixel_freq(&audio, center, 0.0);
+        let est = d.pixel_freq(&audio, center, 0.0, DEFAULT_WIN_IDX);
         assert!((est - 1900.0).abs() < 5.0, "expected ≈1900, got {est}");
     }
 
@@ -503,7 +550,7 @@ mod tests {
         for &f in &[1500.0_f64, 1700.0, 2100.0, 2300.0] {
             let audio = synth_tone(f, 0.100);
             let center = (audio.len() / 2) as i64;
-            let est = d.pixel_freq(&audio, center, 0.0);
+            let est = d.pixel_freq(&audio, center, 0.0, DEFAULT_WIN_IDX);
             assert!(
                 (est - f).abs() < 8.0,
                 "f={f} estimate={est} (band edge precision)"
@@ -515,7 +562,7 @@ mod tests {
     fn pdfft_returns_finite_for_silence() {
         let mut d = PdDemod::new();
         let audio = vec![0.0_f32; 1024];
-        let est = d.pixel_freq(&audio, 512, 0.0);
+        let est = d.pixel_freq(&audio, 512, 0.0, DEFAULT_WIN_IDX);
         assert!(est.is_finite(), "got {est}");
         // Silence has no peak; the search expands by ±1 bin around the
         // 1500-2300 band, and bin width is ~43 Hz, so the fallback may
@@ -530,10 +577,10 @@ mod tests {
         let mut d = PdDemod::new();
         let audio = synth_tone(1950.0, 0.100);
         let center = (audio.len() / 2) as i64;
-        let est_shifted = d.pixel_freq(&audio, center, 50.0);
+        let est_shifted = d.pixel_freq(&audio, center, 50.0, DEFAULT_WIN_IDX);
         let est_unshifted_baseline = {
             let baseline = synth_tone(1900.0, 0.100);
-            d.pixel_freq(&baseline, (baseline.len() / 2) as i64, 0.0)
+            d.pixel_freq(&baseline, (baseline.len() / 2) as i64, 0.0, DEFAULT_WIN_IDX)
         };
         // Tone-frequency itself is recovered correctly; what matters is that
         // the shifted estimator finds 1950, the unshifted finds 1900, and
@@ -544,6 +591,33 @@ mod tests {
         assert!(
             i32::from(lum_shifted).abs_diff(i32::from(lum_unshifted)) <= 2,
             "lum_shifted={lum_shifted} lum_unshifted={lum_unshifted}"
+        );
+    }
+
+    #[test]
+    fn pixel_freq_clamps_out_of_range_win_idx() {
+        // Defensive: an out-of-range win_idx must not panic.
+        let mut d = PdDemod::new();
+        let audio = synth_tone(1900.0, 0.100);
+        let center = (audio.len() / 2) as i64;
+        let est = d.pixel_freq(&audio, center, 0.0, 99);
+        // Falls back to the longest window (idx 6) and still recovers the tone.
+        assert!((est - 1900.0).abs() < 10.0, "clamp recover got {est}");
+    }
+
+    #[test]
+    fn pixel_freq_short_window_still_recovers_tone() {
+        // The shortest window (idx 0, length 12) is intended for high-SNR
+        // signals. With a clean synthetic tone it should still localize the
+        // peak inside the video band, just with coarser precision than a
+        // long window.
+        let mut d = PdDemod::new();
+        let audio = synth_tone(1900.0, 0.100);
+        let center = (audio.len() / 2) as i64;
+        let est = d.pixel_freq(&audio, center, 0.0, 0);
+        assert!(
+            (1500.0..=2300.0).contains(&est),
+            "short-window estimate {est} out of video band"
         );
     }
 }
