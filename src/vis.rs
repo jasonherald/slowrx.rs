@@ -374,8 +374,17 @@ fn match_vis_pattern(tones: &[f64; HISTORY_LEN]) -> Option<(u8, f64, usize)> {
                 if k < 7 {
                     code |= bit << k;
                     parity ^= bit;
-                } else if parity != bit {
-                    bit_ok = false;
+                } else {
+                    // R12BW (`0x06`) inverts parity per slowrx `vis.c:116`:
+                    // `if (VISmap[VIS] == R12BW) Parity = !Parity;`. V1
+                    // doesn't decode R12BW (lookup returns None for 0x06),
+                    // but the parity check must still pass so a future V2
+                    // implementation that adds R12BW to the lookup table
+                    // doesn't silently reject every R12BW burst.
+                    let expected = if code == 0x06 { bit ^ 1 } else { bit };
+                    if parity != expected {
+                        bit_ok = false;
+                    }
                 }
             }
             if bit_ok {
@@ -481,7 +490,12 @@ pub mod tests {
             parity ^= bit;
             emit(bit_freq(bit), 0.030, &mut out);
         }
-        emit(bit_freq(parity), 0.030, &mut out);
+        // R12BW (code 0x06) inverts the parity bit per slowrx `vis.c:116`.
+        // The detector's `match_vis_pattern` does the same inversion when
+        // checking, so synthetic bursts must follow the same convention or
+        // they'd fail parity at the receiver.
+        let parity_bit = if code == 0x06 { parity ^ 1 } else { parity };
+        emit(bit_freq(parity_bit), 0.030, &mut out);
         emit(break_f, 0.030, &mut out);
         out
     }
@@ -590,6 +604,76 @@ pub mod tests {
         let n = WORKING_SAMPLE_RATE_HZ as usize;
         let audio = synth_tone_n(1750.0, n);
         assert!(run(&audio).is_none());
+    }
+
+    /// R12BW (code 0x06) uses inverted parity per slowrx `vis.c:116`.
+    /// `match_vis_pattern` must invert before checking, otherwise V2's
+    /// future R12BW support would silently reject every valid burst.
+    /// V1's `modespec::lookup` returns None for 0x06 — this test runs
+    /// at the parity-classifier level, before the lookup.
+    #[test]
+    fn r12bw_uses_inverted_parity() {
+        // Standard synth_vis emits inverted parity for code 0x06, so the
+        // detector must accept it under the R12BW convention.
+        let audio = vis_padded(0x06, 0.0, 0.0);
+        let detected = run(&audio);
+        assert!(
+            detected.is_some(),
+            "R12BW (0x06) with inverted parity should decode at the \
+             VIS-classifier level (V1's modespec::lookup will then drop \
+             it because R12BW isn't in the V1 table)."
+        );
+        let detected = detected.expect("R12BW decode");
+        assert_eq!(detected.code, 0x06);
+    }
+
+    /// Negative side of #26: standard (non-inverted) parity for code 0x06
+    /// must NOT decode. This is what would have happened before the
+    /// inversion landed — silent rejection of every R12BW burst.
+    #[test]
+    fn r12bw_rejects_standard_parity() {
+        // Hand-emit a 0x06 burst with the standard (uninverted) parity
+        // bit. The detector should now reject it (post-fix), proving the
+        // inversion is doing real work and not a no-op.
+        let sr = f64::from(WORKING_SAMPLE_RATE_HZ);
+        let mut out: Vec<f32> = vec![0.0; 0];
+        let mut phase = 0.0_f64;
+        let mut emit = |freq: f64, secs: f64, out: &mut Vec<f32>| {
+            let dphi = 2.0 * PI * freq / sr;
+            for _ in 0..(secs * sr).round() as usize {
+                out.push(phase.sin() as f32);
+                phase += dphi;
+                if phase > 2.0 * PI {
+                    phase -= 2.0 * PI;
+                }
+            }
+        };
+        let break_f = LEADER_HZ + BREAK_HZ_OFFSET;
+        let bit_freq = |bit: u8| {
+            LEADER_HZ
+                + if bit == 1 {
+                    BIT_ONE_OFFSET
+                } else {
+                    BIT_ZERO_OFFSET
+                }
+        };
+        emit(LEADER_HZ, 0.300, &mut out);
+        emit(break_f, 0.030, &mut out);
+        let mut parity = 0u8;
+        for b in 0..7 {
+            let bit = (0x06_u8 >> b) & 1;
+            parity ^= bit;
+            emit(bit_freq(bit), 0.030, &mut out);
+        }
+        // Standard (non-R12BW-inverted) parity. Detector should reject.
+        emit(bit_freq(parity), 0.030, &mut out);
+        emit(break_f, 0.030, &mut out);
+        out.extend(std::iter::repeat_n(0.0_f32, 256));
+        assert!(
+            run(&out).is_none(),
+            "0x06 with standard (non-inverted) parity must NOT decode — \
+             slowrx vis.c:116 inverts parity for R12BW."
+        );
     }
 
     #[test]

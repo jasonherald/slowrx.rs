@@ -34,19 +34,36 @@ expect_used = "warn"
 [dependencies]
 thiserror = "2"
 rustfft = "6"
+# `cli` feature deps — pulled in only when the CLI binary or example is built.
+hound = { version = "3", optional = true }
+image = { version = "0.25", default-features = false, features = [
+    "png",
+], optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+anyhow = { version = "1", optional = true }
 
 [dev-dependencies]
 proptest = "1"
-hound = "3"
-image = { version = "0.25", default-features = false, features = ["png"] }
-
-[[example]]
-name = "decode_wav"
-required-features = []
+assert_cmd = "2"
 
 [features]
 test-support = []
+# Enables the `slowrx-cli` binary and the `decode_wav` example.
+cli = ["dep:hound", "dep:image", "dep:clap", "dep:anyhow"]
+
+[[bin]]
+name = "slowrx-cli"
+path = "src/bin/slowrx_cli.rs"
+required-features = ["cli"]
+
+[[example]]
+name = "decode_wav"
+required-features = ["cli"]
 
 [[test]]
 name = "roundtrip"
 required-features = ["test-support"]
+
+[[test]]
+name = "cli"
+required-features = ["cli"]

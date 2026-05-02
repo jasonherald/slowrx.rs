@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (CLI binary + R12BW parity + deviations doc — issues #7, #26, #39)
+
+- **`slowrx-cli` binary** (#7) — `cargo install slowrx --features cli` builds
+  it on `$PATH`. `--input recording.wav --output ./out` decodes every
+  SSTV image found, writing `img-NNN-{mode}.png` per `ImageComplete`
+  (sequence-numbered, mode-tagged — matches the rtl-sdr satellite
+  recorder convention). Handles 8/16/24/32-bit integer and float WAV,
+  mono or multi-channel (averaged to mono), with explicit error
+  propagation throughout.
+- **`cli` cargo feature** gates four optional deps: `hound`, `image`,
+  `clap`, `anyhow`. The library crate stays minimal; CLI users opt in.
+- **`tests/cli.rs`** — `assert_cmd` integration test that runs the binary
+  against the first ARISS fixture in `docs/wav_files/201712-ISS_SSTV/`
+  and asserts at least one PNG is written. Skips silently if no
+  fixture is present (the corpus is gitignored). Gated on `cli` feature.
+- **`examples/decode_wav.rs`** — trimmed to a minimal API demo (~70
+  lines) pointing users at `slowrx-cli` for the full tool.
+
+### Fixed (R12BW VIS parity inversion — #26)
+
+- `src/vis.rs::match_vis_pattern` now inverts the expected parity bit
+  for VIS code `0x06` (R12BW), matching slowrx `vis.c:116`:
+  `if (VISmap[VIS] == R12BW) Parity = !Parity;`. V1's `modespec::lookup`
+  doesn't decode R12BW, so this has no V1 functional impact — but it
+  prevents a silent correctness bug where future R12BW support would
+  reject every R12BW burst at the parity check. Two new tests:
+  `r12bw_uses_inverted_parity` (positive) and
+  `r12bw_rejects_standard_parity` (negative). The synthetic
+  `synth_vis_with_offset` helper was updated to follow the same
+  convention so the existing proptest still passes for code 0x06.
+
+### Documentation (intentional deviations from slowrx — #39)
+
+- Added [`docs/intentional-deviations.md`](docs/intentional-deviations.md)
+  cataloging every deliberate divergence from slowrx (currently 4):
+  VIS stop-bit boundary precision, FindSync 90° deadband, VIS retry
+  exhaustion, and the relaxed synthetic round-trip `max_diff` tolerance.
+  Each entry has rationale and a "when to revisit" condition. Future
+  parity audits should consult this list before flagging "missing".
+
 ### Changed (Real-audio validation + Phase 3 deferrals engaged — issues #44, #45)
 
 After Phases 1-6 of the recovery shipped, the decoder was validated against
