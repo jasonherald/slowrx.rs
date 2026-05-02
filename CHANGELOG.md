@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-02
+
+V2.1 — PD240 mode coverage. First V2 release. Adds the third PD-family
+mode and the V2 ModeSpec carve-out (`sync_position` field on `ModeSpec`,
+`SyncPosition` enum) that lets later mode-family epics declare their
+sync placement explicitly.
+
+Closes V2.1 epic ([#63]). Tracks the V2 umbrella ([#9]).
+
+[#9]: https://github.com/jasonherald/slowrx.rs/issues/9
+[#63]: https://github.com/jasonherald/slowrx.rs/issues/63
+
+### Added
+
+- **PD240 mode** (`SstvMode::Pd240`, VIS code `0x61`). 640×496, ~240s
+  per image. Same `ChannelLayout::PdYcbcr` as PD120/PD180 — reuses
+  `mode_pd::decode_pd_line_pair` unchanged. Timing constants from
+  slowrx `modespec.c:299-310`.
+- **`SyncPosition` enum + `ModeSpec::sync_position` field.** V2 carve-out
+  per [V2 epic-split design](docs/superpowers/specs/2026-05-02-v2-epic-split-design.md).
+  PD120/PD180/PD240 all use `SyncPosition::LineStart`. The
+  `#[non_exhaustive]` enum will gain a Scottie variant in V2.3.
+
+### Tests
+
+- `tests/roundtrip.rs::pd240_roundtrip` — synthetic encode/decode round-
+  trip with mean per-pixel-diff threshold < 5.0.
+
 ## [0.1.0] - 2026-05-02
 
 First public release on crates.io. PD120 + PD180 SSTV decoding, validated

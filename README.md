@@ -13,12 +13,14 @@
 
 ## Status
 
-🛰️ **0.1.0 — V1 published.** PD120 and PD180 decoding from raw audio.
+🛰️ **0.2.0 — V2.1 published.** PD120, PD180, and PD240 decoding from raw audio.
 
-Validated end-to-end against ARISS Dec-2017 captures: 6 of 7 fixtures
-decode to images visually matching the reference JPGs (the 7th is a
-truncated capture missing the VIS leader). V2 mode coverage (Robot,
-Scottie, Martin, PD240) is on the [roadmap](https://github.com/jasonherald/slowrx.rs/issues/9).
+PD120 and PD180 are validated end-to-end against ARISS Dec-2017 captures:
+6 of 7 fixtures decode to images visually matching the reference JPGs
+(the 7th is a truncated capture missing the VIS leader). PD240 currently
+ships with synthetic encode/decode round-trip coverage only — a real-radio
+fixture is pending. Remaining V2 mode coverage (Robot, Scottie, Martin)
+is on the [roadmap](https://github.com/jasonherald/slowrx.rs/issues/9).
 
 ## Install
 
@@ -60,9 +62,9 @@ slowrx-cli --input recording.wav --output ./out
 `slowrx.rs` decodes Slow-Scan Television images from a stream of audio
 samples. Mode coverage roadmap:
 
-| Mode family | V1 | V2 |
+| Mode family | Shipped | Roadmap |
 |---|---|---|
-| **PD** | PD120, PD180 | PD240 |
+| **PD** | PD120, PD180, PD240 | — |
 | **Robot** | — | Robot 36, Robot 72 |
 | **Scottie** | — | Scottie 1, Scottie 2, Scottie DX |
 | **Martin** | — | Martin 1, Martin 2 |
