@@ -284,11 +284,15 @@ fn mode_tag(mode: SstvMode) -> &'static str {
         SstvMode::Pd120 => "pd120",
         SstvMode::Pd180 => "pd180",
         SstvMode::Pd240 => "pd240",
+        SstvMode::Robot24 => "robot24",
+        SstvMode::Robot36 => "robot36",
+        SstvMode::Robot72 => "robot72",
         // SstvMode is #[non_exhaustive] which forces a wildcard arm in
         // matches even within the same crate. New variants will use
         // this fallback — when adding one, also add an explicit arm
         // above. (V2.1 PD240 trap: missed this match and shipped images
-        // as `img-NNN-unknown.png` until 0.2.1.)
+        // as `img-NNN-unknown.png` until 0.2.1. Same trap caught for
+        // V2.2 Robot24/36/72 during code review of the dispatch refactor.)
         _ => "unknown",
     }
 }
