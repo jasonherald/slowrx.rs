@@ -291,6 +291,18 @@ impl SstvDecoder {
     /// PD line pair against the corrected `(rate, skip)`. Pushes
     /// [`SstvEvent::LineDecoded`] for every row + a final
     /// [`SstvEvent::ImageComplete`] into `out`.
+    ///
+    /// **Lookahead note (#33):** Each call to
+    /// [`crate::mode_pd::decode_pd_line_pair`] receives `&d.audio` — the
+    /// entire image audio buffer, not a slice ending at the pair's nominal
+    /// end sample. This means the FFT window for the last pixel of the last
+    /// channel of each line pair can freely extend rightward into subsequent
+    /// pair audio (or zero if the buffer ends). The lookahead is therefore
+    /// *implicit*: the full-buffer pass-through provides the context that a
+    /// naive `&audio[..pair_end]` slice would lose. No explicit `lookahead`
+    /// variable is required, and none should be added. (Issue #33 noted
+    /// a now-deleted `lookahead` variable that was dead code; Phase 3's
+    /// rewrite eliminated it by design.)
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
