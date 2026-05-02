@@ -586,6 +586,69 @@ mod tests {
     }
 
     #[test]
+    fn process_emits_vis_detected_for_robot24_burst() {
+        use crate::vis::tests::synth_vis;
+        let mut d = SstvDecoder::new(WORKING_SAMPLE_RATE_HZ).expect("decoder");
+        let mut burst = synth_vis(0x04, 0.0);
+        burst.extend(std::iter::repeat_n(0.0_f32, 512));
+        let events = d.process(&burst);
+        let hedr = events
+            .iter()
+            .find_map(|e| match e {
+                SstvEvent::VisDetected {
+                    mode: SstvMode::Robot24,
+                    hedr_shift_hz,
+                    ..
+                } => Some(*hedr_shift_hz),
+                _ => None,
+            })
+            .expect("expected VisDetected for Robot24");
+        assert!(hedr.abs() < 10.0);
+    }
+
+    #[test]
+    fn process_emits_vis_detected_for_robot36_burst() {
+        use crate::vis::tests::synth_vis;
+        let mut d = SstvDecoder::new(WORKING_SAMPLE_RATE_HZ).expect("decoder");
+        let mut burst = synth_vis(0x08, 0.0);
+        burst.extend(std::iter::repeat_n(0.0_f32, 512));
+        let events = d.process(&burst);
+        let hedr = events
+            .iter()
+            .find_map(|e| match e {
+                SstvEvent::VisDetected {
+                    mode: SstvMode::Robot36,
+                    hedr_shift_hz,
+                    ..
+                } => Some(*hedr_shift_hz),
+                _ => None,
+            })
+            .expect("expected VisDetected for Robot36");
+        assert!(hedr.abs() < 10.0);
+    }
+
+    #[test]
+    fn process_emits_vis_detected_for_robot72_burst() {
+        use crate::vis::tests::synth_vis;
+        let mut d = SstvDecoder::new(WORKING_SAMPLE_RATE_HZ).expect("decoder");
+        let mut burst = synth_vis(0x0C, 0.0);
+        burst.extend(std::iter::repeat_n(0.0_f32, 512));
+        let events = d.process(&burst);
+        let hedr = events
+            .iter()
+            .find_map(|e| match e {
+                SstvEvent::VisDetected {
+                    mode: SstvMode::Robot72,
+                    hedr_shift_hz,
+                    ..
+                } => Some(*hedr_shift_hz),
+                _ => None,
+            })
+            .expect("expected VisDetected for Robot72");
+        assert!(hedr.abs() < 10.0);
+    }
+
+    #[test]
     fn reset_clears_sample_counter() {
         let mut d = SstvDecoder::new(11_025).expect("decoder");
         let _ = d.process(&[0.0_f32; 1024]);
