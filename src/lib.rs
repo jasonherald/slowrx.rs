@@ -7,8 +7,10 @@
 //!
 //! ## Status
 //!
-//! Pre-0.1 — under active development. Public API is not yet stable.
-//! See <https://github.com/jasonherald/slowrx.rs> for the implementation roadmap.
+//! `0.2.x` — V2.1 published with PD120, PD180, and PD240 decoding. The
+//! public API is `#[non_exhaustive]`-protected for additive growth as
+//! V2.x mode-family epics land. See
+//! <https://github.com/jasonherald/slowrx.rs/issues/9> for the V2 roadmap.
 //!
 //! ## Example
 //!
@@ -128,7 +130,9 @@ pub mod pd_test_encoder;
 pub use crate::decoder::{SstvDecoder, SstvEvent};
 pub use crate::error::{Error, Result};
 pub use crate::image::SstvImage;
-pub use crate::modespec::{for_mode, lookup as lookup_vis, ChannelLayout, ModeSpec, SstvMode};
+pub use crate::modespec::{
+    for_mode, lookup as lookup_vis, ChannelLayout, ModeSpec, SstvMode, SyncPosition,
+};
 pub use crate::resample::{Resampler, WORKING_SAMPLE_RATE_HZ};
 
 /// Test-support — exposed under the `test-support` feature for integration

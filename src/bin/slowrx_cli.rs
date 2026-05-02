@@ -283,8 +283,12 @@ fn mode_tag(mode: SstvMode) -> &'static str {
     match mode {
         SstvMode::Pd120 => "pd120",
         SstvMode::Pd180 => "pd180",
-        // SstvMode is non-exhaustive; future modes get a generic tag
-        // until the binary's match adds a specific case.
+        SstvMode::Pd240 => "pd240",
+        // SstvMode is #[non_exhaustive] which forces a wildcard arm in
+        // matches even within the same crate. New variants will use
+        // this fallback — when adding one, also add an explicit arm
+        // above. (V2.1 PD240 trap: missed this match and shipped images
+        // as `img-NNN-unknown.png` until 0.2.1.)
         _ => "unknown",
     }
 }

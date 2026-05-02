@@ -304,9 +304,10 @@ pub(crate) fn decode_pd_line_pair(
     // Y(odd) → Cr → Cb → Y(even). Mirrors slowrx video.c:88-92:
     //   ChanStart[n+1] = ChanStart[n] + ChanLen[n] + SeptrTime
     // where ChanLen[n] = PixelTime * ImgWidth.
-    // SeptrTime = 0 for PD120/PD180 (modespec.c), so septr_secs is a no-op
-    // now, but having it here prevents a silent break when non-PD modes
-    // (Robot, Scottie, Martin — all with non-zero SeptrTime) are added in V2.
+    // SeptrTime = 0 for the entire PD family (PD120/PD180/PD240, modespec.c),
+    // so septr_secs is a no-op for current modes — but having it here
+    // prevents a silent break when non-PD modes (Robot, Scottie, Martin —
+    // all with non-zero SeptrTime) are added in V2.
     let chan_len = f64::from(width) * pixel_secs;
     let chan_starts_sec = [
         sync_secs + porch_secs,                                     // Y(odd): 0 septr
@@ -508,6 +509,7 @@ mod tests {
         for spec in [
             crate::modespec::for_mode(crate::modespec::SstvMode::Pd120),
             crate::modespec::for_mode(crate::modespec::SstvMode::Pd180),
+            crate::modespec::for_mode(crate::modespec::SstvMode::Pd240),
         ] {
             let sync = spec.sync_seconds;
             let porch = spec.porch_seconds;

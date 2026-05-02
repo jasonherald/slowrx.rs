@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-05-02
+
+Patch release bundling the post-merge final-review cleanup of V2.1
+(PD240). Two important user-visible fixes plus five minor consistency
+items.
+
+### Fixed
+
+- **`slowrx-cli` saved PD240 images as `img-NNN-unknown.png`** instead of
+  `img-NNN-pd240.png`. The `mode_tag` match in `src/bin/slowrx_cli.rs`
+  was missing the `SstvMode::Pd240` arm; the wildcard arm absorbed it
+  silently because `SstvMode` is `#[non_exhaustive]`. Added the explicit
+  arm; rewrote the wildcard's comment to flag the trap so future
+  variant additions don't repeat it.
+- **Crate-level rustdoc Status block was stale** (`src/lib.rs`). Said
+  "Pre-0.1 — under active development. Public API is not yet stable."
+  on the docs.rs landing page for `0.2.0`. Refreshed to `0.2.x` V2.1
+  language linking to the V2 roadmap ([#9]).
+
+### Changed
+
+- Re-exported `SyncPosition` from the crate root so downstream callers
+  can write `slowrx::SyncPosition::LineStart` instead of the deeper
+  `slowrx::modespec::SyncPosition::LineStart` path. Adds public surface
+  ahead of V2.3 Scottie, which will introduce a second variant.
+- Stale "PD120/PD180" mentions refreshed to "PD120/PD180/PD240" in:
+  `src/mode_pd.rs` (channel-time-offsets explanation) and
+  `docs/intentional-deviations.md` (mean-diff observation).
+
+### Tests
+
+- `src/mode_pd.rs::tests::chan_starts_sec_septr_zero...` — loop now
+  covers `Pd240` alongside `Pd120`/`Pd180`, verifying the
+  `chan_starts_sec` formula stays numerically equivalent for all
+  current PD-family modes.
+- `src/decoder.rs::tests::process_emits_vis_detected_for_pd240_burst` —
+  new sibling of the existing PD120/PD180 VIS-detection unit tests.
+
+[#9]: https://github.com/jasonherald/slowrx.rs/issues/9
+
 ## [0.2.0] - 2026-05-02
 
 V2.1 — PD240 mode coverage. First V2 release. Adds the third PD-family

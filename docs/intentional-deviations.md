@@ -137,9 +137,9 @@ on real radio — verified visually against the Dec-2017 ARISS captures
 — but the synthetic "instant step" inputs trip the SNR-adaptive
 selector + boundary FFT in ways the slewed real-audio doesn't.
 
-Mean diff staying excellent (1.5–1.9 on PD120/PD180) shows the
-decoder is mostly fine; the `max` is dominated by a handful of
-boundary pixels per image.
+Mean diff stays excellent across the PD family (1.5–1.9 on PD120/PD180,
+similarly low on PD240) — the decoder is mostly fine; the `max` is
+dominated by a handful of boundary pixels per image.
 
 ### When to revisit
 
