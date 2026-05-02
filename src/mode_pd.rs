@@ -385,7 +385,7 @@ pub(crate) fn decode_pd_line_pair(
     clippy::cast_possible_wrap,
     clippy::too_many_arguments
 )]
-fn decode_one_channel_into(
+pub(crate) fn decode_one_channel_into(
     out: &mut [u8],
     chan_start_sec: f64,
     chan_bounds_abs: (i64, i64),

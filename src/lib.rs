@@ -128,6 +128,10 @@ mod tests_common {
 #[doc(hidden)]
 pub mod pd_test_encoder;
 
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod robot_test_encoder;
+
 pub use crate::decoder::{SstvDecoder, SstvEvent};
 pub use crate::error::{Error, Result};
 pub use crate::image::SstvImage;
@@ -148,5 +152,8 @@ pub mod __test_support {
     pub mod mode_pd {
         pub use crate::mode_pd::ycbcr_to_rgb;
         pub use crate::pd_test_encoder::encode_pd;
+    }
+    pub mod mode_robot {
+        pub use crate::robot_test_encoder::encode_robot;
     }
 }
