@@ -38,6 +38,87 @@ pub(crate) mod snr;
 pub(crate) mod sync;
 pub mod vis;
 
+/// Translate a frequency in Hz to the nearest FFT bin index using slowrx's
+/// C-truncation semantics.
+///
+/// slowrx's `GetBin` (`common.c:39-41`) is:
+/// ```c
+/// guint GetBin(double Freq, guint FFTLen) {
+///     return (Freq / 44100 * FFTLen);  // implicit double→uint = truncation toward zero
+/// }
+/// ```
+///
+/// The implicit `double → guint` cast truncates toward zero.  We replicate
+/// this with an `as usize` cast (well-defined for positive doubles: truncates
+/// toward zero), which gives the same result as C for all frequencies used
+/// in slowrx. **Do NOT change this to `.round()`** — that would deviate from
+/// slowrx's bin assignments at 5 of the 8 production frequencies (800, 1200,
+/// 1500, 2700, 3400 Hz), shifting SNR-estimator bandwidth divisors and the
+/// sync tracker's `Praw`/`Psync` range.
+///
+/// # Numerical verification (both at slowrx-native 1024/44100 and our 256/11025
+/// — same Hz/bin ratio, so bins are identical)
+///
+/// | Frequency | Expected bin |
+/// |-----------|-------------|
+/// | 400 Hz    | 9           |
+/// | 800 Hz    | 18          |
+/// | 1200 Hz   | 27          |
+/// | 1500 Hz   | 34          |
+/// | 1900 Hz   | 44          |
+/// | 2300 Hz   | 53          |
+/// | 2700 Hz   | 62          |
+/// | 3400 Hz   | 78          |
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+#[inline]
+pub(crate) fn get_bin(hz: f64, fft_len: usize, sample_rate_hz: u32) -> usize {
+    (hz * fft_len as f64 / f64::from(sample_rate_hz)) as usize
+}
+
+#[cfg(test)]
+mod tests_common {
+    use super::*;
+
+    /// Verify `get_bin` truncation matches slowrx's C `guint GetBin(double, guint)`.
+    ///
+    /// Both FFT-size/sample-rate pairs share the same Hz/bin ratio
+    /// (256/11025 ≈ 1024/44100), so they should produce identical bin indices.
+    #[test]
+    fn get_bin_matches_slowrx_truncation() {
+        // Pairs of (freq_hz, expected_bin) derived from GetBin at slowrx's
+        // FFTLen=1024, SR=44100 — identical at our FFTLen=256, SR=11025.
+        let cases: &[(f64, usize)] = &[
+            (400.0, 9),
+            (800.0, 18),
+            (1190.0, 27),
+            (1200.0, 27),
+            (1500.0, 34),
+            (1900.0, 44),
+            (2300.0, 53),
+            (2700.0, 62),
+            (3400.0, 78),
+        ];
+        for &(hz, expected) in cases {
+            // Our working rate (256/11025)
+            let bin_ours = get_bin(hz, 256, 11025);
+            // slowrx native rate (1024/44100) — same ratio, should be identical
+            let bin_slowrx = get_bin(hz, 1024, 44100);
+            assert_eq!(
+                bin_ours, expected,
+                "get_bin({hz}, 256, 11025) = {bin_ours}, expected {expected}"
+            );
+            assert_eq!(
+                bin_slowrx, expected,
+                "get_bin({hz}, 1024, 44100) = {bin_slowrx}, expected {expected}"
+            );
+        }
+    }
+}
+
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod pd_test_encoder;
