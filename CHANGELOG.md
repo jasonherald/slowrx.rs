@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (Parity housekeeping bundle — issues #16, #25, #27, #28, #29, #31, #33, #34, #35, #40)
+
+Nine findings from the slowrx parity audit (#12) addressed in one bundle —
+5 code fixes and 4 documentation clarifications.
+
+**Code fixes:**
+
+- **#16 — Luminance round-to-nearest** (`src/mode_pd.rs`): `freq_to_luminance`
+  now uses `.round() as u8` instead of plain `as u8` (truncation), matching
+  slowrx's `(guchar)round(a)` in `common.c::clip()`. Worst-case off-by-one
+  per pixel; images were systematically 0.5 units darker on average.
+  `ycbcr_to_rgb` is unaffected: its C equivalents call `clip()` on an already-
+  integer division result, so `round()` of an integer is a no-op. New test
+  `freq_to_luminance_rounds_to_nearest_not_truncates` verifies 127.7 → 128.
+
+- **#25 — `septr_seconds` field for V2 parity** (`src/modespec.rs`,
+  `src/mode_pd.rs`): Added `septr_seconds: f64` to `ModeSpec` (= 0.0 for
+  PD120/PD180, matching slowrx's `SeptrTime = 0e-3`). The `chan_starts_sec`
+  formula in `decode_pd_line_pair` now follows slowrx `video.c:88-92` term-
+  for-term: `ChanStart[n+1] = ChanStart[n] + ChanLen[n] + SeptrTime`. With
+  `septr_seconds = 0` the values are numerically unchanged; the field prevents
+  a silent break when non-PD modes (Robot/Scottie/Martin — all non-zero
+  SeptrTime) are added in V2. Two new tests verify numeric equivalence and
+  zero values for PD modes.
+
+- **#29 + #34 — `working_samples_emitted` informational** (`src/decoder.rs`):
+  Added a rustdoc comment explaining that the counter intentionally is not
+  decremented on `take_residual_buffer()` transfer. `DetectedVis::end_sample`
+  is computed correctly at detection time directly from `total_samples_consumed`
+  and `buffer.len()`; the counter is only used as a resampler-output anchor.
+  Closes #34 as a duplicate of #29.
+
+- **#33 — Lookahead already implicit** (`src/decoder.rs`): Phase 3's rewrite
+  eliminated the dead `lookahead` variable by passing `&d.audio` (full image
+  buffer) to `decode_pd_line_pair`. Added a doc comment on
+  `run_findsync_and_decode` explaining the implicit lookahead design so the
+  pattern is not accidentally reverted.
+
+**Doc-only clarifications:**
+
+- **#27** (`src/modespec.rs`): `lookup()` now documents that `0x00` is
+  intentionally unmapped and that `None` matches slowrx's `VISmap[UNKNOWN]`
+  → re-detect loop semantics (`vis.c:172-174`).
+
+- **#28** (`src/vis.rs`): `take_residual_buffer()` now explains why no
+  stop-bit skip is needed (unlike slowrx's `readPcm(20ms)` at `vis.c:169`):
+  Rust's purely-past window means the buffer head is already past the stop bit
+  when detection fires.
+
+- **#31** (`src/decoder.rs`): Added `// V2:` comment at the `ImageComplete`
+  → `AwaitingVis` transition noting that continuous monitoring already works
+  (trailing audio is fed into a fresh `VisDetector`).
+
+- **#35**: Already fixed by Phase 1's VIS rewrite. The `Vec<Tone> + remove(0)`
+  pattern is gone; history is now a `[f64; HISTORY_LEN]` ring buffer. No code
+  change needed.
+
+- **#40** (`src/vis.rs`): `take_residual_buffer()` now carries a rustdoc
+  re-anchor contract: callers MUST use a fresh `VisDetector::new()` after each
+  detection. Stale `hops_completed` / `history_*` would corrupt subsequent
+  detections in mid-image VIS scenarios.
+
+**Round-trip stats — Phase 3 baseline preserved:**
+* PD120: max_diff=11, mean=0.728
+* PD180: max_diff=11, mean=0.560
+
 ### Changed (Phase 3: per-pixel demod parity)
 
 Brings the per-pixel demod path closer to slowrx's `video.c::GetVideo`
