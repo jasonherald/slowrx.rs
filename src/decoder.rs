@@ -121,6 +121,29 @@ pub struct SstvDecoder {
     /// Cumulative working-rate samples emitted by the resampler.
     /// Used as the unit for `SstvEvent::VisDetected.sample_offset` so
     /// that value is consistent regardless of caller's input rate.
+    ///
+    /// **Informational only** — this counter counts samples the resampler
+    /// has produced and does NOT get decremented when
+    /// [`crate::vis::VisDetector::take_residual_buffer`] transfers post-stop-bit
+    /// audio back to the decoder's `Decoding` state. Those residual samples
+    /// were already counted here when the resampler emitted them; the
+    /// residual transfer is a borrow, not a retraction. Consequently the
+    /// counter may be slightly ahead of what the image decoder has consumed.
+    ///
+    /// This is intentional: `DetectedVis::end_sample` is computed directly
+    /// from `total_samples_consumed` and `buffer.len()` inside
+    /// `VisDetector::process` at the moment of detection, so `sample_offset`
+    /// in `SstvEvent::VisDetected` is always correct. The counter here is
+    /// only used to advance the VIS detector's anchor on each chunk; it does
+    /// not gate any decode logic.
+    ///
+    /// If mid-image VIS detection is ever re-activated (see the TODO in
+    /// `process`), and a single `SstvDecoder` is reused across detections,
+    /// the slight inflation is harmless: each new detection uses the then-
+    /// current resampler-output count as its anchor, and the residual buffer
+    /// is handed to a fresh `VisDetector::new()`.
+    ///
+    /// Closes #29 and #34 (both are the same observation from different angles).
     working_samples_emitted: u64,
 }
 
