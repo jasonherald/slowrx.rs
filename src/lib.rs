@@ -33,6 +33,8 @@ pub mod image;
 pub mod mode_pd;
 pub mod modespec;
 pub mod resample;
+#[allow(dead_code)]
+pub(crate) mod snr;
 pub(crate) mod sync;
 pub mod vis;
 
