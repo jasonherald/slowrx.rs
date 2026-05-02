@@ -425,19 +425,18 @@ fn decode_one_channel_into(
     let mut snr_db = 0.0_f64;
     let mut current_freq = 1500.0_f64 + hedr_shift_hz;
 
-    // Channel sample range. Independent rounding of `chan_end_sec` and
-    // `pixel_times[width-1]` can disagree by up to 1 sample, so the
-    // mask widens to cover both. Without this, the rightmost pixel's
-    // center can fall in the zero-padded region and lose its signal —
-    // observed at PD180's x=639 of every channel.
-    let (chan_lo_raw, chan_hi_raw) = chan_bounds_abs;
-    let chan_lo = chan_lo_raw.min(pixel_times[0]);
-    let chan_hi = chan_hi_raw.max(pixel_times[width - 1] + 1);
+    // Read absolute audio with no channel-boundary mask. slowrx FFTs
+    // across channel boundaries (`video.c::GetVideo`); the peak search in
+    // 1500-2300 Hz still locks onto the dominant video tone even when
+    // adjacent channels' content leaks into the windowed FFT support.
+    // The previous channel-bounded mask (#45) hurt the leftmost/rightmost
+    // ~60 pixels of every channel on real radio — verified against
+    // Dec-2017 ARISS captures where the masked decode showed visible
+    // vertical banding at every channel edge.
+    let _ = chan_bounds_abs;
 
     let read_audio = |abs_idx: i64| -> f32 {
-        if abs_idx < chan_lo || abs_idx >= chan_hi {
-            0.0
-        } else if abs_idx >= 0 && (abs_idx as usize) < audio.len() {
+        if abs_idx >= 0 && (abs_idx as usize) < audio.len() {
             audio[abs_idx as usize]
         } else {
             0.0
@@ -458,10 +457,15 @@ fn decode_one_channel_into(
         }
 
         if mod_round(s, PIXEL_FFT_STRIDE) == 0 {
-            // Hann window length: hard-coded to 256 (= longest available);
-            // see [`decode_pd_line_pair`] doc's #18 deviation note.
-            let _ = snr_db;
-            let win_idx = 6;
+            // SNR-adaptive Hann window length (#44 engaged for real audio).
+            // slowrx `video.c:354-367` selects window length by SNR — short
+            // window for sharp time resolution at high SNR, long window for
+            // noise rejection at low SNR. Synthetic round-trip's instant
+            // tone-step transitions report misleadingly low SNR; real radio's
+            // FM-modulator slewing reports realistic SNR. Engaging this
+            // hurts synthetic round-trip but is required for real-audio
+            // image quality (verified Dec-2017 ARISS captures).
+            let win_idx = crate::snr::window_idx_for_snr(snr_db);
             let center_in_scratch = s - sweep_start;
             current_freq =
                 demod.pixel_freq(&scratch_audio, center_in_scratch, hedr_shift_hz, win_idx);

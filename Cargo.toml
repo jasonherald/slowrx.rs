@@ -37,6 +37,12 @@ rustfft = "6"
 
 [dev-dependencies]
 proptest = "1"
+hound = "3"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[[example]]
+name = "decode_wav"
+required-features = []
 
 [features]
 test-support = []
