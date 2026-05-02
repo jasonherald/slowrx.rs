@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-05-02
+
+First public release on crates.io. PD120 + PD180 SSTV decoding, validated
+end-to-end against Dec-2017 ARISS captures (6 of 7 fixtures decode to
+images visually matching reference JPGs; the 7th is a truncated capture
+missing the VIS leader). The path here was a 7-phase recovery effort
+spanning two parity audits against slowrx C — see closed [epic #12] and
+[`docs/audits/`] for the full archaeology. The [`docs/intentional-deviations.md`]
+file catalogs every deliberate divergence from slowrx so future audits
+have somewhere to point first.
+
+[epic #12]: https://github.com/jasonherald/slowrx.rs/issues/12
+[`docs/audits/`]: ./docs/audits/
+[`docs/intentional-deviations.md`]: ./docs/intentional-deviations.md
+
 ### Added (CLI binary + R12BW parity + deviations doc — issues #7, #26, #39)
 
 - **`slowrx-cli` binary** (#7) — `cargo install slowrx --features cli` builds

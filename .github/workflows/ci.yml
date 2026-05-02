@@ -79,3 +79,20 @@ jobs:
             --ignore-filename-regex 'src/bin/.*' \
             --fail-under-lines 92 \
             --fail-under-regions 92
+
+  publish-dryrun:
+    name: Publish dry-run
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2
+      - name: cargo publish --dry-run
+        run: cargo publish --dry-run --locked
+      - name: cargo package --list (visibility check)
+        # Surfaces the exact file list that would be uploaded to crates.io.
+        # CI doesn't gate on this — it's diagnostic for reviewers — but
+        # any unexpected file (e.g. fixtures, test corpora) should be
+        # caught here before we publish.
+        run: cargo package --list --locked --allow-dirty
