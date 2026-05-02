@@ -121,6 +121,29 @@ pub struct SstvDecoder {
     /// Cumulative working-rate samples emitted by the resampler.
     /// Used as the unit for `SstvEvent::VisDetected.sample_offset` so
     /// that value is consistent regardless of caller's input rate.
+    ///
+    /// **Informational only** — this counter counts samples the resampler
+    /// has produced and does NOT get decremented when
+    /// [`crate::vis::VisDetector::take_residual_buffer`] transfers post-stop-bit
+    /// audio back to the decoder's `Decoding` state. Those residual samples
+    /// were already counted here when the resampler emitted them; the
+    /// residual transfer is a borrow, not a retraction. Consequently the
+    /// counter may be slightly ahead of what the image decoder has consumed.
+    ///
+    /// This is intentional: `DetectedVis::end_sample` is computed directly
+    /// from `total_samples_consumed` and `buffer.len()` inside
+    /// `VisDetector::process` at the moment of detection, so `sample_offset`
+    /// in `SstvEvent::VisDetected` is always correct. The counter here is
+    /// only used to advance the VIS detector's anchor on each chunk; it does
+    /// not gate any decode logic.
+    ///
+    /// If mid-image VIS detection is ever re-activated (see the TODO in
+    /// `process`), and a single `SstvDecoder` is reused across detections,
+    /// the slight inflation is harmless: each new detection uses the then-
+    /// current resampler-output count as its anchor, and the residual buffer
+    /// is handed to a fresh `VisDetector::new()`.
+    ///
+    /// Closes #29 and #34 (both are the same observation from different angles).
     working_samples_emitted: u64,
 }
 
@@ -253,6 +276,13 @@ impl SstvDecoder {
                     // it may contain the leading edge of a follow-up VIS
                     // burst (ARISS multi-image case). Feed it into a fresh
                     // VIS detector so the next process() call sees it.
+                    //
+                    // V2: After ImageComplete, this decoder re-enters
+                    // AwaitingVis automatically (continuous monitoring).
+                    // For true multi-image streams (back-to-back transmissions
+                    // on the same connection) the trailing audio here is fed
+                    // into a fresh VisDetector, so the next VIS burst is
+                    // detected without any caller intervention. Closes #31.
                     let trailing = std::mem::take(&mut d.audio);
                     self.state = State::AwaitingVis;
                     self.vis = crate::vis::VisDetector::new();
@@ -268,6 +298,18 @@ impl SstvDecoder {
     /// PD line pair against the corrected `(rate, skip)`. Pushes
     /// [`SstvEvent::LineDecoded`] for every row + a final
     /// [`SstvEvent::ImageComplete`] into `out`.
+    ///
+    /// **Lookahead note (#33):** Each call to
+    /// [`crate::mode_pd::decode_pd_line_pair`] receives `&d.audio` — the
+    /// entire image audio buffer, not a slice ending at the pair's nominal
+    /// end sample. This means the FFT window for the last pixel of the last
+    /// channel of each line pair can freely extend rightward into subsequent
+    /// pair audio (or zero if the buffer ends). The lookahead is therefore
+    /// *implicit*: the full-buffer pass-through provides the context that a
+    /// naive `&audio[..pair_end]` slice would lose. No explicit `lookahead`
+    /// variable is required, and none should be added. (Issue #33 noted
+    /// a now-deleted `lookahead` variable that was dead code; Phase 3's
+    /// rewrite eliminated it by design.)
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
