@@ -3,12 +3,14 @@
 //! Translated from slowrx's `modespec.c` (Oona Räisänen, ISC License).
 //! See `NOTICE.md` for full attribution.
 //!
-//! Implemented as of V2.1 (0.2.0): PD120, PD180, PD240. Remaining V2 modes
-//! (Robot 36/72, Scottie 1/2/DX, Martin 1/2) are not yet present in the
-//! [`SstvMode`] enum or the lookup tables; each will land with its own PR.
+//! Implemented as of V2.2 (0.3.0): PD120, PD180, PD240, Robot 24, Robot 36,
+//! Robot 72. Remaining V2 modes (Scottie 1/2/DX, Martin 1/2) are not yet
+//! present in the [`SstvMode`] enum or the lookup tables; each will land
+//! with its own PR.
 
 /// SSTV operating mode. Implemented: [`SstvMode::Pd120`], [`SstvMode::Pd180`],
-/// [`SstvMode::Pd240`]. Additional V2 modes (Robot, Scottie, Martin) planned.
+/// [`SstvMode::Pd240`], [`SstvMode::Robot24`], [`SstvMode::Robot36`],
+/// [`SstvMode::Robot72`]. Additional V2 modes (Scottie, Martin) planned.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SstvMode {
@@ -18,6 +20,12 @@ pub enum SstvMode {
     Pd180,
     /// PD-240 (640×496, ~240s per image)
     Pd240,
+    /// Robot 24 (320×240, ~24s per image)
+    Robot24,
+    /// Robot 36 (320×240, ~36s per image)
+    Robot36,
+    /// Robot 72 (320×240, ~72s per image)
+    Robot72,
 }
 
 /// Mode timing + layout table entry.
@@ -63,6 +71,12 @@ pub enum ChannelLayout {
     /// PD-family: Y(odd) → Cr → Cb → Y(even). One radio line carries
     /// two image rows; chroma is shared between paired rows.
     PdYcbcr,
+    /// Robot family: Y (single luma channel) plus chroma. R36/R24 carry
+    /// alternating Cr/Cb per radio line with each chroma sample
+    /// duplicated to the next image row; R72 carries Y/U/V sequentially
+    /// per line. The shape difference is mode-internal — see
+    /// `mode_robot::decode_line` for the per-mode dispatch.
+    RobotYuv,
 }
 
 /// Where the sync pulse sits within a radio line.
@@ -101,6 +115,9 @@ pub enum SyncPosition {
 #[must_use]
 pub fn lookup(vis_code: u8) -> Option<ModeSpec> {
     match vis_code {
+        0x04 => Some(ROBOT24),
+        0x08 => Some(ROBOT36),
+        0x0C => Some(ROBOT72),
         0x5F => Some(PD120),
         0x60 => Some(PD180),
         0x61 => Some(PD240),
@@ -119,11 +136,15 @@ pub fn for_mode(mode: SstvMode) -> ModeSpec {
         SstvMode::Pd120 => PD120,
         SstvMode::Pd180 => PD180,
         SstvMode::Pd240 => PD240,
+        SstvMode::Robot24 => ROBOT24,
+        SstvMode::Robot36 => ROBOT36,
+        SstvMode::Robot72 => ROBOT72,
     }
 }
 
 // Mode timing constants — translated row-for-row from slowrx's
-// modespec.c (PD120 lines 260-271, PD180 lines 286-297, PD240 lines 299-310).
+// modespec.c (PD120 lines 260-271, PD180 lines 286-297, PD240 lines 299-310,
+// R72 lines 130-141, R36 lines 143-154, R24 lines 156-167).
 
 const PD120: ModeSpec = ModeSpec {
     mode: SstvMode::Pd120,
@@ -166,6 +187,57 @@ const PD240: ModeSpec = ModeSpec {
     pixel_seconds: 0.000_382,
     septr_seconds: 0.0, // modespec.c: SeptrTime = 0e-3 for PD-family
     channel_layout: ChannelLayout::PdYcbcr,
+    sync_position: SyncPosition::LineStart,
+};
+
+const ROBOT24: ModeSpec = ModeSpec {
+    mode: SstvMode::Robot24,
+    vis_code: 0x04,
+    line_pixels: 320,
+    image_lines: 240,
+    // slowrx modespec.c:156-167 — R24 LineTime = 150e-3,
+    // PixelTime = 0.1375e-3, SyncTime = 9e-3, PorchTime = 3e-3,
+    // SeptrTime = 6e-3.
+    line_seconds: 0.150,
+    sync_seconds: 0.009,
+    porch_seconds: 0.003,
+    pixel_seconds: 0.000_137_5,
+    septr_seconds: 0.006,
+    channel_layout: ChannelLayout::RobotYuv,
+    sync_position: SyncPosition::LineStart,
+};
+
+const ROBOT36: ModeSpec = ModeSpec {
+    mode: SstvMode::Robot36,
+    vis_code: 0x08,
+    line_pixels: 320,
+    image_lines: 240,
+    // slowrx modespec.c:143-154 — R36 LineTime = 150e-3,
+    // PixelTime = 0.1375e-3, SyncTime = 9e-3, PorchTime = 3e-3,
+    // SeptrTime = 6e-3.  Identical timing to R24.
+    line_seconds: 0.150,
+    sync_seconds: 0.009,
+    porch_seconds: 0.003,
+    pixel_seconds: 0.000_137_5,
+    septr_seconds: 0.006,
+    channel_layout: ChannelLayout::RobotYuv,
+    sync_position: SyncPosition::LineStart,
+};
+
+const ROBOT72: ModeSpec = ModeSpec {
+    mode: SstvMode::Robot72,
+    vis_code: 0x0C,
+    line_pixels: 320,
+    image_lines: 240,
+    // slowrx modespec.c:130-141 — R72 LineTime = 300e-3,
+    // PixelTime = 0.2875e-3, SyncTime = 9e-3, PorchTime = 3e-3,
+    // SeptrTime = 4.7e-3.
+    line_seconds: 0.300,
+    sync_seconds: 0.009,
+    porch_seconds: 0.003,
+    pixel_seconds: 0.000_287_5,
+    septr_seconds: 0.0047,
+    channel_layout: ChannelLayout::RobotYuv,
     sync_position: SyncPosition::LineStart,
 };
 
@@ -220,12 +292,18 @@ mod tests {
     }
 
     #[test]
-    fn pd_modes_have_line_start_sync_position() {
+    fn all_v2_modes_have_line_start_sync_position() {
         // V2 carve-out: ModeSpec.sync_position lets V2.3 Scottie declare
-        // mid-line sync without retrofitting V1. PD120/PD180/PD240 all use
-        // line-start sync (slowrx video.c:88-92 places sync at the start of
-        // each line for PD modes).
-        for mode in [SstvMode::Pd120, SstvMode::Pd180, SstvMode::Pd240] {
+        // mid-line sync without retrofitting V1. PD/Robot/Martin all use
+        // line-start sync; Scottie is the V2.3 exception.
+        for mode in [
+            SstvMode::Pd120,
+            SstvMode::Pd180,
+            SstvMode::Pd240,
+            SstvMode::Robot24,
+            SstvMode::Robot36,
+            SstvMode::Robot72,
+        ] {
             let spec = for_mode(mode);
             assert_eq!(spec.sync_position, SyncPosition::LineStart);
         }
@@ -250,5 +328,60 @@ mod tests {
     #[test]
     fn for_mode_returns_pd240_spec() {
         assert_eq!(for_mode(SstvMode::Pd240).vis_code, 0x61);
+    }
+
+    #[test]
+    fn robot24_vis_code_resolves() {
+        let spec = lookup(0x04).expect("R24 VIS resolves");
+        assert_eq!(spec.mode, SstvMode::Robot24);
+        assert_eq!(spec.vis_code, 0x04);
+        assert_eq!(spec.line_pixels, 320);
+        assert_eq!(spec.image_lines, 240);
+        assert_eq!(spec.channel_layout, ChannelLayout::RobotYuv);
+        assert_eq!(spec.sync_position, SyncPosition::LineStart);
+        assert_eq!(spec.line_seconds, 0.150);
+        assert_eq!(spec.sync_seconds, 0.009);
+        assert_eq!(spec.porch_seconds, 0.003);
+        assert_eq!(spec.septr_seconds, 0.006);
+        assert_eq!(spec.pixel_seconds, 0.000_137_5);
+    }
+
+    #[test]
+    fn robot36_vis_code_resolves() {
+        let spec = lookup(0x08).expect("R36 VIS resolves");
+        assert_eq!(spec.mode, SstvMode::Robot36);
+        assert_eq!(spec.vis_code, 0x08);
+        assert_eq!(spec.line_pixels, 320);
+        assert_eq!(spec.image_lines, 240);
+        assert_eq!(spec.channel_layout, ChannelLayout::RobotYuv);
+        assert_eq!(spec.sync_position, SyncPosition::LineStart);
+        assert_eq!(spec.line_seconds, 0.150);
+        assert_eq!(spec.sync_seconds, 0.009);
+        assert_eq!(spec.porch_seconds, 0.003);
+        assert_eq!(spec.septr_seconds, 0.006);
+        assert_eq!(spec.pixel_seconds, 0.000_137_5);
+    }
+
+    #[test]
+    fn robot72_vis_code_resolves() {
+        let spec = lookup(0x0C).expect("R72 VIS resolves");
+        assert_eq!(spec.mode, SstvMode::Robot72);
+        assert_eq!(spec.vis_code, 0x0C);
+        assert_eq!(spec.line_pixels, 320);
+        assert_eq!(spec.image_lines, 240);
+        assert_eq!(spec.channel_layout, ChannelLayout::RobotYuv);
+        assert_eq!(spec.sync_position, SyncPosition::LineStart);
+        assert_eq!(spec.line_seconds, 0.300);
+        assert_eq!(spec.sync_seconds, 0.009);
+        assert_eq!(spec.porch_seconds, 0.003);
+        assert_eq!(spec.septr_seconds, 0.0047);
+        assert_eq!(spec.pixel_seconds, 0.000_287_5);
+    }
+
+    #[test]
+    fn for_mode_returns_robot_specs() {
+        assert_eq!(for_mode(SstvMode::Robot24).vis_code, 0x04);
+        assert_eq!(for_mode(SstvMode::Robot36).vis_code, 0x08);
+        assert_eq!(for_mode(SstvMode::Robot72).vis_code, 0x0C);
     }
 }
