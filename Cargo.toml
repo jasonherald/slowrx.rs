@@ -19,6 +19,7 @@ include = [
     "LICENSE",
     "NOTICE.md",
     "CHANGELOG.md",
+    "docs/intentional-deviations.md",
 ]
 
 [lints.rust]
