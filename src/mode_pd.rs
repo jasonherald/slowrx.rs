@@ -260,15 +260,22 @@ pub(crate) fn decode_pd_line_pair(
     let sync_secs = spec.sync_seconds;
     let porch_secs = spec.porch_seconds;
     let pixel_secs = spec.pixel_seconds;
+    let septr_secs = spec.septr_seconds;
     let width = spec.line_pixels;
 
     // PD channel time offsets (seconds from start of line pair):
-    // Y(odd) → Cr → Cb → Y(even). slowrx video.c:81-93.
+    // Y(odd) → Cr → Cb → Y(even). Mirrors slowrx video.c:88-92:
+    //   ChanStart[n+1] = ChanStart[n] + ChanLen[n] + SeptrTime
+    // where ChanLen[n] = PixelTime * ImgWidth.
+    // SeptrTime = 0 for PD120/PD180 (modespec.c), so septr_secs is a no-op
+    // now, but having it here prevents a silent break when non-PD modes
+    // (Robot, Scottie, Martin — all with non-zero SeptrTime) are added in V2.
+    let chan_len = f64::from(width) * pixel_secs;
     let chan_starts_sec = [
-        sync_secs + porch_secs,                                       // Y(odd)
-        sync_secs + porch_secs + f64::from(width) * pixel_secs,       // Cr
-        sync_secs + porch_secs + 2.0 * f64::from(width) * pixel_secs, // Cb
-        sync_secs + porch_secs + 3.0 * f64::from(width) * pixel_secs, // Y(even)
+        sync_secs + porch_secs,                                     // Y(odd): 0 septr
+        sync_secs + porch_secs + chan_len + septr_secs,             // Cr:     1 septr
+        sync_secs + porch_secs + 2.0 * chan_len + 2.0 * septr_secs, // Cb:     2 septr
+        sync_secs + porch_secs + 3.0 * chan_len + 3.0 * septr_secs, // Y(even):3 septr
     ];
 
     let row0 = pair_index * 2;
@@ -451,6 +458,47 @@ fn decode_one_channel_into(
 )]
 mod tests {
     use super::*;
+
+    /// Verify that with `septr_seconds = 0` the `chan_starts_sec` formula
+    /// gives the same values as the pre-#25 direct formula (numeric equivalence).
+    /// This confirms the field is a V2 expansion that is a no-op for PD modes.
+    #[test]
+    fn chan_starts_sec_septr_zero_is_numerically_equivalent_to_old_formula() {
+        for spec in [
+            crate::modespec::for_mode(crate::modespec::SstvMode::Pd120),
+            crate::modespec::for_mode(crate::modespec::SstvMode::Pd180),
+        ] {
+            let sync = spec.sync_seconds;
+            let porch = spec.porch_seconds;
+            let px = spec.pixel_seconds;
+            let septr = spec.septr_seconds;
+            let w = f64::from(spec.line_pixels);
+            let chan_len = w * px;
+
+            // New formula (with septr_seconds term from slowrx video.c:88-92)
+            let new_starts = [
+                sync + porch,
+                sync + porch + chan_len + septr,
+                sync + porch + 2.0 * chan_len + 2.0 * septr,
+                sync + porch + 3.0 * chan_len + 3.0 * septr,
+            ];
+            // Old formula (pre-#25, septr omitted)
+            let old_starts = [
+                sync + porch,
+                sync + porch + w * px,
+                sync + porch + 2.0 * w * px,
+                sync + porch + 3.0 * w * px,
+            ];
+            for (n, (n_val, o_val)) in new_starts.iter().zip(old_starts.iter()).enumerate() {
+                assert!(
+                    (n_val - o_val).abs() < 1e-12,
+                    "mode {:?} chan {} new={n_val} old={o_val}",
+                    spec.mode,
+                    n
+                );
+            }
+        }
+    }
 
     #[test]
     fn freq_1500_is_black() {

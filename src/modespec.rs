@@ -38,6 +38,13 @@ pub struct ModeSpec {
     pub porch_seconds: f64,
     /// Per-pixel duration within a colour channel, seconds.
     pub pixel_seconds: f64,
+    /// Channel separator pulse duration, seconds. Translated from slowrx's
+    /// `SeptrTime` field (`modespec.c`). Zero for all PD-family modes; non-zero
+    /// for Robot, Martin, and Scottie modes (V2). Stored here so the
+    /// `chan_starts_sec` formula in `mode_pd::decode_pd_line_pair` matches
+    /// slowrx's `video.c:88-92` term-for-term and won't silently break when
+    /// non-PD modes are added.
+    pub septr_seconds: f64,
     /// Channel layout used by per-mode decoders.
     pub channel_layout: ChannelLayout,
 }
@@ -92,6 +99,7 @@ const PD120: ModeSpec = ModeSpec {
     sync_seconds: 0.020,
     porch_seconds: 0.002_08,
     pixel_seconds: 0.000_19,
+    septr_seconds: 0.0, // modespec.c: SeptrTime = 0e-3 for PD-family
     channel_layout: ChannelLayout::PdYcbcr,
 };
 
@@ -104,6 +112,7 @@ const PD180: ModeSpec = ModeSpec {
     sync_seconds: 0.020,
     porch_seconds: 0.002_08,
     pixel_seconds: 0.000_286,
+    septr_seconds: 0.0, // modespec.c: SeptrTime = 0e-3 for PD-family
     channel_layout: ChannelLayout::PdYcbcr,
 };
 
@@ -144,5 +153,16 @@ mod tests {
     fn for_mode_returns_matching_spec() {
         assert_eq!(for_mode(SstvMode::Pd120).vis_code, 0x5F);
         assert_eq!(for_mode(SstvMode::Pd180).vis_code, 0x60);
+    }
+
+    #[test]
+    fn pd_modes_have_zero_septr_seconds() {
+        // PD-family: SeptrTime = 0e-3 (modespec.c). The field exists for
+        // V2 parity (Robot/Scottie/Martin have non-zero SeptrTime); for PD
+        // modes it must be zero so chan_starts_sec is numerically unchanged.
+        let pd120 = lookup(0x5F).expect("PD120");
+        let pd180 = lookup(0x60).expect("PD180");
+        assert_eq!(pd120.septr_seconds, 0.0);
+        assert_eq!(pd180.septr_seconds, 0.0);
     }
 }
