@@ -223,3 +223,38 @@ PD and -0.5 for non-PD), and route it through `decode_one_channel_into`.
   the next empirical test; a future cross-validation against slowrx C
   output on the same audio file would expose the half-pixel offset
   directly.
+
+---
+
+## Faint vertical squiggle artifacts in Robot real-radio decode
+
+**Files:** `src/mode_robot.rs` (and plausibly `src/mode_pd.rs::decode_one_channel_into`).
+**Tracking issue:** [#71](https://github.com/jasonherald/slowrx.rs/issues/71).
+
+### What we observe
+
+When decoding real-radio Robot 36 audio (verified against the 12 ARISS
+Fram2 WAVs during V2.2 Phase 5), our output PNGs exhibit faint vertical
+squiggle artifacts every ~20–30 pixels. The image content is correct
+and recognizable — the artifacts are a fine pattern overlaid on the
+content.
+
+The reference JPGs ARISS publishes alongside the WAVs do NOT show these
+artifacts, which means whatever decoder produced the references handles
+this case better than ours.
+
+### Why this isn't a "deviation" yet
+
+This is more of an **open quality gap** than a deliberate deviation.
+We're tracking it here so future audits know it's a known and
+documented behavior, not a missed bug. V2.2 ships with this gap because
+the image content is correct and visually validates against the
+reference.
+
+### When to revisit
+
+When [#71](https://github.com/jasonherald/slowrx.rs/issues/71) is
+prioritized, or whenever a downstream consumer asks for cleaner output.
+The investigation paths in #71 cover SNR-adaptive Hann selector
+re-engagement (V1 deferral #44), slowrx C cross-validation, and per-
+pixel sub-bin interpolation.
