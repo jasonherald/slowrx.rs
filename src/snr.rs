@@ -113,6 +113,84 @@ pub(crate) fn window_idx_for_snr(snr_db: f64) -> usize {
     }
 }
 
+/// Hysteresis variant of [`window_idx_for_snr`]. Takes a `prev_idx`
+/// (the window index used by the previous FFT in this channel decode)
+/// and applies a 1 dB hysteresis band at every threshold to prevent
+/// flip-flop on real-radio SNR fluctuations near boundary values.
+///
+/// **Algorithm:** ratchet by at most one band toward the `baseline`
+/// lookup per call, applying a 0.5 dB hysteresis at the adjacent
+/// boundary. Concretely:
+///
+/// 1. Compute `baseline = window_idx_for_snr(snr_db)`. If it equals
+///    `prev_idx` the SNR is in `prev_idx`'s band — return immediately.
+/// 2. Pick `target_idx` one band closer to `baseline` than `prev_idx`
+///    (`prev_idx + 1` if degrading, `prev_idx - 1` if improving).
+/// 3. Re-evaluate `window_idx_for_snr` at a shifted SNR: if moving to
+///    a shorter window (lower idx) require an extra 0.5 dB headroom;
+///    if moving to a longer window require 0.5 dB more noise.
+/// 4. If the shifted lookup confirms the SNR is past `target_idx`'s
+///    side of the boundary, accept `target_idx`. Otherwise we're
+///    inside the 1 dB hysteresis band — stay at `prev_idx`.
+///
+/// Ratcheting one band per call (rather than jumping straight to
+/// `baseline`) keeps the selector convergent even when `prev_idx` is
+/// far from `baseline` — e.g. cold-start at idx 6 with a strong signal
+/// — without breaking the hysteresis guarantee at any single boundary.
+/// Per-pixel FFTs converge in O(`n_bands`) calls.
+///
+/// **Direction semantics:** `prev_idx` lower than `baseline` means SNR
+/// is degrading (longer window needed). `prev_idx` higher than
+/// `baseline` means SNR is improving (shorter window allowed).
+///
+/// **Deliberate divergence from slowrx C** (`video.c:354-367`), which
+/// uses pure-threshold logic with no hysteresis. See
+/// `docs/intentional-deviations.md` for rationale.
+#[must_use]
+pub(crate) fn window_idx_for_snr_with_hysteresis(snr_db: f64, prev_idx: usize) -> usize {
+    /// Half-band size in dB. Total hysteresis band at each threshold
+    /// is `2 * HYSTERESIS_DB_HALF` = 1.0 dB.
+    const HYSTERESIS_DB_HALF: f64 = 0.5;
+
+    let baseline = window_idx_for_snr(snr_db);
+    if baseline == prev_idx {
+        return prev_idx;
+    }
+
+    // Ratchet one band toward `baseline`. `prev_idx > 0` is guaranteed
+    // when `baseline < prev_idx` because indices are non-negative, so
+    // the subtraction below is safe.
+    let target_idx = if baseline > prev_idx {
+        prev_idx + 1
+    } else {
+        prev_idx - 1
+    };
+
+    // Hysteresis: shift SNR away from `target_idx`. If the shifted
+    // lookup still indicates we're past `target_idx`'s side of the
+    // boundary, the move is robust.
+    let shifted_snr = if target_idx < prev_idx {
+        // Moving to shorter window: require extra SNR headroom.
+        snr_db - HYSTERESIS_DB_HALF
+    } else {
+        // Moving to longer window: require extra noise.
+        snr_db + HYSTERESIS_DB_HALF
+    };
+    let shifted_idx = window_idx_for_snr(shifted_snr);
+
+    let robust = if target_idx < prev_idx {
+        shifted_idx <= target_idx
+    } else {
+        shifted_idx >= target_idx
+    };
+
+    if robust {
+        target_idx
+    } else {
+        prev_idx
+    }
+}
+
 /// Per-decoder SNR estimator. Owns its own FFT plan + scratch buffer
 /// (separate from the per-pixel demod's plan so concurrent calls never
 /// fight over the same scratch slice). One full-length Hann window is
@@ -475,5 +553,116 @@ mod tests {
             bin, 27,
             "sync_target_bin for 1200 Hz should be 27 (trunc), got {bin}"
         );
+    }
+
+    #[test]
+    fn hysteresis_in_band_stays_put() {
+        // SNR 9.3, just above the 9 dB threshold (win_idx 2 boundary).
+        // Currently at prev=3. Shifted SNR (9.3 - 0.5) = 8.8 < 9, so the
+        // shifted lookup disagrees with baseline (2). Stay at prev_idx=3.
+        assert_eq!(window_idx_for_snr_with_hysteresis(9.3, 3), 3);
+    }
+
+    #[test]
+    fn hysteresis_robust_change_propagates() {
+        // SNR 9.5, comfortably above the 9 dB threshold.
+        // Currently at prev=3. Shifted SNR (9.5 - 0.5) = 9.0 still ≥ 9,
+        // shifted lookup agrees with baseline (2). Switch to 2.
+        assert_eq!(window_idx_for_snr_with_hysteresis(9.5, 3), 2);
+    }
+
+    #[test]
+    fn hysteresis_symmetric_in_band() {
+        // SNR 8.5, just below 9 dB. Currently at prev=2.
+        // Baseline says 3 (since 8.5 < 9). Shifted SNR (8.5 + 0.5) = 9.0
+        // still ≥ 9, so shifted lookup says 2 — disagrees with baseline.
+        // Stay at prev_idx=2.
+        assert_eq!(window_idx_for_snr_with_hysteresis(8.5, 2), 2);
+    }
+
+    #[test]
+    fn hysteresis_symmetric_robust() {
+        // SNR 8.0, comfortably below 9. Currently at prev=2.
+        // Baseline says 3 (8.0 < 9). Shifted SNR (8.0 + 0.5) = 8.5 < 9,
+        // shifted lookup also says 3. Both agree. Switch to 3.
+        assert_eq!(window_idx_for_snr_with_hysteresis(8.0, 2), 3);
+    }
+
+    #[test]
+    fn hysteresis_no_change_when_in_equilibrium() {
+        // SNR 15, prev=1. Baseline lookup at 15 returns 1 (≥ 10, < 20).
+        // Fast-path: baseline == prev_idx, return prev_idx without
+        // computing shifted lookup.
+        assert_eq!(window_idx_for_snr_with_hysteresis(15.0, 1), 1);
+    }
+
+    #[test]
+    fn hysteresis_at_extreme_thresholds() {
+        // High end: SNR 20.5, prev=1. Baseline 0 (≥ 20). Shifted
+        // (20.5 - 0.5) = 20.0 still ≥ 20, lookup also 0. Switch to 0.
+        assert_eq!(window_idx_for_snr_with_hysteresis(20.5, 1), 0);
+
+        // Low end: SNR -10.5, prev=5. Baseline 6 (< -10). Shifted
+        // (-10.5 + 0.5) = -10.0 still ≥ -10, lookup says 5 — disagrees.
+        // Stay at prev_idx=5.
+        assert_eq!(window_idx_for_snr_with_hysteresis(-10.5, 5), 5);
+
+        // SNR -11.0 from prev=5. Baseline 6 (-11 < -10). Shifted
+        // (-11 + 0.5) = -10.5 < -10, lookup also 6. Switch to 6.
+        assert_eq!(window_idx_for_snr_with_hysteresis(-11.0, 5), 6);
+    }
+
+    #[test]
+    fn hysteresis_ratchets_from_distant_prev_low_snr() {
+        // CodeRabbit-flagged regression case: SNR 9.2 with prev=4.
+        // Baseline 2 (≥ 9), prev=4 → target=3 (one band toward
+        // baseline). Shifted SNR (9.2 - 0.5) = 8.7 → idx 3, which is
+        // ≤ target=3, so accept the ratchet. The earlier algorithm
+        // returned `prev` because shifted (3) ≠ baseline (2),
+        // permanently stranding the selector at idx 4.
+        assert_eq!(window_idx_for_snr_with_hysteresis(9.2, 4), 3);
+    }
+
+    #[test]
+    fn hysteresis_ratchets_from_distant_prev_high_snr() {
+        // Strong improvement: SNR 20.2 with prev=4. Baseline 0 (≥ 20),
+        // prev=4 → target=3. Shifted SNR (20.2 - 0.5) = 19.7 → idx 1,
+        // 1 ≤ 3 → robust, accept target=3. The earlier algorithm
+        // returned prev=4 because shifted (1) ≠ baseline (0).
+        assert_eq!(window_idx_for_snr_with_hysteresis(20.2, 4), 3);
+    }
+
+    #[test]
+    fn hysteresis_converges_high_snr_from_cold_start() {
+        // Cold-start (prev=6, longest window) with a high SNR signal
+        // ratchets one band per call until it reaches baseline=0,
+        // then settles via the equilibrium fast-path.
+        let mut idx = 6;
+        let snr = 25.0;
+        for expected in [5, 4, 3, 2, 1, 0] {
+            idx = window_idx_for_snr_with_hysteresis(snr, idx);
+            assert_eq!(
+                idx, expected,
+                "ratchet should land at {expected}, got {idx}"
+            );
+        }
+        // Settled: baseline (0) == prev (0), fast-path return.
+        assert_eq!(window_idx_for_snr_with_hysteresis(snr, idx), 0);
+    }
+
+    #[test]
+    fn hysteresis_converges_degrading_snr() {
+        // SNR collapses from a clean signal (prev=0) to deep noise
+        // (baseline=6). Ratchet one band per call.
+        let mut idx = 0;
+        let snr = -50.0;
+        for expected in [1, 2, 3, 4, 5, 6] {
+            idx = window_idx_for_snr_with_hysteresis(snr, idx);
+            assert_eq!(
+                idx, expected,
+                "ratchet should land at {expected}, got {idx}"
+            );
+        }
+        assert_eq!(window_idx_for_snr_with_hysteresis(snr, idx), 6);
     }
 }
