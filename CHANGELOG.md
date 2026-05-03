@@ -7,6 +7,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-02
+
+V2.2 — Robot family mode coverage. Adds Robot 24 (`SstvMode::Robot24`,
+VIS `0x04`), Robot 36 (`SstvMode::Robot36`, VIS `0x08`), and Robot 72
+(`SstvMode::Robot72`, VIS `0x0C`). First V2 release that introduces a
+non-PD decoder; introduces the cross-mode-family dispatch refactor in
+`decoder.rs`.
+
+Closes V2.2 epic ([#64]). Tracks the V2 umbrella ([#9]).
+
+[#9]: https://github.com/jasonherald/slowrx.rs/issues/9
+[#64]: https://github.com/jasonherald/slowrx.rs/issues/64
+[#71]: https://github.com/jasonherald/slowrx.rs/issues/71
+
+### Added
+
+- **Robot 24, Robot 36, Robot 72 modes.** All three at 320×240 image
+  resolution. Timing constants from slowrx `modespec.c:130-167`. R36/R24
+  share decoder code (chroma alternation + neighbor-row duplication per
+  slowrx `video.c:182-191`, `:421-425`); R72 uses the simpler 3-channel
+  Y/U/V sequential layout per `video.c:60-101` default case.
+- **`ChannelLayout::RobotYuv` enum variant** covering all three Robot
+  modes. Per-mode chroma topology lives inside `mode_robot.rs` (the
+  internal mode-match mirrors slowrx's `switch(Mode)` cases).
+- **`src/mode_robot.rs`** — new Robot-family decoder. Reuses
+  `mode_pd::decode_one_channel_into` (visibility bumped from private to
+  `pub(crate)`; the parameter `pair_seconds` was renamed to mode-
+  agnostic `time_offset_seconds`) and `mode_pd::ycbcr_to_rgb`.
+- **`src/robot_test_encoder.rs`** — synthetic encoder for round-trip
+  testing. Mirrors `pd_test_encoder.rs` shape.
+- **Per-mode chroma planes side buffer** on `DecodingState`
+  (`chroma_planes: Option<[Vec<u8>; 2]>`). Allocated only for
+  `ChannelLayout::RobotYuv`; lets R36/R24 compose RGB after both chroma
+  channels (own + duplicated-from-neighbor) are present.
+- **`tests/ariss_fram2_validation.md`** — committed procedure for the
+  V2.2 real-audio merge gate (decode the 12 ARISS Fram2 reference WAVs
+  and visually compare against the 12 reference JPGs).
+
+### Changed
+
+- **`decoder.rs::run_findsync_and_decode`** now dispatches on
+  `ChannelLayout`. PD path is byte-identical to V2.1 (zero PD120/180/240
+  regression risk). Robot path loops per image line and calls
+  `mode_robot::decode_line`.
+- **`target_audio_samples` computation** now branches on
+  `spec.channel_layout`: PD (line pairing) keeps `image_lines / 2 ×
+  line_seconds`; Robot (no pairing) uses `image_lines × line_seconds`.
+  Mirrors slowrx C `video.c:251-254`. Surfaced during Phase 5 Fram2
+  validation — the prior unconditional PD-style formula had been
+  cutting Robot decode in half on real audio.
+- **`pd_modes_have_line_start_sync_position` test renamed to
+  `all_v2_modes_have_line_start_sync_position`** and extended to cover
+  all six current modes (PD + Robot).
+- **`bin/slowrx_cli.rs::mode_tag`** — added `Robot24`/`Robot36`/`Robot72`
+  arms (same trap V2.1 PD240 fell into; caught pre-merge this time).
+
+### Tests
+
+- `tests/roundtrip.rs::robot72_roundtrip`,
+  `tests/roundtrip.rs::robot36_roundtrip`,
+  `tests/roundtrip.rs::robot24_roundtrip` — synthetic round-trip with
+  mean per-pixel-diff threshold < 5.0 (same threshold as PD).
+- `src/decoder.rs::tests::process_emits_vis_detected_for_robot{24,36,72}_burst`
+  — VIS-detection unit tests.
+
+### Validation
+
+- Validated against 12 ARISS Fram2 Robot 36 captures
+  (<https://ariss-usa.org/ARISS_SSTV/Fram2Test/>) on 2026-05-02 — all 12
+  produced visually-matching PNGs after the Phase 5 `target_audio_samples`
+  fix landed. Procedure documented at `tests/ariss_fram2_validation.md`.
+- Faint vertical squiggle artifacts in real-radio output (not present in
+  the reference JPGs) are tracked as a parity gap for a future quality
+  pass at [#71].
+
+### Known caveats
+
+- **Robot 24 ships without R24-specific real-radio evidence.** Inherits
+  R36 validation by structural identity (R24 and R36 share decoder code;
+  only the mode tag and VIS code differ — timing constants are
+  bit-identical).
+- **Robot 72 ships with synthetic-only coverage.** No public R72 capture
+  was sourced during V2.2 brainstorm. Real-radio fixture pending; tracked
+  in [#70].
+- **Row 0 chroma artifact in R36/R24.** Image row 0 has Y own + Cr own
+  + Cb at zero-init (no previous radio line to duplicate Cb forward).
+  Faithful to slowrx C, which writes `Image[][][]` with `calloc` and
+  never updates row 0's Cb. Visible as a faint color cast on the very
+  top row of the decoded image. Documented in
+  `mode_robot::decode_r36_or_r24_line`.
+
 ## [0.2.1] - 2026-05-02
 
 Patch release bundling the post-merge final-review cleanup of V2.1
