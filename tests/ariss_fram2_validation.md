@@ -15,11 +15,16 @@ dispatch.
 
    ```bash
    mkdir -p tests/fixtures/ariss-fram2
-   cd tests/fixtures/ariss-fram2
-   for n in 01 02 03 04 05 06 07 08 09 10 11 12; do
-     curl -O "https://ariss-usa.org/ARISS_SSTV/Fram2Test/Slide${n}.wav"
-     curl -O "https://ariss-usa.org/ARISS_SSTV/Fram2Test/Slide${n}-Robot-36-Color.jpg"
-   done
+   # Subshell so the `cd` doesn't leak into Step 2's `cargo build`.
+   (
+     cd tests/fixtures/ariss-fram2
+     for n in 01 02 03 04 05 06 07 08 09 10 11 12; do
+       # -f fail-on-HTTP-error (no bogus error-page files), -S show errors
+       # in -s mode, -L follow redirects, -O save with the URL's basename.
+       curl -fSLO "https://ariss-usa.org/ARISS_SSTV/Fram2Test/Slide${n}.wav"
+       curl -fSLO "https://ariss-usa.org/ARISS_SSTV/Fram2Test/Slide${n}-Robot-36-Color.jpg"
+     done
+   )
    ```
 
 2. Build slowrx-cli in release mode:
