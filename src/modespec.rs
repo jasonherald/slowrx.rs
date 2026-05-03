@@ -63,8 +63,9 @@ pub struct ModeSpec {
     pub sync_position: SyncPosition,
 }
 
-/// Per-mode channel arrangement. PD-family modes use [`ChannelLayout::PdYcbcr`].
-/// Future V2 variants add their own values.
+/// Per-mode channel arrangement. PD-family modes use
+/// [`ChannelLayout::PdYcbcr`]; Robot family uses [`ChannelLayout::RobotYuv`].
+/// Future V2 mode families (Scottie, Martin) add their own values.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ChannelLayout {
@@ -88,8 +89,9 @@ pub enum ChannelLayout {
 /// time, surfacing the V1 line-clock-advance assumption that sync ==
 /// line start.
 ///
-/// V1 + V2.1 only emit [`SyncPosition::LineStart`]; the `Scottie` variant
-/// lands with the V2.3 Scottie family epic.
+/// All currently-shipped modes (PD, Robot) emit
+/// [`SyncPosition::LineStart`]. The `Scottie` variant lands with the
+/// V2.3 Scottie family epic.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SyncPosition {

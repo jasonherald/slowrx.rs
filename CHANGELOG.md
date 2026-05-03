@@ -19,6 +19,7 @@ Closes V2.2 epic ([#64]). Tracks the V2 umbrella ([#9]).
 
 [#9]: https://github.com/jasonherald/slowrx.rs/issues/9
 [#64]: https://github.com/jasonherald/slowrx.rs/issues/64
+[#70]: https://github.com/jasonherald/slowrx.rs/issues/70
 [#71]: https://github.com/jasonherald/slowrx.rs/issues/71
 
 ### Added

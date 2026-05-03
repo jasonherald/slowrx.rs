@@ -92,6 +92,17 @@ If a slide fails any criterion above, do NOT merge V2.2. Investigate.
   forward only). If row 0 is solid green/blue, that's the zero-init Cb
   showing through. Acceptable; documented in `mode_robot.rs::decode_r36_or_r24_line`.
 
+- **Bottom half of every image is solid green / zero-init:** This was
+  the V2.2 Phase 5 surprise. Root cause: `target_audio_samples` formula
+  was unconditionally PD-style (`image_lines / 2 × line_seconds`),
+  which under-buffers Robot by half (Robot has no PD-style line
+  pairing). The decoder's find_sync triggered after only half the
+  audio was buffered; the bottom-half rows read past the end of
+  `d.audio` and got `Y=0`, which composes via `ycbcr_to_rgb(0,0,0)` to
+  the green `[0, 133, 0]` color. Fix: branch on `spec.channel_layout`
+  in `target_audio_samples` per slowrx C `video.c:251-254`. Landed in
+  commit `b0ad941`. If you see this again, the formula has regressed.
+
 - **Decoder panics or crashes:** likely chroma-duplicate bounds guard
   broken — `line_index + 1 == image_lines` should be a no-op. Check the
   guard at `decode_r36_or_r24_line`.

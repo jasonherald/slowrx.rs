@@ -7,9 +7,12 @@
 //!
 //! ## Status
 //!
-//! `0.2.x` — V2.1 published with PD120, PD180, and PD240 decoding. The
-//! public API is `#[non_exhaustive]`-protected for additive growth as
-//! V2.x mode-family epics land. See
+//! `0.3.x` — V2.2 published. PD120/PD180/PD240 + Robot 24/36/72
+//! decoding from raw audio. PD120/PD180 validated against ARISS
+//! Dec-2017; Robot 36 validated against the ARISS Fram2 corpus
+//! (see `tests/ariss_fram2_validation.md`). The public API is
+//! `#[non_exhaustive]`-protected for additive growth as V2.x
+//! mode-family epics land. See
 //! <https://github.com/jasonherald/slowrx.rs/issues/9> for the V2 roadmap.
 //!
 //! ## Example
