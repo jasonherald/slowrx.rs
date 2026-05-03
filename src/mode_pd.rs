@@ -437,8 +437,10 @@ pub(crate) fn decode_one_channel_into(
     let mut stored_lum = vec![0_u8; sweep_len];
 
     // SNR is sticky across the sweep; slowrx initializes with `SNR = 0`
-    // (`video.c:36`) so the first `WinIdx` lookup uses index 4 (the
-    // 256-sample Hann window inside a 1024-sample FFT).
+    // (`video.c:36`) so the first `WinIdx` lookup uses index 4 (slowrx C's
+    // 256-sample Hann window; equivalently `HANN_LENS[4] = 64` samples
+    // in slowrx.rs at our 11_025 Hz working rate, applied inside a
+    // [`FFT_LEN`] = 1024 FFT with the rest zero-padded).
     let mut snr_db = 0.0_f64;
     let mut current_freq = 1500.0_f64 + hedr_shift_hz;
 

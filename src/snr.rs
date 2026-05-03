@@ -11,13 +11,22 @@
 //! [`crate::resample::WORKING_SAMPLE_RATE_HZ`] = `11_025` Hz with
 //! `FFT_LEN = 1024` — same FFT length, **4× finer Hz/bin**
 //! (`11025/1024 ≈ 10.77` Hz/bin vs slowrx's `44100/1024 ≈ 43.07`
-//! Hz/bin). The Hann lengths stay at slowrx's lengths divided by 4
-//! (`[12, 16, 24, 32, 64, 128, 256]`) so the time-domain analysis is
-//! identical to slowrx C; the FFT input is naturally zero-padded
-//! outside the Hann support, giving us 4× more output bins on the
-//! same windowed signal. See
-//! `docs/intentional-deviations.md::"FFT frequency resolution exceeds
-//! slowrx C by 4×"` for rationale.
+//! Hz/bin). The bump produces two coupled DSP changes:
+//!
+//! - **Per-pixel demod**: `HANN_LENS` stays at slowrx's lengths divided
+//!   by 4 (`[12, 16, 24, 32, 64, 128, 256]`), so the Hann is applied
+//!   to the first `HANN_LENS[idx]` samples of the FFT input and the
+//!   rest is zero-padded. Time-domain support identical to slowrx C;
+//!   only the FFT bin density changes (4× more output bins on the
+//!   same windowed signal).
+//! - **SNR estimator**: `hann_long = build_hann(FFT_LEN)` scales with
+//!   `FFT_LEN`, so the SNR-estimator window grows from 256 samples
+//!   (~23 ms = slowrx C) to 1024 samples (~93 ms, 4× longer). This
+//!   gives a cleaner SNR estimate and is a desirable side-effect.
+//!
+//! See `docs/intentional-deviations.md::"FFT frequency resolution
+//! exceeds slowrx C by 4×"` for the full rationale and revisit
+//! triggers.
 
 use rustfft::{num_complex::Complex, FftPlanner};
 
@@ -26,9 +35,11 @@ use rustfft::{num_complex::Complex, FftPlanner};
 pub(crate) const FFT_LEN: usize = 1024;
 
 /// Hann-window lengths at the `11_025` Hz working rate (slowrx's
-/// `[48, 64, 96, 128, 256, 512, 1024]` divided by 4). Index 6 (length
-/// = `FFT_LEN`) is the "longest, lowest-SNR" window and is also reused
-/// by the SNR estimator. Translated from `video.c:54`.
+/// `[48, 64, 96, 128, 256, 512, 1024]` divided by 4). Index 6
+/// (length 256) is the "longest, lowest-SNR" window in the per-pixel
+/// demod's bank. The SNR estimator carries its own Hann window of
+/// length [`FFT_LEN`] = 1024 — see [`SnrEstimator`] for the size
+/// rationale. Translated from `video.c:54`.
 pub(crate) const HANN_LENS: [usize; 7] = [12, 16, 24, 32, 64, 128, 256];
 
 /// Pre-computed Hann window of length [`FFT_LEN`]. Used inside the

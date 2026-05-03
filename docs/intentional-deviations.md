@@ -370,11 +370,31 @@ We use `FFT_LEN = 1024` at [`crate::resample::WORKING_SAMPLE_RATE_HZ`]
 = `11_025` Hz, giving `11025 / 1024 ≈ 10.77` Hz/bin —
 **4× finer than slowrx C**.
 
-`crate::snr::HANN_LENS` is unchanged at `[12, 16, 24, 32, 64, 128, 256]`
-(slowrx's `[48, 64, 96, 128, 256, 512, 1024]` divided by 4) so the
-time-domain analysis is identical to slowrx C. The FFT input is
-naturally zero-padded outside the Hann support, giving us 4× more
-output bins on the same windowed signal.
+The bump produces two coupled DSP changes:
+
+1. **Per-pixel demod (`mode_pd::PdDemod::pixel_freq`)**: 4× finer
+   bin density only. `HANN_LENS` is unchanged at
+   `[12, 16, 24, 32, 64, 128, 256]` (slowrx's
+   `[48, 64, 96, 128, 256, 512, 1024]` divided by 4) so the Hann is
+   applied to the first `HANN_LENS[idx]` samples of the FFT input
+   and the rest is zero-padded — time-domain support identical to
+   slowrx C, only the FFT bin density changes.
+2. **SNR estimator (`SnrEstimator::estimate`)**: the long Hann window
+   `hann_long = build_hann(FFT_LEN)` scales with `FFT_LEN`, so it
+   grows from 256 samples (~23 ms at 11_025 Hz, matching slowrx C) to
+   1024 samples (~93 ms, 4× longer than slowrx C). The SNR estimator
+   therefore integrates over a 4× longer time window. This is a
+   second, real deviation that comes "for free" with the FFT_LEN
+   bump and is desirable: the longer integration produces a cleaner
+   SNR estimate, which in turn reduces flip-flop in the
+   adaptive-Hann selector beyond what the 0.3.2 hysteresis already
+   delivers.
+
+Both effects were validated together on the parallel experiment
+branch and contribute to the "WAY clearer" visual finding on the
+12 ARISS Fram2 R36 reference WAVs. We do not attempt to decouple
+them — the longer SNR-estimator window is part of the package, not
+a regression to mitigate.
 
 ### Why we deviated
 
