@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-02
+
+Patch release bundling three small follow-up items from V2.2 review
+cycles (no functional changes; pure cleanup).
+
+### Fixed
+
+- **`chroma_planes` over-allocation for R72.** `DecodingState` was
+  allocating ~150 KiB of cross-radio-line chroma side buffer for any
+  `ChannelLayout::RobotYuv` mode, but R72 composes RGB in-place and
+  never reads the planes. Now allocated only for R24/R36 (where chroma
+  duplication actually requires the side buffer). Saves ~150 KiB per
+  R72 decode.
+
+### Changed
+
+- **`pd_modes_have_zero_septr_seconds` test extended to cover Pd240.**
+  Pre-existing gap from V2.1 — the test was never extended after Pd240
+  was added. Robot has non-zero `septr_seconds` so the PD-family
+  invariant doesn't generalize to it; the test stays PD-specific.
+
+### Documentation
+
+- **`SstvEvent::LineDecoded` rustdoc** now documents the R36/R24
+  partial-chroma emission semantics: row 0's Cb is at zero-init when
+  LineDecoded fires (no previous radio line to duplicate from);
+  faithful to slowrx C's `calloc`'d image buffer behavior. Final
+  `ImageComplete` carries the populated buffer.
+
 ## [0.3.0] - 2026-05-02
 
 V2.2 — Robot family mode coverage. Adds Robot 24 (`SstvMode::Robot24`,

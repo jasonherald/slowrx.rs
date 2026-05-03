@@ -289,8 +289,10 @@ mod tests {
         // modes it must be zero so chan_starts_sec is numerically unchanged.
         let pd120 = lookup(0x5F).expect("PD120");
         let pd180 = lookup(0x60).expect("PD180");
+        let pd240 = lookup(0x61).expect("PD240");
         assert_eq!(pd120.septr_seconds, 0.0);
         assert_eq!(pd180.septr_seconds, 0.0);
+        assert_eq!(pd240.septr_seconds, 0.0);
     }
 
     #[test]
