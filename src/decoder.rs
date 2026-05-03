@@ -33,6 +33,22 @@ pub enum SstvEvent {
         hedr_shift_hz: f64,
     },
     /// One scan line completed (callers may render incrementally).
+    ///
+    /// For PD and Robot 72: `pixels` is fully composed at emission time
+    /// (own Y/U/V or Y(odd)/Cr/Cb/Y(even) for the row).
+    ///
+    /// For Robot 36 / Robot 24: `pixels` reflects the image buffer state
+    /// at emission time, which has a transient cross-row dependency due
+    /// to chroma alternation. Each radio line writes its own Cr-or-Cb
+    /// AND duplicates that chroma to the NEXT image row. So row N is
+    /// emitted with: own Y, own Cr-or-Cb (per row parity), and the
+    /// OTHER chroma channel duplicated from the previous radio line.
+    /// Row 0 is the exception — its `Cb` channel is zero-init at
+    /// emission time (no row -1 to duplicate from), giving a transient
+    /// color cast on the very top row. Faithful to slowrx C, which
+    /// `calloc`'s its image buffer and never writes row 0's Cb.
+    /// `ImageComplete` carries the final populated state for all rows
+    /// `1..image_lines` and the same row-0 Cb-zero artifact.
     LineDecoded {
         /// Mode currently being decoded.
         mode: SstvMode,
@@ -240,13 +256,20 @@ impl SstvDecoder {
                                 sync_tracker: SyncTracker::new(detected.hedr_shift_hz),
                                 hedr_shift_hz: detected.hedr_shift_hz,
                                 target_audio_samples: target,
-                                chroma_planes: match spec.channel_layout {
-                                    crate::modespec::ChannelLayout::PdYcbcr => None,
-                                    crate::modespec::ChannelLayout::RobotYuv => {
+                                chroma_planes: match spec.mode {
+                                    SstvMode::Robot24 | SstvMode::Robot36 => {
                                         let n = (spec.image_lines as usize)
                                             * (spec.line_pixels as usize);
                                         Some([vec![0_u8; n], vec![0_u8; n]])
                                     }
+                                    // PD modes compose RGB per-pair in place. Robot 72 also composes
+                                    // in-place (3-channel sequential — see mode_robot::decode_r72_line),
+                                    // so it doesn't need chroma_planes either; only the R36/R24 chroma-
+                                    // alternation + duplication path requires the side buffer.
+                                    // SstvMode is #[non_exhaustive], so the wildcard arm is required;
+                                    // V2.3 will need to revisit if Scottie introduces similar cross-line
+                                    // state requirements (the spec.sync_position field is the trigger).
+                                    _ => None,
                                 },
                             }));
                             continue; // re-enter loop to process leftover audio
