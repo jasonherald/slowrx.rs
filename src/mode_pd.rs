@@ -392,7 +392,7 @@ pub(crate) fn decode_one_channel_into(
     spec: crate::modespec::ModeSpec,
     audio: &[f32],
     skip_samples: i64,
-    pair_seconds: f64,
+    time_offset_seconds: f64,
     rate_hz: f64,
     demod: &mut PdDemod,
     snr_est: &mut crate::snr::SnrEstimator,
@@ -402,12 +402,18 @@ pub(crate) fn decode_one_channel_into(
     let width = spec.line_pixels as usize;
 
     // Pixel sample times (slowrx video.c:140-142) — absolute audio indices.
-    // SINGLE `round()` over `(pair_seconds + chan_start_sec + (x +
+    // SINGLE `round()` over `(time_offset_seconds + chan_start_sec + (x +
     // 0.5) * pixel_secs) * rate`; matches slowrx exactly.
+    //
+    // `time_offset_seconds` is the time-base offset of the radio frame the
+    // caller is decoding: PD passes `pair_index * line_seconds`; Robot
+    // passes `line_index * line_seconds`. The helper itself is mode-
+    // agnostic — it only sees an additive seconds offset folded inside
+    // the single `round()`.
     let mut pixel_times: Vec<i64> = Vec::with_capacity(width);
     for x in 0..width {
-        let secs_in_pair = chan_start_sec + pixel_secs * (x as f64 + 0.5);
-        let abs = skip_samples + ((pair_seconds + secs_in_pair) * rate_hz).round() as i64;
+        let secs_in_frame = chan_start_sec + pixel_secs * (x as f64 + 0.5);
+        let abs = skip_samples + ((time_offset_seconds + secs_in_frame) * rate_hz).round() as i64;
         pixel_times.push(abs);
     }
 
