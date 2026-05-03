@@ -94,6 +94,20 @@ struct DecodingState {
     /// [`find_sync`] and per-pair decode. Computed at state-entry as
     /// `image_lines / 2 × line_seconds × FINDSYNC_AUDIO_HEADROOM × work_rate`.
     target_audio_samples: usize,
+    /// Per-mode chroma planes side buffer.
+    ///
+    /// `None` for `ChannelLayout::PdYcbcr` (PD composes RGB in-place per
+    /// pair — see `mode_pd::decode_pd_line_pair`).
+    ///
+    /// `Some([cr_plane, cb_plane])` for `ChannelLayout::RobotYuv`. Each
+    /// plane is `image_lines * line_pixels` bytes, populated as radio
+    /// lines are decoded. R72 doesn't actually use these (composes RGB
+    /// in-place like PD), but R36/R24 need them: each radio line N
+    /// writes its own chroma + duplicates to the next row's chroma slot
+    /// (slowrx `video.c:421-425`); RGB composition for row N reads the
+    /// duplicated-from-N-1 chroma channel that the line N-1 decode
+    /// wrote earlier.
+    chroma_planes: Option<[Vec<u8>; 2]>,
 }
 
 /// Headroom factor on the buffered audio length before [`find_sync`]
@@ -221,6 +235,14 @@ impl SstvDecoder {
                                 sync_tracker: SyncTracker::new(detected.hedr_shift_hz),
                                 hedr_shift_hz: detected.hedr_shift_hz,
                                 target_audio_samples: target,
+                                chroma_planes: match spec.channel_layout {
+                                    crate::modespec::ChannelLayout::PdYcbcr => None,
+                                    crate::modespec::ChannelLayout::RobotYuv => {
+                                        let n = (spec.image_lines as usize)
+                                            * (spec.line_pixels as usize);
+                                        Some([vec![0_u8; n], vec![0_u8; n]])
+                                    }
+                                },
                             }));
                             continue; // re-enter loop to process leftover audio
                         }
@@ -384,6 +406,7 @@ impl SstvDecoder {
                         line_seconds_offset,
                         rate,
                         &mut d.image,
+                        d.chroma_planes.as_mut(),
                         pd_demod,
                         snr_est,
                         d.hedr_shift_hz,

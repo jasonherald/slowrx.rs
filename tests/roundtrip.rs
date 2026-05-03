@@ -203,3 +203,13 @@ fn pd240_roundtrip() {
 fn robot72_roundtrip() {
     run_robot_roundtrip(SstvMode::Robot72);
 }
+
+#[test]
+fn robot36_roundtrip() {
+    run_robot_roundtrip(SstvMode::Robot36);
+}
+
+#[test]
+fn robot24_roundtrip() {
+    run_robot_roundtrip(SstvMode::Robot24);
+}
