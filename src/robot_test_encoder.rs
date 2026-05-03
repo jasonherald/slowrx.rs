@@ -128,6 +128,19 @@ fn encode_r72(
             let cb = ycrcb[(y * w + x) as usize][2];
             fill_to(out, lum_to_freq(cb), advance(t, spec.pixel_seconds), phase);
         }
+
+        // Pad to spec.line_seconds boundary. R72's per-line content
+        // (sync + porch + 3 channels + 2 septr) sums to ~297.4 ms but
+        // ModeSpec.line_seconds is 300 ms — the decoder advances at
+        // 300 ms per line. Without this pad, the synthetic audio drifts
+        // from the crate's own timing model and weakens the round-trip
+        // as a regression test. Fill the gap with PORCH_HZ (real radio
+        // emits a 1500 Hz tone during inter-line idle, not silence).
+        let line_end_target = f64::from(y + 1) * spec.line_seconds;
+        let pad_secs = line_end_target - *t;
+        if pad_secs > 0.0 {
+            fill_to(out, PORCH_HZ, advance(t, pad_secs), phase);
+        }
     }
 }
 

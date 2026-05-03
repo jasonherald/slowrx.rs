@@ -59,7 +59,7 @@ CLI:
 
 ```bash
 slowrx-cli --input recording.wav --output ./out
-# → out/img-001-pd120.png, out/img-001-robot36.png, ...
+# → out/img-001-pd120.png, out/img-002-robot36.png, ...
 ```
 
 ## What it does

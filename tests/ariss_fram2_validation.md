@@ -33,21 +33,43 @@ dispatch.
 Decode all 12 WAVs and inspect each PNG against its reference JPG:
 
 ```bash
+set -e
 mkdir -p /tmp/fram2-validate
+# Clear any stale outputs from a previous run so a regressed re-run
+# can't look like 12/12 by leaving old PNGs in place.
+rm -f /tmp/fram2-validate/Slide*-decoded.png /tmp/fram2-validate/img-001-*.png
+
 for n in 01 02 03 04 05 06 07 08 09 10 11 12; do
-  ./target/release/slowrx-cli \
-    --input "tests/fixtures/ariss-fram2/Slide${n}.wav" \
-    --output "/tmp/fram2-validate/" 2>&1 | tail -2
-  # Rename so each output is identifiable
+  # Capture the CLI's stdout+stderr to a temp file so we can both display
+  # the last 2 lines AND check the exit status (piping through `tail`
+  # would mask the decoder's exit status).
+  log=$(mktemp)
+  if ! ./target/release/slowrx-cli \
+       --input "tests/fixtures/ariss-fram2/Slide${n}.wav" \
+       --output "/tmp/fram2-validate/" >"$log" 2>&1; then
+    echo "Slide${n}: slowrx-cli FAILED" >&2
+    tail -10 "$log" >&2
+    rm "$log"
+    exit 1
+  fi
+  tail -2 "$log"
+  rm "$log"
+  # Rename so each output is identifiable.
   if [ -f "/tmp/fram2-validate/img-001-robot36.png" ]; then
     mv "/tmp/fram2-validate/img-001-robot36.png" \
        "/tmp/fram2-validate/Slide${n}-decoded.png"
+  else
+    echo "Slide${n}: NO PNG PRODUCED" >&2
+    exit 1
   fi
 done
 ls -la /tmp/fram2-validate/
 ```
 
 Each WAV should produce: `1 VIS, 240 lines, 1 image(s)` and a PNG file.
+The script fails closed if any decode fails or any PNG is missing — a
+regressed re-run will exit non-zero, NOT silently leave stale PNGs that
+look like a 12/12 pass.
 
 Open both directories in an image viewer and visually compare each
 `Slide${n}-decoded.png` against the reference
