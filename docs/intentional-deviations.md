@@ -325,9 +325,11 @@ flip-flop.
 Three triggers would prompt revisiting:
 
 1. **Empirical Fram2 validation shows the squiggles persist or worsen
-   after this hysteresis lands.** Means hysteresis isn't the root cause;
-   move on to other paths in #71 (sub-pixel FFT interpolation, resampler
-   quality).
+   after this hysteresis lands.** Re-run the procedure at
+   [`tests/ariss_fram2_validation.md`](../tests/ariss_fram2_validation.md)
+   and compare visually against the V2.2 baseline. Persistence means
+   hysteresis isn't the root cause; move on to other paths in #71
+   (sub-pixel FFT interpolation, resampler quality).
 2. **Decode quality regresses at SNR edges** (e.g., images with
    alternating bands of high and low SNR show banding at the band
    boundaries because hysteresis is filtering legitimate SNR changes).

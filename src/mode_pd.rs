@@ -370,9 +370,10 @@ pub(crate) fn decode_pd_line_pair(
 /// for a single channel: an FFT every [`PIXEL_FFT_STRIDE`] samples
 /// produces the most-recent `Freq`, which fills `StoredLum` at every
 /// sample. Pixel times read out of `StoredLum`. SNR is re-estimated
-/// every [`SNR_REESTIMATE_STRIDE`] samples for diagnostic
-/// completeness — the per-pixel `win_idx` is currently hard-coded
-/// (see [`decode_pd_line_pair`]'s #18 deferral note).
+/// every [`SNR_REESTIMATE_STRIDE`] samples and feeds the SNR-adaptive
+/// Hann window selector with 1 dB hysteresis (see
+/// [`decode_pd_line_pair`]'s `#44 lifted with hysteresis (0.3.2)` note
+/// and [`crate::snr::window_idx_for_snr_with_hysteresis`]).
 ///
 /// `chan_bounds_abs` is `(start_abs, end_abs)` of the channel in the
 /// audio stream; the FFT windowed support is zero-padded outside this
@@ -432,13 +433,13 @@ pub(crate) fn decode_one_channel_into(
     let mut current_freq = 1500.0_f64 + hedr_shift_hz;
 
     // Per-channel local state for SNR-adaptive Hann selection. Initial
-    // value 6 (longest window) is the conservative default — same as
-    // `snr_db = 0.0` initial which would map to win_idx = 4 via
-    // `window_idx_for_snr` (≥ -5 → 4), but we use 6 here so the very
-    // first FFT (before the first SNR estimate fires) uses maximum
-    // noise rejection. After the first SNR estimate at sweep_start +
-    // SNR_REESTIMATE_STRIDE, the hysteresis function takes over and
-    // tracks the actual SNR.
+    // value 6 (longest window) is the conservative default. In practice
+    // idx 6 is used for exactly one FFT — the very first iteration with
+    // SNR=0.0 — because the hysteresis function then converges to idx 4
+    // (matching slowrx's pure-threshold value at SNR=0.0: ≥ -5 → 4) for
+    // the rest of the pre-first-SNR-estimate window. Once the first SNR
+    // estimate fires at the next multiple of SNR_REESTIMATE_STRIDE, the
+    // hysteresis function tracks the actual SNR.
     let mut prev_win_idx = 6_usize;
 
     // Read absolute audio with no channel-boundary mask. slowrx FFTs
