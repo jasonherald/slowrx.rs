@@ -256,14 +256,13 @@ pub(crate) const SNR_REESTIMATE_STRIDE: i64 = 64;
 ///   every [`SNR_REESTIMATE_STRIDE`] samples (`video.c:302-343`).
 ///
 /// **Deviations from slowrx (deliberate):**
-/// - **#18 partial**: per-pixel Hann window length is hard-coded to
-///   `HANN_LENS[6] = 256` rather than driven by SNR. The synthetic
-///   round-trip encoder's instant-frequency-step transitions report
-///   ~12–19 dB SNR on clean tones, which would select short windows
-///   whose wider main lobe degrades peak localization. Once a
-///   realistic FM-slewing synthetic encoder lands (see #32) the
-///   adaptive selector should engage. The SNR estimator runs every
-///   iteration regardless, for diagnostic completeness.
+/// - **#44 lifted with hysteresis (0.3.2)**: per-pixel Hann window
+///   length is SNR-adaptive (slowrx `video.c:354-367`) plus a 1 dB
+///   hysteresis band at each threshold to prevent flip-flop on real-
+///   radio SNR fluctuations near boundary values. See
+///   [`crate::snr::window_idx_for_snr_with_hysteresis`] and the
+///   `SNR hysteresis on adaptive Hann window selection` entry in
+///   `docs/intentional-deviations.md`.
 /// - **#32**: the FFT windowed support zero-pads outside the active
 ///   channel's sample range. Real slowrx FFTs across channel
 ///   boundaries because real-radio FM modulators smooth tone
@@ -432,6 +431,16 @@ pub(crate) fn decode_one_channel_into(
     let mut snr_db = 0.0_f64;
     let mut current_freq = 1500.0_f64 + hedr_shift_hz;
 
+    // Per-channel local state for SNR-adaptive Hann selection. Initial
+    // value 6 (longest window) is the conservative default — same as
+    // `snr_db = 0.0` initial which would map to win_idx = 4 via
+    // `window_idx_for_snr` (≥ -5 → 4), but we use 6 here so the very
+    // first FFT (before the first SNR estimate fires) uses maximum
+    // noise rejection. After the first SNR estimate at sweep_start +
+    // SNR_REESTIMATE_STRIDE, the hysteresis function takes over and
+    // tracks the actual SNR.
+    let mut prev_win_idx = 6_usize;
+
     // Read absolute audio with no channel-boundary mask. slowrx FFTs
     // across channel boundaries (`video.c::GetVideo`); the peak search in
     // 1500-2300 Hz still locks onto the dominant video tone even when
@@ -464,15 +473,18 @@ pub(crate) fn decode_one_channel_into(
         }
 
         if mod_round(s, PIXEL_FFT_STRIDE) == 0 {
-            // SNR-adaptive Hann window length (#44 engaged for real audio).
-            // slowrx `video.c:354-367` selects window length by SNR — short
-            // window for sharp time resolution at high SNR, long window for
-            // noise rejection at low SNR. Synthetic round-trip's instant
-            // tone-step transitions report misleadingly low SNR; real radio's
-            // FM-modulator slewing reports realistic SNR. Engaging this
-            // hurts synthetic round-trip but is required for real-audio
-            // image quality (verified Dec-2017 ARISS captures).
-            let win_idx = crate::snr::window_idx_for_snr(snr_db);
+            // SNR-adaptive Hann window length WITH 1 dB hysteresis band.
+            // The bare `window_idx_for_snr` function flip-flops at threshold
+            // boundaries when real-radio SNR fluctuates ~0.5 dB across the
+            // SNR re-estimation cadence (5.8 ms = ~21 R36-Y pixels) — that
+            // produced the vertical squiggle artifact in V2.2's Fram2 output
+            // (#71). The hysteresis variant requires SNR to move past the
+            // threshold by ≥ 0.5 dB in the direction of the new index before
+            // accepting a change. See
+            // `crate::snr::window_idx_for_snr_with_hysteresis` and the
+            // 0.3.2 entry in `docs/intentional-deviations.md`.
+            let win_idx = crate::snr::window_idx_for_snr_with_hysteresis(snr_db, prev_win_idx);
+            prev_win_idx = win_idx;
             let center_in_scratch = s - sweep_start;
             current_freq =
                 demod.pixel_freq(&scratch_audio, center_in_scratch, hedr_shift_hz, win_idx);

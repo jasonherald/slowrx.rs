@@ -258,3 +258,80 @@ prioritized, or whenever a downstream consumer asks for cleaner output.
 The investigation paths in #71 cover SNR-adaptive Hann selector
 re-engagement (V1 deferral #44), slowrx C cross-validation, and per-
 pixel sub-bin interpolation.
+
+---
+
+## SNR hysteresis on adaptive Hann window selection
+
+**Files:** `src/snr.rs::window_idx_for_snr_with_hysteresis` ↔ slowrx `video.c:354-367`.
+**Tracking issue:** [#71](https://github.com/jasonherald/slowrx.rs/issues/71).
+**Shipped in:** 0.3.2.
+
+### What slowrx does
+
+slowrx C selects the per-pixel Hann window length using pure-threshold
+logic on the SNR estimate (`video.c:354-367`):
+
+```c
+if      (!Adaptive)  WinIdx = 0;
+else if (SNR >=  20) WinIdx = 0;
+else if (SNR >=  10) WinIdx = 1;
+else if (SNR >=   9) WinIdx = 2;
+else if (SNR >=   3) WinIdx = 3;
+else if (SNR >=  -5) WinIdx = 4;
+else if (SNR >= -10) WinIdx = 5;
+else                 WinIdx = 6;
+```
+
+No hysteresis. When SNR fluctuates near a threshold (e.g., real-radio
+SNR oscillating ±0.5 dB across the 9 dB boundary between `WinIdx=2` and
+`WinIdx=3`), the selector flips every SNR re-estimation cadence (5.8 ms
+wall-clock).
+
+### What we do
+
+We use the same threshold table but apply a 1 dB hysteresis band at
+each transition. The function `window_idx_for_snr_with_hysteresis(snr_db,
+prev_idx)` calls the bare `window_idx_for_snr` twice — once at `snr_db`
+(the "baseline" lookup), once at a pessimistically-shifted `snr_db ± 0.5`
+toward `prev_idx`. Only accepts a window-idx change when both lookups
+agree (i.e., the SNR moved past the threshold by ≥ 0.5 dB in the
+direction of the new index). Otherwise stays at `prev_idx`.
+
+### Why we deviated
+
+V2.2 Phase 5 visual validation against the 12 ARISS Fram2 R36 reference
+WAVs revealed faint vertical squiggle artifacts every ~20–30 pixels in
+the decoded PNGs. The squiggle period (5.8 ms of audio at R36 Y's
+0.275 ms/pixel cadence ≈ 21 px) matches the SNR re-estimation cadence
+exactly. A code-only audit (#71) found the DSP otherwise arithmetically
+equivalent to slowrx C. Hypothesis: real-radio SNR fluctuates near a
+window-selection threshold, the selector flip-flops, and that produces
+periodic vertical banding.
+
+slowrx C exhibits the same algorithmic property (no hysteresis) and
+would in principle produce the same artifact at its 5.8 ms cadence.
+The reference JPGs ARISS published were almost certainly decoded by a
+different tool (MMSSTV or RX-SSTV in the ARISS community) that either
+uses a fixed window or has hysteresis.
+
+The 1 dB band is small enough that real SNR changes still propagate
+quickly (≥ 0.5 dB past threshold = one cadence delay max), and large
+enough that typical real-radio fluctuation (0.5–1.5 dB) doesn't cause
+flip-flop.
+
+### When to revisit
+
+Three triggers would prompt revisiting:
+
+1. **Empirical Fram2 validation shows the squiggles persist or worsen
+   after this hysteresis lands.** Means hysteresis isn't the root cause;
+   move on to other paths in #71 (sub-pixel FFT interpolation, resampler
+   quality).
+2. **Decode quality regresses at SNR edges** (e.g., images with
+   alternating bands of high and low SNR show banding at the band
+   boundaries because hysteresis is filtering legitimate SNR changes).
+   Tune the band size or switch to a debouncer/smoother strategy.
+3. **A future audit cross-validates pixel-by-pixel against slowrx C
+   output on the same WAV** and finds slowrx's pure-threshold behavior
+   matters in some specific way. Unlikely but possible.
