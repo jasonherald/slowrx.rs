@@ -145,7 +145,14 @@ fn run_robot_roundtrip(mode: SstvMode) {
     audio.extend(slowrx::__test_support::mode_robot::encode_robot(
         mode, &ycrcb,
     ));
-    audio.extend(std::iter::repeat_n(0.0_f32, 2048));
+    // R72 has ~2.6 ms per-line gap (line_seconds - actual content); over
+    // 240 lines that's ~624 ms = ~6.9k samples short of the decoder's
+    // target_audio_samples threshold (= image_lines × line_seconds).
+    // Pad enough to reach the threshold + a little group-delay headroom.
+    // R36/R24 have no per-line gap (their content fills line_seconds
+    // exactly) so this pad is harmless for them. PD's helper uses 2048;
+    // Robot needs more.
+    audio.extend(std::iter::repeat_n(0.0_f32, 8192));
 
     let mut d = SstvDecoder::new(WORKING_SAMPLE_RATE_HZ).expect("decoder");
     let events = d.process(&audio);

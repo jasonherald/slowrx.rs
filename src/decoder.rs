@@ -215,13 +215,18 @@ impl SstvDecoder {
                             // the leading edge of the image data.
                             let residual = self.vis.take_residual_buffer();
                             let work_rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
-                            // PD modes pack 2 image rows per radio frame, so
-                            // the audio duration is `image_lines/2 *
-                            // line_seconds * rate`. Matches slowrx's
-                            // `Length = LineTime * NumLines/2 * 44100`
-                            // path in video.c:252 (for NumChans == 4).
+                            // Audio duration depends on whether the mode packs
+                            // 2 image rows per radio frame (PD) or 1 (Robot,
+                            // future Scottie/Martin). Mirrors slowrx's
+                            // video.c:251-254: `Length = LineTime * NumLines/2`
+                            // when `NumChans == 4` (PD), else
+                            // `Length = LineTime * NumLines`.
+                            let radio_frames_per_image = match spec.channel_layout {
+                                crate::modespec::ChannelLayout::PdYcbcr => spec.image_lines / 2,
+                                crate::modespec::ChannelLayout::RobotYuv => spec.image_lines,
+                            };
                             let nominal_samples =
-                                (f64::from(spec.image_lines / 2) * spec.line_seconds * work_rate)
+                                (f64::from(radio_frames_per_image) * spec.line_seconds * work_rate)
                                     as usize;
                             let target =
                                 ((nominal_samples as f64) * FINDSYNC_AUDIO_HEADROOM) as usize;
