@@ -94,6 +94,20 @@ struct DecodingState {
     /// [`find_sync`] and per-pair decode. Computed at state-entry as
     /// `image_lines / 2 × line_seconds × FINDSYNC_AUDIO_HEADROOM × work_rate`.
     target_audio_samples: usize,
+    /// Per-mode chroma planes side buffer.
+    ///
+    /// `None` for `ChannelLayout::PdYcbcr` (PD composes RGB in-place per
+    /// pair — see `mode_pd::decode_pd_line_pair`).
+    ///
+    /// `Some([cr_plane, cb_plane])` for `ChannelLayout::RobotYuv`. Each
+    /// plane is `image_lines * line_pixels` bytes, populated as radio
+    /// lines are decoded. R72 doesn't actually use these (composes RGB
+    /// in-place like PD), but R36/R24 need them: each radio line N
+    /// writes its own chroma + duplicates to the next row's chroma slot
+    /// (slowrx `video.c:421-425`); RGB composition for row N reads the
+    /// duplicated-from-N-1 chroma channel that the line N-1 decode
+    /// wrote earlier.
+    chroma_planes: Option<[Vec<u8>; 2]>,
 }
 
 /// Headroom factor on the buffered audio length before [`find_sync`]
@@ -201,13 +215,18 @@ impl SstvDecoder {
                             // the leading edge of the image data.
                             let residual = self.vis.take_residual_buffer();
                             let work_rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
-                            // PD modes pack 2 image rows per radio frame, so
-                            // the audio duration is `image_lines/2 *
-                            // line_seconds * rate`. Matches slowrx's
-                            // `Length = LineTime * NumLines/2 * 44100`
-                            // path in video.c:252 (for NumChans == 4).
+                            // Audio duration depends on whether the mode packs
+                            // 2 image rows per radio frame (PD) or 1 (Robot,
+                            // future Scottie/Martin). Mirrors slowrx's
+                            // video.c:251-254: `Length = LineTime * NumLines/2`
+                            // when `NumChans == 4` (PD), else
+                            // `Length = LineTime * NumLines`.
+                            let radio_frames_per_image = match spec.channel_layout {
+                                crate::modespec::ChannelLayout::PdYcbcr => spec.image_lines / 2,
+                                crate::modespec::ChannelLayout::RobotYuv => spec.image_lines,
+                            };
                             let nominal_samples =
-                                (f64::from(spec.image_lines / 2) * spec.line_seconds * work_rate)
+                                (f64::from(radio_frames_per_image) * spec.line_seconds * work_rate)
                                     as usize;
                             let target =
                                 ((nominal_samples as f64) * FINDSYNC_AUDIO_HEADROOM) as usize;
@@ -221,6 +240,14 @@ impl SstvDecoder {
                                 sync_tracker: SyncTracker::new(detected.hedr_shift_hz),
                                 hedr_shift_hz: detected.hedr_shift_hz,
                                 target_audio_samples: target,
+                                chroma_planes: match spec.channel_layout {
+                                    crate::modespec::ChannelLayout::PdYcbcr => None,
+                                    crate::modespec::ChannelLayout::RobotYuv => {
+                                        let n = (spec.image_lines as usize)
+                                            * (spec.line_pixels as usize);
+                                        Some([vec![0_u8; n], vec![0_u8; n]])
+                                    }
+                                },
                             }));
                             continue; // re-enter loop to process leftover audio
                         }
@@ -328,38 +355,75 @@ impl SstvDecoder {
         let skip = result.skip_samples;
 
         let line_pixels = d.spec.line_pixels as usize;
-        let pair_count = d.spec.image_lines / 2;
-        for pair in 0..pair_count {
-            // slowrx `video.c:140-142` computes pixel time as
-            // `Skip + round(Rate * (y/2 * LineTime + ChanStart +
-            // PixelTime * (x + 0.5)))`. Compute `pair_seconds = y/2 *
-            // LineTime` here (un-rounded) and let
-            // [`crate::mode_pd::decode_pd_line_pair`] fold it into its
-            // own `round()`, so per-pair rounding error never
-            // accumulates.
-            let pair_seconds = f64::from(pair) * d.spec.line_seconds;
-            crate::mode_pd::decode_pd_line_pair(
-                d.spec,
-                pair,
-                &d.audio,
-                skip,
-                pair_seconds,
-                rate,
-                &mut d.image,
-                pd_demod,
-                snr_est,
-                d.hedr_shift_hz,
-            );
-            let row0 = pair * 2;
-            let row1 = row0 + 1;
-            for r in [row0, row1] {
-                let start = (r as usize) * line_pixels;
-                let end = start + line_pixels;
-                out.push(SstvEvent::LineDecoded {
-                    mode: d.mode,
-                    line_index: r,
-                    pixels: d.image.pixels[start..end].to_vec(),
-                });
+        match d.spec.channel_layout {
+            crate::modespec::ChannelLayout::PdYcbcr => {
+                let pair_count = d.spec.image_lines / 2;
+                for pair in 0..pair_count {
+                    // slowrx `video.c:140-142` computes pixel time as
+                    // `Skip + round(Rate * (y/2 * LineTime + ChanStart +
+                    // PixelTime * (x + 0.5)))`. Compute `pair_seconds = y/2 *
+                    // LineTime` here (un-rounded) and let
+                    // [`crate::mode_pd::decode_pd_line_pair`] fold it into its
+                    // own `round()`, so per-pair rounding error never
+                    // accumulates.
+                    let pair_seconds = f64::from(pair) * d.spec.line_seconds;
+                    crate::mode_pd::decode_pd_line_pair(
+                        d.spec,
+                        pair,
+                        &d.audio,
+                        skip,
+                        pair_seconds,
+                        rate,
+                        &mut d.image,
+                        pd_demod,
+                        snr_est,
+                        d.hedr_shift_hz,
+                    );
+                    let row0 = pair * 2;
+                    let row1 = row0 + 1;
+                    for r in [row0, row1] {
+                        let start = (r as usize) * line_pixels;
+                        let end = start + line_pixels;
+                        out.push(SstvEvent::LineDecoded {
+                            mode: d.mode,
+                            line_index: r,
+                            pixels: d.image.pixels[start..end].to_vec(),
+                        });
+                    }
+                }
+            }
+            crate::modespec::ChannelLayout::RobotYuv => {
+                // Robot is per-line (no PD line-pairing). For R36/R24 the
+                // chroma-duplication writes to the next image row; that's
+                // handled inside mode_robot::decode_line. LineDecoded for image
+                // row N is emitted after radio-line N's decode — for R36/R24
+                // row 0 the Cb channel is at zero-init at this point (slowrx
+                // C does the same; final ImageComplete carries the populated
+                // state).
+                for line in 0..d.spec.image_lines {
+                    let line_seconds_offset = f64::from(line) * d.spec.line_seconds;
+                    crate::mode_robot::decode_line(
+                        d.spec,
+                        d.mode,
+                        line,
+                        &d.audio,
+                        skip,
+                        line_seconds_offset,
+                        rate,
+                        &mut d.image,
+                        d.chroma_planes.as_mut(),
+                        pd_demod,
+                        snr_est,
+                        d.hedr_shift_hz,
+                    );
+                    let start = (line as usize) * line_pixels;
+                    let end = start + line_pixels;
+                    out.push(SstvEvent::LineDecoded {
+                        mode: d.mode,
+                        line_index: line,
+                        pixels: d.image.pixels[start..end].to_vec(),
+                    });
+                }
             }
         }
 
@@ -546,6 +610,69 @@ mod tests {
                 _ => None,
             })
             .expect("expected VisDetected for PD240");
+        assert!(hedr.abs() < 10.0);
+    }
+
+    #[test]
+    fn process_emits_vis_detected_for_robot24_burst() {
+        use crate::vis::tests::synth_vis;
+        let mut d = SstvDecoder::new(WORKING_SAMPLE_RATE_HZ).expect("decoder");
+        let mut burst = synth_vis(0x04, 0.0);
+        burst.extend(std::iter::repeat_n(0.0_f32, 512));
+        let events = d.process(&burst);
+        let hedr = events
+            .iter()
+            .find_map(|e| match e {
+                SstvEvent::VisDetected {
+                    mode: SstvMode::Robot24,
+                    hedr_shift_hz,
+                    ..
+                } => Some(*hedr_shift_hz),
+                _ => None,
+            })
+            .expect("expected VisDetected for Robot24");
+        assert!(hedr.abs() < 10.0);
+    }
+
+    #[test]
+    fn process_emits_vis_detected_for_robot36_burst() {
+        use crate::vis::tests::synth_vis;
+        let mut d = SstvDecoder::new(WORKING_SAMPLE_RATE_HZ).expect("decoder");
+        let mut burst = synth_vis(0x08, 0.0);
+        burst.extend(std::iter::repeat_n(0.0_f32, 512));
+        let events = d.process(&burst);
+        let hedr = events
+            .iter()
+            .find_map(|e| match e {
+                SstvEvent::VisDetected {
+                    mode: SstvMode::Robot36,
+                    hedr_shift_hz,
+                    ..
+                } => Some(*hedr_shift_hz),
+                _ => None,
+            })
+            .expect("expected VisDetected for Robot36");
+        assert!(hedr.abs() < 10.0);
+    }
+
+    #[test]
+    fn process_emits_vis_detected_for_robot72_burst() {
+        use crate::vis::tests::synth_vis;
+        let mut d = SstvDecoder::new(WORKING_SAMPLE_RATE_HZ).expect("decoder");
+        let mut burst = synth_vis(0x0C, 0.0);
+        burst.extend(std::iter::repeat_n(0.0_f32, 512));
+        let events = d.process(&burst);
+        let hedr = events
+            .iter()
+            .find_map(|e| match e {
+                SstvEvent::VisDetected {
+                    mode: SstvMode::Robot72,
+                    hedr_shift_hz,
+                    ..
+                } => Some(*hedr_shift_hz),
+                _ => None,
+            })
+            .expect("expected VisDetected for Robot72");
         assert!(hedr.abs() < 10.0);
     }
 

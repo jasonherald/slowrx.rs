@@ -7,9 +7,12 @@
 //!
 //! ## Status
 //!
-//! `0.2.x` — V2.1 published with PD120, PD180, and PD240 decoding. The
-//! public API is `#[non_exhaustive]`-protected for additive growth as
-//! V2.x mode-family epics land. See
+//! `0.3.x` — V2.2 published. PD120/PD180/PD240 + Robot 24/36/72
+//! decoding from raw audio. PD120/PD180 validated against ARISS
+//! Dec-2017; Robot 36 validated against the ARISS Fram2 corpus
+//! (see `tests/ariss_fram2_validation.md`). The public API is
+//! `#[non_exhaustive]`-protected for additive growth as V2.x
+//! mode-family epics land. See
 //! <https://github.com/jasonherald/slowrx.rs/issues/9> for the V2 roadmap.
 //!
 //! ## Example
@@ -35,6 +38,7 @@ pub mod decoder;
 pub mod error;
 pub mod image;
 pub mod mode_pd;
+pub mod mode_robot;
 pub mod modespec;
 pub mod resample;
 #[allow(dead_code)]
@@ -127,6 +131,10 @@ mod tests_common {
 #[doc(hidden)]
 pub mod pd_test_encoder;
 
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod robot_test_encoder;
+
 pub use crate::decoder::{SstvDecoder, SstvEvent};
 pub use crate::error::{Error, Result};
 pub use crate::image::SstvImage;
@@ -147,5 +155,8 @@ pub mod __test_support {
     pub mod mode_pd {
         pub use crate::mode_pd::ycbcr_to_rgb;
         pub use crate::pd_test_encoder::encode_pd;
+    }
+    pub mod mode_robot {
+        pub use crate::robot_test_encoder::encode_robot;
     }
 }

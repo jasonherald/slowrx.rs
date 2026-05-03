@@ -20,11 +20,12 @@ Thumbs.db
 # or clone manually from https://github.com/windytan/slowrx)
 /original
 
-# Local ARISS reference fixtures used for the real-data success gate.
-# Real ARISS recordings (audio + decoded reference images) live here for
-# manual validation against our decoder. NOT committed — the redistribution
+# Local reference fixtures used for the real-data success gate.
+# Real recordings (audio + decoded reference images) live here for manual
+# validation against our decoder. NOT committed — the redistribution
 # license for community-shared captures is unclear, and we don't want to
-# bloat the published crate with ~250 MB of fixtures.
+# bloat the published crate with hundreds of MB of fixtures.
 /docs/wav_files
+/tests/fixtures
 
 original

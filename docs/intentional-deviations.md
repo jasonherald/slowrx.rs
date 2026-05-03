@@ -150,3 +150,111 @@ Either:
 2. Add a real-audio cross-validation suite (gitignored fixtures already
    exist in `docs/wav_files/`; the `slowrx-cli` binary covers ad-hoc
    smokes).
+
+---
+
+## Robot family pixel-time offset: `(x + 0.5)` vs slowrx C `(x - 0.5)`
+
+**Files:** `src/mode_pd.rs::decode_one_channel_into` ↔ slowrx `video.c:140-142` (PD case) vs. `:196-198` (non-PD case).
+**Tracking:** Surfaced during V2.2 P3 (Robot 72) code review.
+
+### What slowrx does
+
+slowrx C uses **two different per-pixel time formulas**:
+
+- **PD modes** (`video.c:140-142`):
+  `Time = round(Rate * (y/2 * LineTime + ChanStart + PixelTime * (x + 0.5)))`
+  Pixel sampling centered at `(x + 0.5) * PixelTime` from channel start.
+
+- **Non-PD modes** including Robot 72 (`video.c:196-198`):
+  `Time = round(Rate * (y * LineTime + ChanStart + (x - 0.5) / Width * ChanLen[Channel]))`
+  Pixel sampling centered at `(x - 0.5) * (ChanLen / Width)` from channel start —
+  i.e., `(x - 0.5) * PixelTime` for non-Robot-alt modes where ChanLen = PixelTime * Width.
+
+The two forms differ by **1 pixel-time** in the per-pixel sampling offset.
+
+### What we do
+
+The Rust port reuses `mode_pd::decode_one_channel_into` for both PD and Robot 72.
+That helper uses the PD `(x + 0.5)` formula. So Robot 72 in slowrx.rs samples each
+pixel `1 * pixel_seconds` later than slowrx C would.
+
+### Why we deviated
+
+Sharing one helper between PD and R72 keeps the codebase smaller and the FFT
+windowing logic single-source. The synthetic round-trip (`tests/roundtrip.rs::robot72_roundtrip`)
+passes at the same `mean < 5.0` threshold as PD because the encoder
+(`robot_test_encoder::encode_r72`) ALSO emits at the same per-pixel timing — the
+encoder/decoder pair is internally consistent.
+
+### Real-radio impact
+
+Against real-radio audio (e.g. ARISS Fram2 Robot 36 corpus — which this V2.2
+work uses as the merge gate), the deviation manifests as a **half-pixel
+horizontal shift** in the decoded image relative to slowrx C's output. For
+real audio the FFT window is wider than a half-pixel, so visual quality is
+unaffected at the per-image scale. The Phase 5 visual validation against the
+12 ARISS Fram2 reference JPGs is the empirical test.
+
+### When to revisit
+
+Three triggers would prompt revisiting:
+
+1. **Phase 4 R36/R24 round-trip fails** because Y has 2× pixel-time and the
+   asymmetric `(x ± 0.5)` formula amplifies a per-channel offset error that
+   was tolerable for R72.
+2. **Fram2 visual validation surfaces a measurable horizontal shift** vs. the
+   reference JPGs.
+3. **A future audit cross-validates pixel-by-pixel against slowrx C output**
+   on the same audio file — that would expose the half-pixel offset directly.
+
+If any of these fires, the fix is to introduce a per-mode pixel-offset selector
+(e.g., a `pixel_offset_within_channel: f64` field on `ModeSpec` set to 0.5 for
+PD and -0.5 for non-PD), and route it through `decode_one_channel_into`.
+
+### Status
+
+- ✅ Trigger #1 cleared as of V2.2 Phase 4: R36/R24 synthetic round-trips
+  pass at `mean < 5.0` despite Y being at 2× pixel-time. The encoder
+  emits at the same `(x + 0.5)` offset the decoder reads at, so the
+  R36/R24 round-trip is internally consistent — the deviation is invisible
+  to the synthetic gate.
+- Triggers #2 and #3 remain open. Phase 5 (Fram2 visual validation) is
+  the next empirical test; a future cross-validation against slowrx C
+  output on the same audio file would expose the half-pixel offset
+  directly.
+
+---
+
+## Faint vertical squiggle artifacts in Robot real-radio decode
+
+**Files:** `src/mode_robot.rs` (and plausibly `src/mode_pd.rs::decode_one_channel_into`).
+**Tracking issue:** [#71](https://github.com/jasonherald/slowrx.rs/issues/71).
+
+### What we observe
+
+When decoding real-radio Robot 36 audio (verified against the 12 ARISS
+Fram2 WAVs during V2.2 Phase 5), our output PNGs exhibit faint vertical
+squiggle artifacts every ~20–30 pixels. The image content is correct
+and recognizable — the artifacts are a fine pattern overlaid on the
+content.
+
+The reference JPGs ARISS publishes alongside the WAVs do NOT show these
+artifacts, which means whatever decoder produced the references handles
+this case better than ours.
+
+### Why this isn't a "deviation" yet
+
+This is more of an **open quality gap** than a deliberate deviation.
+We're tracking it here so future audits know it's a known and
+documented behavior, not a missed bug. V2.2 ships with this gap because
+the image content is correct and visually validates against the
+reference.
+
+### When to revisit
+
+When [#71](https://github.com/jasonherald/slowrx.rs/issues/71) is
+prioritized, or whenever a downstream consumer asks for cleaner output.
+The investigation paths in #71 cover SNR-adaptive Hann selector
+re-engagement (V1 deferral #44), slowrx C cross-validation, and per-
+pixel sub-bin interpolation.

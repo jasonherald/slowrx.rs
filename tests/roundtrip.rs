@@ -99,6 +99,98 @@ fn run_roundtrip(mode: SstvMode) {
     assert!(mean < 5.0, "{mode:?}: max_diff={max_diff} mean={mean:.2}");
 }
 
+/// Build a synthetic Robot test image: gradient luma + smooth chroma
+/// stripes designed so adjacent rows share chroma (required for R36/R24
+/// round-trip — see `robot_test_encoder.rs` doc; harmless for R72).
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn test_robot_image(mode: SstvMode) -> (u32, u32, Vec<[u8; 3]>) {
+    let spec = slowrx::for_mode(mode);
+    let w = spec.line_pixels;
+    let h = spec.image_lines;
+    let mut ycrcb = Vec::with_capacity((w * h) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let lum = ((f64::from(x)) / (f64::from(w)) * 255.0) as u8;
+            // Cr alternates every 4 rows (so adjacent even-odd Y row
+            // pairs share Cr — required for R36/R24 round-trip).
+            // Cb alternates every 4 rows offset by 1 (so adjacent
+            // odd-even pairs share Cb — also required for R36/R24).
+            let cr = if y % 4 < 2 { 200 } else { 56 };
+            let cb = if (y + 1) % 4 < 2 { 200 } else { 56 };
+            ycrcb.push([lum, cr, cb]);
+        }
+    }
+    (w, h, ycrcb)
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
+fn run_robot_roundtrip(mode: SstvMode) {
+    let (w, h, ycrcb) = test_robot_image(mode);
+
+    let vis_code = match mode {
+        SstvMode::Robot24 => 0x04,
+        SstvMode::Robot36 => 0x08,
+        SstvMode::Robot72 => 0x0C,
+        _ => unreachable!(),
+    };
+    let mut audio = slowrx::__test_support::vis::synth_vis(vis_code, 0.0);
+    audio.extend(slowrx::__test_support::mode_robot::encode_robot(
+        mode, &ycrcb,
+    ));
+    // R72 has ~2.6 ms per-line gap (line_seconds - actual content); over
+    // 240 lines that's ~624 ms = ~6.9k samples short of the decoder's
+    // target_audio_samples threshold (= image_lines × line_seconds).
+    // Pad enough to reach the threshold + a little group-delay headroom.
+    // R36/R24 have no per-line gap (their content fills line_seconds
+    // exactly) so this pad is harmless for them. PD's helper uses 2048;
+    // Robot needs more.
+    audio.extend(std::iter::repeat_n(0.0_f32, 8192));
+
+    let mut d = SstvDecoder::new(WORKING_SAMPLE_RATE_HZ).expect("decoder");
+    let events = d.process(&audio);
+
+    let img = events
+        .iter()
+        .find_map(|e| match e {
+            SstvEvent::ImageComplete {
+                image,
+                partial: false,
+            } => Some(image.clone()),
+            _ => None,
+        })
+        .expect("ImageComplete event");
+
+    assert_eq!(img.mode, mode);
+    assert_eq!(img.width, w);
+    assert_eq!(img.height, h);
+
+    let mut max_diff = 0_u8;
+    let mut sum_diff: u64 = 0;
+    let mut n: u64 = 0;
+    for (i, src) in ycrcb.iter().enumerate() {
+        let src_rgb = slowrx::__test_support::mode_pd::ycbcr_to_rgb(src[0], src[1], src[2]);
+        let dec = img.pixels[i];
+        for ch in 0..3 {
+            let d = (i32::from(src_rgb[ch]) - i32::from(dec[ch])).unsigned_abs() as u8;
+            if d > max_diff {
+                max_diff = d;
+            }
+            sum_diff += u64::from(d);
+            n += 1;
+        }
+    }
+    let mean = sum_diff as f64 / n as f64;
+    assert!(mean < 5.0, "{mode:?}: max_diff={max_diff} mean={mean:.2}");
+}
+
 #[test]
 fn pd120_roundtrip() {
     run_roundtrip(SstvMode::Pd120);
@@ -112,4 +204,19 @@ fn pd180_roundtrip() {
 #[test]
 fn pd240_roundtrip() {
     run_roundtrip(SstvMode::Pd240);
+}
+
+#[test]
+fn robot72_roundtrip() {
+    run_robot_roundtrip(SstvMode::Robot72);
+}
+
+#[test]
+fn robot36_roundtrip() {
+    run_robot_roundtrip(SstvMode::Robot36);
+}
+
+#[test]
+fn robot24_roundtrip() {
+    run_robot_roundtrip(SstvMode::Robot24);
 }
