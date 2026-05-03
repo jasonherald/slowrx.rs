@@ -42,8 +42,9 @@ pub(crate) const FFT_LEN: usize = 1024;
 /// rationale. Translated from `video.c:54`.
 pub(crate) const HANN_LENS: [usize; 7] = [12, 16, 24, 32, 64, 128, 256];
 
-/// Pre-computed Hann window of length [`FFT_LEN`]. Used inside the
-/// SNR estimator and as the longest-window entry of the bank.
+/// Build a Hann window of length `len`. Used for both the per-pixel
+/// demod's [`HannBank`] entries (lengths from [`HANN_LENS`]) and the
+/// [`SnrEstimator`]'s [`FFT_LEN`]-sample `hann_long`.
 #[allow(clippy::cast_precision_loss)]
 fn build_hann(len: usize) -> Vec<f32> {
     if len == 0 {
