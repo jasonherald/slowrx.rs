@@ -440,16 +440,17 @@ pub(crate) fn decode_one_channel_into(
     let mut snr_db = 0.0_f64;
     let mut current_freq = 1500.0_f64 + hedr_shift_hz;
 
-    // Per-channel local state for SNR-adaptive Hann selection. Initial
-    // value 6 (longest window) is the conservative default. The
-    // hysteresis selector ratchets one band per FFT toward
-    // `window_idx_for_snr(snr_db)`, so with `snr_db = 0.0` (baseline
-    // idx 4 — matching slowrx's pure-threshold value at SNR=0.0:
-    // ≥ -5 → 4) the cold-start convergence is 6 → 5 → 4 across the
-    // first two FFTs. Once `snr_db` updates from
-    // `SNR_REESTIMATE_STRIDE` the selector tracks the actual SNR
-    // with the same one-band-per-call ratchet.
-    let mut prev_win_idx = 6_usize;
+    // Per-channel local state for SNR-adaptive Hann selection. The
+    // initial value is the last index of `crate::snr::HANN_LENS` —
+    // i.e. the longest, most-noise-rejecting window — which is the
+    // conservative cold-start default. The hysteresis selector
+    // ratchets one band per FFT toward `window_idx_for_snr(snr_db)`,
+    // so with `snr_db = 0.0` (baseline idx 4 — matching slowrx's
+    // pure-threshold value at SNR=0.0: ≥ -5 → 4) the cold-start
+    // convergence is 6 → 5 → 4 across the first two FFTs. Once
+    // `snr_db` updates from `SNR_REESTIMATE_STRIDE` the selector
+    // tracks the actual SNR with the same one-band-per-call ratchet.
+    let mut prev_win_idx = crate::snr::HANN_LENS.len() - 1;
 
     // Read absolute audio with no channel-boundary mask. slowrx FFTs
     // across channel boundaries (`video.c::GetVideo`); the peak search in
