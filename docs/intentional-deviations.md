@@ -349,3 +349,62 @@ Three triggers would prompt revisiting:
 3. **A future audit cross-validates pixel-by-pixel against slowrx C
    output on the same WAV** and finds slowrx's pure-threshold behavior
    matters in some specific way. Unlikely but possible.
+
+---
+
+## FFT frequency resolution exceeds slowrx C by 4×
+
+**Files:** `src/snr.rs::FFT_LEN`, `src/mode_pd.rs::FFT_LEN` ↔ slowrx `video.c::FFTLen`.
+**Tracking issue:** [#71](https://github.com/jasonherald/slowrx.rs/issues/71) (squiggle context).
+**Shipped in:** 0.3.3.
+
+### What slowrx does
+
+slowrx C uses `FFTLen = 1024` at `44_100` Hz, giving
+`44100 / 1024 ≈ 43.07` Hz/bin frequency resolution for the per-pixel
+demod and SNR estimator (`video.c:303-340, 369-395`).
+
+### What we do
+
+We use `FFT_LEN = 1024` at [`crate::resample::WORKING_SAMPLE_RATE_HZ`]
+= `11_025` Hz, giving `11025 / 1024 ≈ 10.77` Hz/bin —
+**4× finer than slowrx C**.
+
+`crate::snr::HANN_LENS` is unchanged at `[12, 16, 24, 32, 64, 128, 256]`
+(slowrx's `[48, 64, 96, 128, 256, 512, 1024]` divided by 4) so the
+time-domain analysis is identical to slowrx C. The FFT input is
+naturally zero-padded outside the Hann support, giving us 4× more
+output bins on the same windowed signal.
+
+### Why we deviated
+
+0.3.2 shipped a 1 dB SNR hysteresis band as a partial fix for the
+real-radio squiggle artifacts ([#71]). Hysteresis reduced but didn't
+eliminate the squiggles. While CodeRabbit reviewed PR #74, a
+parallel experiment branch tested bumping `FFT_LEN` to 1024. Result
+on the 12 ARISS Fram2 R36 reference WAVs: synthetic round-trips all
+passed at the unchanged `mean < 5.0` threshold, and visual inspection
+showed **noticeably clearer pixel content** vs. the 0.3.2 baseline
+(by-eye comparison; the user judged it "WAY clearer").
+
+The squiggle artifacts themselves were unchanged — that's a separate
+concern tracked in [#71]. The finer Hz/bin is a complementary DSP
+improvement that's worth shipping on its own.
+
+[#71]: https://github.com/jasonherald/slowrx.rs/issues/71
+
+### When to revisit
+
+1. **Squiggle root cause turns out to require coarser FFT.** Unlikely
+   given the 0.3.2 hypothesis (SNR-cadence flip-flop) was unaffected
+   by FFT_LEN. But if a future audit finds an FFT-resolution-dependent
+   artifact, this is the knob.
+2. **CPU cost becomes an issue.** The 4× FFT compute per call is
+   negligible at SSTV's per-pixel cadence. If a future profile shows
+   the per-pixel FFT dominating wall-clock time on resource-constrained
+   targets, consider reverting or adding a `cli`-feature-gated coarse
+   mode.
+3. **A future audit cross-validates pixel-by-pixel against slowrx C
+   output** and finds slowrx's `usize` bin counts matter in some
+   specific way. Unlikely — bandwidth integration is in Hz domain —
+   but possible.
