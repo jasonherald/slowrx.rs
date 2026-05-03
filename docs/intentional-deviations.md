@@ -211,3 +211,15 @@ Three triggers would prompt revisiting:
 If any of these fires, the fix is to introduce a per-mode pixel-offset selector
 (e.g., a `pixel_offset_within_channel: f64` field on `ModeSpec` set to 0.5 for
 PD and -0.5 for non-PD), and route it through `decode_one_channel_into`.
+
+### Status
+
+- ✅ Trigger #1 cleared as of V2.2 Phase 4: R36/R24 synthetic round-trips
+  pass at `mean < 5.0` despite Y being at 2× pixel-time. The encoder
+  emits at the same `(x + 0.5)` offset the decoder reads at, so the
+  R36/R24 round-trip is internally consistent — the deviation is invisible
+  to the synthetic gate.
+- Triggers #2 and #3 remain open. Phase 5 (Fram2 visual validation) is
+  the next empirical test; a future cross-validation against slowrx C
+  output on the same audio file would expose the half-pixel offset
+  directly.
