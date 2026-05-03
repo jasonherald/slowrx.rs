@@ -74,7 +74,9 @@ pub fn ycbcr_to_rgb(y: u8, cr: u8, cb: u8) -> [u8; 3] {
 }
 
 /// FFT length used for per-pixel demod. Matches slowrx's bin spacing:
-/// `256/11025 Hz` = 43.07 Hz/bin, equal to slowrx's `1024/44100 Hz`.
+/// `1024/11025 Hz` ≈ 10.77 Hz/bin — 4× finer than slowrx's `1024/44100 Hz`
+/// = 43.07 Hz/bin (deliberate 0.3.3 divergence; see
+/// `docs/intentional-deviations.md`).
 pub(crate) const FFT_LEN: usize = crate::snr::FFT_LEN;
 
 /// Per-pixel demod context: holds an FFT plan + reusable buffers + the
@@ -103,7 +105,7 @@ impl PdDemod {
     /// Estimate the dominant tone frequency in a Hann-windowed FFT
     /// centered near `center_sample`. `win_idx` selects the Hann length
     /// from [`crate::snr::HANN_LENS`]; the FFT length stays fixed at
-    /// [`FFT_LEN`] (= 256), with leading/trailing zero-pad. Out-of-bounds
+    /// [`FFT_LEN`] (= 1024), with leading/trailing zero-pad. Out-of-bounds
     /// `audio` reads as silence. `hedr_shift_hz` shifts the peak-search
     /// range from `[1500, 2300]` Hz to `[1500 + hedr, 2300 + hedr]` Hz to
     /// follow a mistuned radio's pixel band.
@@ -435,8 +437,10 @@ pub(crate) fn decode_one_channel_into(
     let mut stored_lum = vec![0_u8; sweep_len];
 
     // SNR is sticky across the sweep; slowrx initializes with `SNR = 0`
-    // (`video.c:36`) so the first `WinIdx` lookup uses index 4 (the
-    // 256-sample window).
+    // (`video.c:36`) so the first `WinIdx` lookup uses index 4 (slowrx C's
+    // 256-sample Hann window; equivalently `HANN_LENS[4] = 64` samples
+    // in slowrx.rs at our 11_025 Hz working rate, applied inside a
+    // [`FFT_LEN`] = 1024 FFT with the rest zero-padded).
     let mut snr_db = 0.0_f64;
     let mut current_freq = 1500.0_f64 + hedr_shift_hz;
 
@@ -696,7 +700,7 @@ mod tests {
     #[test]
     fn pdfft_recovers_known_tone_within_5hz() {
         let mut d = PdDemod::new();
-        // 100 ms of pure tone at 1900 Hz; ample for FFT_LEN=256.
+        // 100 ms of pure tone at 1900 Hz; ample for FFT_LEN=1024.
         let audio = synth_tone(1900.0, 0.100);
         let center = (audio.len() / 2) as i64;
         let est = d.pixel_freq(&audio, center, 0.0, DEFAULT_WIN_IDX);

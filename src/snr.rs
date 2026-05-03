@@ -9,24 +9,42 @@
 //! slowrx operates at `44_100` Hz with `FFTLen = 1024` and Hann lengths
 //! `[48, 64, 96, 128, 256, 512, 1024]`. We operate at
 //! [`crate::resample::WORKING_SAMPLE_RATE_HZ`] = `11_025` Hz with
-//! `FFT_LEN = 256` (a 4× reduction that preserves the same Hz-per-bin
-//! resolution: `44100/1024 ≈ 11025/256 ≈ 43.07` Hz/bin). The Hann lengths
-//! shrink by the same factor: `[12, 16, 24, 32, 64, 128, 256]`.
+//! `FFT_LEN = 1024` — same FFT length, **4× finer Hz/bin**
+//! (`11025/1024 ≈ 10.77` Hz/bin vs slowrx's `44100/1024 ≈ 43.07`
+//! Hz/bin). The bump produces two coupled DSP changes:
+//!
+//! - **Per-pixel demod**: `HANN_LENS` stays at slowrx's lengths divided
+//!   by 4 (`[12, 16, 24, 32, 64, 128, 256]`), so the Hann is applied
+//!   to the first `HANN_LENS[idx]` samples of the FFT input and the
+//!   rest is zero-padded. Time-domain support identical to slowrx C;
+//!   only the FFT bin density changes (4× more output bins on the
+//!   same windowed signal).
+//! - **SNR estimator**: `hann_long = build_hann(FFT_LEN)` scales with
+//!   `FFT_LEN`, so the SNR-estimator window grows from 256 samples
+//!   (~23 ms = slowrx C) to 1024 samples (~93 ms, 4× longer). This
+//!   gives a cleaner SNR estimate and is a desirable side-effect.
+//!
+//! See `docs/intentional-deviations.md::"FFT frequency resolution
+//! exceeds slowrx C by 4×"` for the full rationale and revisit
+//! triggers.
 
 use rustfft::{num_complex::Complex, FftPlanner};
 
 /// FFT length used for both per-pixel demod and SNR estimation. Must
 /// match [`crate::mode_pd::FFT_LEN`].
-pub(crate) const FFT_LEN: usize = 256;
+pub(crate) const FFT_LEN: usize = 1024;
 
 /// Hann-window lengths at the `11_025` Hz working rate (slowrx's
-/// `[48, 64, 96, 128, 256, 512, 1024]` divided by 4). Index 6 (length
-/// = `FFT_LEN`) is the "longest, lowest-SNR" window and is also reused
-/// by the SNR estimator. Translated from `video.c:54`.
+/// `[48, 64, 96, 128, 256, 512, 1024]` divided by 4). Index 6
+/// (length 256) is the "longest, lowest-SNR" window in the per-pixel
+/// demod's bank. The SNR estimator carries its own Hann window of
+/// length [`FFT_LEN`] = 1024 — see [`SnrEstimator`] for the size
+/// rationale. Translated from `video.c:54`.
 pub(crate) const HANN_LENS: [usize; 7] = [12, 16, 24, 32, 64, 128, 256];
 
-/// Pre-computed Hann window of length [`FFT_LEN`]. Used inside the
-/// SNR estimator and as the longest-window entry of the bank.
+/// Build a Hann window of length `len`. Used for both the per-pixel
+/// demod's [`HannBank`] entries (lengths from [`HANN_LENS`]) and the
+/// [`SnrEstimator`]'s [`FFT_LEN`]-sample `hann_long`.
 #[allow(clippy::cast_precision_loss)]
 fn build_hann(len: usize) -> Vec<f32> {
     if len == 0 {
@@ -197,7 +215,7 @@ pub(crate) fn window_idx_for_snr_with_hysteresis(snr_db: f64, prev_idx: usize) -
 /// pre-computed and reused on every estimate.
 ///
 /// Translated from `video.c:302-343`. Each `estimate` call mirrors one
-/// pass through that block: FFT a 256-sample window, integrate power
+/// pass through that block: FFT a 1024-sample window, integrate power
 /// over `[1500+hedr, 2300+hedr]` Hz (video band) and over
 /// `[400+hedr, 800+hedr] ∪ [2700+hedr, 3400+hedr]` Hz (noise band),
 /// apply the bandwidth correction in `video.c:336-338`, and return
@@ -482,24 +500,31 @@ mod tests {
         assert_eq!(build_hann(1), vec![0.0]);
     }
 
-    /// Verify SNR bandwidth-correction bin counts match slowrx's `GetBin`
-    /// truncation semantics (round-2 audit Finding 2/3).
+    /// Verify the SNR-estimator bandwidth correction's bin counts at our
+    /// finer-than-slowrx-C frequency resolution. With `FFT_LEN=1024` at
+    /// `WORKING_SAMPLE_RATE_HZ=11_025` we get ~10.77 Hz/bin (4× finer
+    /// than slowrx C's `1024/44_100`). The integration ranges in Hz are
+    /// the same as slowrx C — `[1500, 2300]` for video and
+    /// `[400, 800] ∪ [2700, 3400]` for noise — but the `usize` bin
+    /// counts are higher in proportion to the resolution.
     ///
-    /// At `FFT_LEN=256, SR=11025` with `hedr=0`:
+    /// At `FFT_LEN=1024, SR=11_025` (slowrx `GetBin` floor truncation):
     ///
-    /// | Quantity                    | Expected (slowrx `GetBin` trunc) |
-    /// |-----------------------------|----------------------------------|
-    /// | `video_plus_noise_bins`     | 53 − 34 + 1 = 20                |
-    /// | `noise_only_bins`           | (18−9+1) + (78−62+1) = 10+17 = 27 |
-    /// | `receiver_bins`             | 78 − 9 = 69                      |
-    /// | Pnoise multiplier      | 69/27 ≈ 2.5556                |
-    /// | Psignal subtractor     | 20/27 ≈ 0.7407                |
+    /// | Quantity                  | Expected                          |
+    /// |---------------------------|-----------------------------------|
+    /// | `video_plus_noise_bins`   | 213 − 139 + 1 = 75                |
+    /// | `noise_only_bins`         | (74−37+1) + (315−250+1) = 38+66 = 104 |
+    /// | `receiver_bins`           | 315 − 37 = 278                    |
+    /// | Pnoise multiplier         | 278/104 ≈ 2.6731                  |
+    /// | Psignal subtractor        | 75/104 ≈ 0.7212                   |
     ///
-    /// These values differ from what `.round()` would give (70/28 = 2.5 and
-    /// 19/28 ≈ 0.6786 respectively), so this test is a regression guard for
-    /// the `get_bin` truncation in `snr.rs::estimate`.
+    /// These values differ from what `.round()` would give, so the test
+    /// is still a regression guard for the `get_bin` truncation in
+    /// `snr.rs::estimate`. It no longer asserts slowrx-C-parity in
+    /// `usize` terms (we deliberately exceed slowrx in frequency
+    /// resolution; see `docs/intentional-deviations.md`).
     #[test]
-    fn snr_bandwidth_correction_bins_match_slowrx() {
+    fn snr_bandwidth_correction_bins_at_finer_resolution() {
         let get_bin =
             |hz: f64| crate::get_bin(hz, FFT_LEN, crate::resample::WORKING_SAMPLE_RATE_HZ);
 
@@ -515,26 +540,26 @@ mod tests {
         let receiver_bins = n_hi_b - n_lo_a;
 
         assert_eq!(
-            video_plus_noise_bins, 20,
+            video_plus_noise_bins, 75,
             "video+noise bins: got {video_plus_noise_bins}"
         );
         assert_eq!(
-            noise_only_bins, 27,
+            noise_only_bins, 104,
             "noise-only bins: got {noise_only_bins}"
         );
-        assert_eq!(receiver_bins, 69, "receiver bins: got {receiver_bins}");
+        assert_eq!(receiver_bins, 278, "receiver bins: got {receiver_bins}");
 
-        // Pnoise multiplier ≈ 2.5556 (slowrx) vs 2.5000 (with .round())
+        // Pnoise multiplier ≈ 2.6731 (FFT_LEN=1024) vs 2.5556 (FFT_LEN=256 / slowrx).
         let pnoise_mult = receiver_bins as f64 / noise_only_bins as f64;
         assert!(
-            (pnoise_mult - 69.0 / 27.0).abs() < 1e-9,
+            (pnoise_mult - 278.0 / 104.0).abs() < 1e-9,
             "Pnoise mult: {pnoise_mult}"
         );
 
-        // Psignal subtractor ≈ 0.7407 (slowrx) vs 0.6786 (with .round())
+        // Psignal subtractor ≈ 0.7212 (FFT_LEN=1024) vs 0.7407 (FFT_LEN=256 / slowrx).
         let psignal_sub = video_plus_noise_bins as f64 / noise_only_bins as f64;
         assert!(
-            (psignal_sub - 20.0 / 27.0).abs() < 1e-9,
+            (psignal_sub - 75.0 / 104.0).abs() < 1e-9,
             "Psignal sub: {psignal_sub}"
         );
     }
