@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-05-03
+
+Patch release bumping `crate::snr::FFT_LEN` from 256 to 1024 to give
+4× finer Hz/bin (10.77 vs 43.07) for the per-pixel demod and SNR
+estimator. Validated visually on the 12 ARISS Fram2 R36 reference
+WAVs as noticeably clearer pixel content vs. the 0.3.2 baseline. The
+squiggle artifacts ([#71]) are unaffected by this change — they're a
+separate concern, tracked through 0.3.5+.
+
+The pixel-diff comparator earmarked for 0.3.3 in [#70] moves to a
+later patch.
+
+[#70]: https://github.com/jasonherald/slowrx.rs/issues/70
+[#71]: https://github.com/jasonherald/slowrx.rs/issues/71
+
+### Changed
+
+- **`crate::snr::FFT_LEN`** bumped from 256 to 1024. The bump produces
+  two coupled DSP changes:
+  - **Per-pixel demod** gets 4× finer bin density only.
+    `crate::snr::HANN_LENS` is unchanged at slowrx-C-divided-by-4
+    (`[12, 16, 24, 32, 64, 128, 256]`), so the Hann is applied to the
+    first `HANN_LENS[idx]` samples of the FFT input and the rest is
+    zero-padded — time-domain support identical to slowrx C, only the
+    FFT bin density changes.
+  - **SNR estimator** gets a 4× longer Hann window. `hann_long =
+    build_hann(FFT_LEN)` scales with `FFT_LEN`, so the SNR estimator's
+    integration window grows from ~23 ms (= slowrx C) to ~93 ms. This
+    gives a cleaner SNR estimate and likely reduces window-selector
+    flip-flop beyond what the 0.3.2 hysteresis already delivers.
+- **`mode_pd::FFT_LEN`** is a re-export of `snr::FFT_LEN`, so it picks
+  up the new value automatically.
+- **`snr_bandwidth_correction_bins_match_slowrx`** test renamed to
+  `snr_bandwidth_correction_bins_at_finer_resolution` and re-asserted
+  with the post-bump bin counts (75 / 104 / 278). The test still
+  guards the `get_bin` floor-truncation math; it no longer asserts
+  slowrx-C-parity in `usize` terms.
+
+### Documentation
+
+- New `docs/intentional-deviations.md` entry: "FFT frequency
+  resolution exceeds slowrx C by 4×". Documents both coupled
+  deviations (per-pixel bin density and SNR-estimator window length),
+  the rationale (visibly clearer real-radio output), and three
+  triggers for revisiting.
+- In-source rustdoc comments referencing `FFT_LEN=256` updated to
+  `FFT_LEN=1024` (in `src/snr.rs` and `src/mode_pd.rs`). Stale claims
+  about `HANN_LENS[6]` matching `FFT_LEN` and `hann_long` being
+  shared with the bank were dropped — they're now different lengths
+  (256 and 1024 respectively).
+
+### Validation
+
+- All 6 synthetic round-trips (PD120/180/240, R24/36/72) pass at the
+  unchanged `mean < 5.0` per-pixel-RGB-diff threshold.
+- Real-audio Fram2 visual validation: all 12 slides reproduce the
+  experiment-branch "WAY clearer but still squiggles" finding versus
+  the 0.3.2 baseline.
+- Wall-clock decode of one Fram2 R36 slide: 0.614 s on v0.3.2 (avg
+  of 3 runs) → 1.223 s on 0.3.3 (~2× slower; negligible since R36
+  transmits over ~36 s).
+
+### Notes
+
+- The squiggle artifacts in real-radio Fram2 output ([#71]) are
+  reduced (per 0.3.2 hysteresis) but still present. The two new
+  diagnostic patterns observed during 0.3.2 validation
+  (black-background dependence, top/bottom asymmetry) motivate the
+  next investigation pass; they are 0.3.4+ work.
+
 ## [0.3.2] - 2026-05-02
 
 Patch release adding 1 dB SNR hysteresis to the adaptive Hann window
