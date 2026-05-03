@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-05-02
+
+Patch release adding 1 dB SNR hysteresis to the adaptive Hann window
+selector. Targets the threshold flip-flop hypothesized in [#71]'s
+code-only audit as a contributor to V2.2 real-radio Robot 36 squiggle
+artifacts. Plus two stale-doc cleanups the audit surfaced.
+
+[#71]: https://github.com/jasonherald/slowrx.rs/issues/71
+
+### Added
+
+- **`crate::snr::window_idx_for_snr_with_hysteresis(snr_db, prev_idx)`**
+  — `pub(crate)` wrapper around the existing pure-threshold
+  `window_idx_for_snr`. Applies a 1 dB hysteresis band at each
+  threshold (±0.5 dB on each side) by re-evaluating the lookup at a
+  pessimistically-shifted SNR and only accepting changes that survive
+  both lookups. Six new unit tests in `snr.rs::tests` cover the band
+  edges and the symmetric in-band/robust transitions.
+
+### Changed
+
+- **`mode_pd::decode_one_channel_into`** now threads a local
+  `prev_win_idx` through the per-FFT lookup and calls
+  `window_idx_for_snr_with_hysteresis` instead of the bare
+  `window_idx_for_snr`. State is local to one channel decode — no
+  `DecodingState` plumbing.
+- **Deliberate divergence from slowrx C** (`video.c:354-367`), which
+  uses pure-threshold logic with no hysteresis. Documented in
+  `docs/intentional-deviations.md` under "SNR hysteresis on adaptive
+  Hann window selection."
+
+### Documentation
+
+- **`mode_pd::decode_pd_line_pair` doc block** refreshed: the V1
+  deferral #44 (hardcoded `HANN_LENS[6]`) was lifted in PR #60 / V2.1
+  Phase 3 but the doc block at `mode_pd.rs:259-266` still claimed the
+  deferral was in effect. Updated to describe the current
+  SNR-adaptive + hysteresis behavior.
+- **`mode_pd::decode_one_channel_into` doc** had a stale cross-
+  reference to the (now-renamed) `#18 deferral note`. Refreshed to
+  point at the new `#44 lifted with hysteresis (0.3.2)` note and the
+  hysteresis function.
+- **`docs/intentional-deviations.md`** gains a new entry for the
+  hysteresis: rationale (squiggle period matches SNR re-estimation
+  cadence in [#71]'s audit), the algorithmic divergence from slowrx
+  C, and three triggers for revisiting.
+
+### Validation
+
+- All 6 synthetic round-trips (PD120/180/240 + R24/36/72) continue
+  passing at the same `mean < 5.0` per-pixel-RGB-diff threshold —
+  hysteresis is a no-op for synthetic audio (synthetic SNR doesn't
+  fluctuate cadence-to-cadence).
+- **Real-audio Fram2 visual validation: partial improvement.**
+  Numerical diff vs the 0.3.1 baseline shows 0.58–1.41% of pixels
+  changed per slide, with diffs clustering at image edges
+  (consistent with hysteresis fixing the flip-flop component of the
+  artifact). Visually, the squiggles are noticeably reduced but not
+  eliminated, and exhibit two residual patterns the visual review
+  surfaced — they appear more strongly on black/dark backgrounds, and
+  vary in intensity between the top, middle, and bottom thirds of the
+  image. Both observations point at root causes other than SNR-flip-
+  flop (peak-interp boundary-clip behavior at low signal-frequency,
+  and find-sync rate-correction precision at image-time-extremes
+  respectively). [#71] stays OPEN with these findings as the next
+  iteration's evidence base. The hysteresis itself is a real
+  improvement (no regression risk) and ships in 0.3.2.
+
 ## [0.3.1] - 2026-05-02
 
 Patch release bundling three small follow-up items from V2.2 review
