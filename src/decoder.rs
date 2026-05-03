@@ -112,17 +112,22 @@ struct DecodingState {
     target_audio_samples: usize,
     /// Per-mode chroma planes side buffer.
     ///
-    /// `None` for `ChannelLayout::PdYcbcr` (PD composes RGB in-place per
-    /// pair — see `mode_pd::decode_pd_line_pair`).
-    ///
-    /// `Some([cr_plane, cb_plane])` for `ChannelLayout::RobotYuv`. Each
-    /// plane is `image_lines * line_pixels` bytes, populated as radio
-    /// lines are decoded. R72 doesn't actually use these (composes RGB
-    /// in-place like PD), but R36/R24 need them: each radio line N
+    /// `Some([cr_plane, cb_plane])` for `SstvMode::Robot24` and
+    /// `SstvMode::Robot36`. Each plane is `image_lines * line_pixels`
+    /// bytes, populated as radio lines are decoded: each radio line N
     /// writes its own chroma + duplicates to the next row's chroma slot
     /// (slowrx `video.c:421-425`); RGB composition for row N reads the
     /// duplicated-from-N-1 chroma channel that the line N-1 decode
     /// wrote earlier.
+    ///
+    /// `None` for every other mode. PD composes RGB in-place per pair
+    /// (see `mode_pd::decode_pd_line_pair`); Robot 72 also composes
+    /// in-place (3-channel sequential — see
+    /// `mode_robot::decode_r72_line`), so it doesn't need the side
+    /// buffer either. `SstvMode` is `#[non_exhaustive]`; future modes
+    /// with cross-radio-line chroma state (e.g., Scottie in V2.3 if it
+    /// turns out to need similar plumbing) will need to extend the
+    /// constructor's match in `process` to opt in.
     chroma_planes: Option<[Vec<u8>; 2]>,
 }
 
