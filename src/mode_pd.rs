@@ -263,12 +263,18 @@ pub(crate) const SNR_REESTIMATE_STRIDE: i64 = 64;
 ///   [`crate::snr::window_idx_for_snr_with_hysteresis`] and the
 ///   `SNR hysteresis on adaptive Hann window selection` entry in
 ///   `docs/intentional-deviations.md`.
-/// - **#32**: the FFT windowed support zero-pads outside the active
-///   channel's sample range. Real slowrx FFTs across channel
-///   boundaries because real-radio FM modulators smooth tone
-///   transitions. Our synthetic encoder produces hard tonal cliffs
-///   that create secondary FFT peaks at boundary pixels. Revisit when
-///   a realistic IF-bandwidth synthetic encoder is available.
+/// - **#32 lifted via #45**: [`decode_one_channel_into`] reads
+///   `audio` directly across channel boundaries — `chan_bounds_abs`
+///   is accepted but ignored — matching slowrx C
+///   (`video.c::GetVideo`). The earlier zero-pad-outside-channel
+///   behavior caused visible vertical banding at every channel edge
+///   on real radio (verified against Dec-2017 ARISS captures); the
+///   1500–2300 Hz peak search keeps the FFT locked onto the dominant
+///   video tone even when adjacent-channel content leaks into the
+///   windowed support. The synthetic-corpus boundary-pixel `max_diff`
+///   regression that this lift introduced is captured by the
+///   "Synthetic round-trip `max_diff` tolerance" entry in
+///   `docs/intentional-deviations.md`.
 ///
 /// `skip_samples` is the absolute sample index inside `audio` where
 /// pair zero's sync pulse begins; `pair_seconds` is `pair_index *
@@ -376,8 +382,10 @@ pub(crate) fn decode_pd_line_pair(
 /// and [`crate::snr::window_idx_for_snr_with_hysteresis`]).
 ///
 /// `chan_bounds_abs` is `(start_abs, end_abs)` of the channel in the
-/// audio stream; the FFT windowed support is zero-padded outside this
-/// range (see [`decode_pd_line_pair`]'s #32 doc note).
+/// audio stream. It is accepted for API compatibility but currently
+/// unused: the FFT windowed support reads `audio` directly across
+/// channel boundaries to match slowrx C. See [`decode_pd_line_pair`]'s
+/// `#32 lifted via #45` deviation note for the rationale.
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
@@ -433,13 +441,14 @@ pub(crate) fn decode_one_channel_into(
     let mut current_freq = 1500.0_f64 + hedr_shift_hz;
 
     // Per-channel local state for SNR-adaptive Hann selection. Initial
-    // value 6 (longest window) is the conservative default. In practice
-    // idx 6 is used for exactly one FFT — the very first iteration with
-    // SNR=0.0 — because the hysteresis function then converges to idx 4
-    // (matching slowrx's pure-threshold value at SNR=0.0: ≥ -5 → 4) for
-    // the rest of the pre-first-SNR-estimate window. Once the first SNR
-    // estimate fires at the next multiple of SNR_REESTIMATE_STRIDE, the
-    // hysteresis function tracks the actual SNR.
+    // value 6 (longest window) is the conservative default. The
+    // hysteresis selector ratchets one band per FFT toward
+    // `window_idx_for_snr(snr_db)`, so with `snr_db = 0.0` (baseline
+    // idx 4 — matching slowrx's pure-threshold value at SNR=0.0:
+    // ≥ -5 → 4) the cold-start convergence is 6 → 5 → 4 across the
+    // first two FFTs. Once `snr_db` updates from
+    // `SNR_REESTIMATE_STRIDE` the selector tracks the actual SNR
+    // with the same one-band-per-call ratchet.
     let mut prev_win_idx = 6_usize;
 
     // Read absolute audio with no channel-boundary mask. slowrx FFTs

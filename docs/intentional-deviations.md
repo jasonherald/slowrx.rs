@@ -292,11 +292,23 @@ wall-clock).
 
 We use the same threshold table but apply a 1 dB hysteresis band at
 each transition. The function `window_idx_for_snr_with_hysteresis(snr_db,
-prev_idx)` calls the bare `window_idx_for_snr` twice — once at `snr_db`
-(the "baseline" lookup), once at a pessimistically-shifted `snr_db ± 0.5`
-toward `prev_idx`. Only accepts a window-idx change when both lookups
-agree (i.e., the SNR moved past the threshold by ≥ 0.5 dB in the
-direction of the new index). Otherwise stays at `prev_idx`.
+prev_idx)` ratchets one band per call toward
+`window_idx_for_snr(snr_db)`, applying a 0.5 dB hysteresis at the
+adjacent boundary:
+
+1. Compute `baseline = window_idx_for_snr(snr_db)`. If it equals
+   `prev_idx` the SNR is in `prev_idx`'s band — return immediately.
+2. Pick `target_idx` one band closer to `baseline` than `prev_idx`.
+3. Re-evaluate `window_idx_for_snr` at `snr_db ± 0.5` (away from
+   `target_idx`).
+4. If the shifted lookup confirms the SNR is past `target_idx`'s side
+   of the boundary, accept `target_idx`. Otherwise stay at `prev_idx`.
+
+Per-pixel FFTs converge in O(`n_bands`) calls. Ratcheting one step at
+a time (rather than jumping straight to `baseline`) keeps the selector
+convergent even when `prev_idx` is far from `baseline` — e.g.
+cold-start at idx 6 with a strong signal — without breaking the 1 dB
+hysteresis guarantee at any individual boundary.
 
 ### Why we deviated
 
