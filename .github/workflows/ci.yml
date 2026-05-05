@@ -86,8 +86,16 @@ jobs:
         # instrumentation back to the parent. Excluding it from the gate
         # avoids penalizing genuine end-to-end coverage we just can't
         # measure here. The library code is still gated at 92%.
+        #
+        # `--release` for the same reason as the Test step above:
+        # round-trip integration tests under coverage instrumentation
+        # in debug mode are CI-blocking-slow on a 2-core runner. In
+        # release the suite finishes in tractable wall-clock time. Per-
+        # line coverage granularity is slightly coarser (release can
+        # inline lines together) but the ≥92% per-file gate has plenty
+        # of headroom for that.
         run: |
-          cargo llvm-cov --all-features \
+          cargo llvm-cov --all-features --release \
             --ignore-filename-regex 'src/bin/.*' \
             --fail-under-lines 92 \
             --fail-under-regions 92
