@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Negative-regression integration tests** in `tests/no_vis.rs`:
+  - `decoder_no_vis_on_white_noise` — 10 s of deterministic LCG white
+    noise at 48 kHz (≈ 0.3 RMS, matching the measured level of an
+    ISS Zarya non-SSTV pass).
+  - `decoder_no_vis_on_silence` — 10 s of pure silence.
+
+  Both assert `SstvDecoder::process` produces zero
+  `SstvEvent::ImageComplete { partial: false }` events without panicking.
+  This is the no-signal counterpart to the synthetic round-trip suite —
+  both must hold for any release. Inspired by an ISS Zarya capture on
+  2026-05-04 that turned out to carry no SSTV (Zarya transmits SSTV
+  only during ARISS-scheduled events); see [#67] for the capture
+  story.
+
+[#67]: https://github.com/jasonherald/slowrx.rs/issues/67
+
 ## [0.5.0] - 2026-05-05
 
 Minor release adding Martin 1 (VIS `0x2C`) and Martin 2 (`0x28`) —
