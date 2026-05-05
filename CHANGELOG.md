@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-04
+
+Minor release adding the Scottie family — Scottie 1, Scottie 2,
+Scottie DX. All three at 320×256, GBR color encoding, with **mid-line
+sync** (sync sits between B and R within each radio line, not at
+line start). Synthetic round-trip-validated; real-radio Scottie
+capture validation is async ([#65]).
+
+[#65]: https://github.com/jasonherald/slowrx.rs/issues/65
+
+### Added
+
+- **`SstvMode::Scottie1`** (VIS `0x3C`), **`Scottie2`** (`0x38`),
+  **`ScottieDx`** (`0x4C`).
+- **`ChannelLayout::RgbSequential`** — three-channel RGB layout per
+  radio line. Shared with V2.4 Martin.
+- **`SyncPosition::Scottie`** — sync between B and R, the V2.1
+  forcing-function variant cashed in.
+- Three new `ModeSpec` consts: `SCOTTIE1`, `SCOTTIE2`, `SCOTTIE_DX`.
+  Values transcribed from slowrx C `modespec.c:91-128`.
+- New module `crate::mode_scottie` with `decode_line`. Mid-line-sync
+  handling lives entirely inside this module; the substantive
+  changes outside it are a `find_sync` branch (next item) and a
+  Scottie DX–only Hann-window-index bump in
+  `mode_pd::decode_one_channel_into`.
+- New module `crate::scottie_test_encoder` (gated behind
+  `cfg(any(test, feature = "test-support"))`). Synthetic encoder for
+  round-trip testing.
+
+### Changed
+
+- **`crate::sync::find_sync`** gains a `SyncPosition::Scottie`
+  branch. PD/Robot/Martin land at line-start sync; Scottie's sync is
+  mid-line, so after the existing `s = (xmax/700) · LineTime −
+  SyncTime` formula we apply `s = s − chan_len/2 + 2·porch` to bring
+  `skip_samples` back to the start of line 0's content. This is
+  exactly the slowrx C `sync.c:123-125` correction the V2.1
+  `SyncPosition` carve-out anticipated. PD/Robot/Martin behavior is
+  unchanged (`SyncPosition::LineStart` keeps the existing formula).
+- **`crate::mode_pd::decode_one_channel_into`** post-adjusts the
+  Hann window index by `+1` when `spec.mode == ScottieDx && idx <
+  6`, matching slowrx C `video.c:367` (longer integration for SDX's
+  1.08 ms pixel time). Applied after the hysteresis selector tracks
+  the un-bumped SNR-derived index, so the bump doesn't compound
+  across pixels. No-op for non-SDX modes.
+- **`decoder.rs`** dispatch grows an `RgbSequential` arm; the
+  `target_audio_samples` match arm gains `RgbSequential =>
+  spec.image_lines` (one radio line per image row, like Robot).
+
+### Validation
+
+- Three new synthetic round-trips (`scottie1_roundtrip`,
+  `scottie2_roundtrip`, `scottie_dx_roundtrip`) pass at unchanged
+  `mean < 5.0` per-pixel-RGB-diff threshold.
+- All 6 existing round-trips (PD120/180/240, Robot24/36/72) continue
+  to pass at the same threshold — regression net intact.
+- Coverage ≥ 92% per-file maintained.
+
+### Notes
+
+- Mid-line sync was V2.1's forcing-function carve-out;
+  `SyncPosition::Scottie` makes it explicit at dispatch time so
+  future modes can't accidentally inherit a line-start assumption.
+- Real-radio Scottie capture validation is async (no reference WAVs
+  available yet). The pixel-diff comparator earmarked in [#70] is
+  still pending. Squiggle work ([#71]) remains parked.
+
+[#70]: https://github.com/jasonherald/slowrx.rs/issues/70
+[#71]: https://github.com/jasonherald/slowrx.rs/issues/71
+
 ## [0.3.3] - 2026-05-03
 
 Patch release bumping `crate::snr::FFT_LEN` from 256 to 1024 to give

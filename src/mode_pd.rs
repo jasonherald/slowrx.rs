@@ -498,8 +498,18 @@ pub(crate) fn decode_one_channel_into(
             // accepting a change. See
             // `crate::snr::window_idx_for_snr_with_hysteresis` and the
             // 0.3.2 entry in `docs/intentional-deviations.md`.
-            let win_idx = crate::snr::window_idx_for_snr_with_hysteresis(snr_db, prev_win_idx);
+            let mut win_idx = crate::snr::window_idx_for_snr_with_hysteresis(snr_db, prev_win_idx);
             prev_win_idx = win_idx;
+            // slowrx C video.c:367 — Scottie DX bumps WinIdx up by one when not
+            // already at saturation, giving SDX's 1.08 ms/pixel a longer
+            // integration window. Applied AFTER the hysteresis selector so
+            // `prev_win_idx` continues tracking the un-bumped SNR-derived index
+            // (the bump shouldn't compound across pixels).
+            if spec.mode == crate::modespec::SstvMode::ScottieDx
+                && win_idx < crate::snr::HANN_LENS.len() - 1
+            {
+                win_idx += 1;
+            }
             let center_in_scratch = s - sweep_start;
             current_freq =
                 demod.pixel_freq(&scratch_audio, center_in_scratch, hedr_shift_hz, win_idx);

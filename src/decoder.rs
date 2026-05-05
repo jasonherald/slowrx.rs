@@ -121,12 +121,11 @@ struct DecodingState {
     /// wrote earlier.
     ///
     /// `None` for every other mode. PD composes RGB in-place per pair
-    /// (see `mode_pd::decode_pd_line_pair`); Robot 72 also composes
-    /// in-place (3-channel sequential — see
-    /// `mode_robot::decode_r72_line`), so it doesn't need the side
-    /// buffer either. `SstvMode` is `#[non_exhaustive]`; future modes
-    /// with cross-radio-line chroma state (e.g., Scottie in V2.3 if it
-    /// turns out to need similar plumbing) will need to extend the
+    /// (see `mode_pd::decode_pd_line_pair`); Robot 72 and Scottie 1/2/DX
+    /// also compose RGB in-place per radio line (see
+    /// `mode_robot::decode_r72_line` and `mode_scottie::decode_line`).
+    /// `SstvMode` is `#[non_exhaustive]`; any future mode that does
+    /// need cross-radio-line chroma state will need to extend the
     /// constructor's match in `process` to opt in.
     chroma_planes: Option<[Vec<u8>; 2]>,
 }
@@ -244,7 +243,10 @@ impl SstvDecoder {
                             // `Length = LineTime * NumLines`.
                             let radio_frames_per_image = match spec.channel_layout {
                                 crate::modespec::ChannelLayout::PdYcbcr => spec.image_lines / 2,
-                                crate::modespec::ChannelLayout::RobotYuv => spec.image_lines,
+                                // Robot (RobotYuv) and Scottie (RgbSequential)
+                                // both pack one image row per radio line.
+                                crate::modespec::ChannelLayout::RobotYuv
+                                | crate::modespec::ChannelLayout::RgbSequential => spec.image_lines,
                             };
                             let nominal_samples =
                                 (f64::from(radio_frames_per_image) * spec.line_seconds * work_rate)
@@ -267,13 +269,13 @@ impl SstvDecoder {
                                             * (spec.line_pixels as usize);
                                         Some([vec![0_u8; n], vec![0_u8; n]])
                                     }
-                                    // PD modes compose RGB per-pair in place. Robot 72 also composes
-                                    // in-place (3-channel sequential — see mode_robot::decode_r72_line),
-                                    // so it doesn't need chroma_planes either; only the R36/R24 chroma-
-                                    // alternation + duplication path requires the side buffer.
-                                    // SstvMode is #[non_exhaustive], so the wildcard arm is required;
-                                    // V2.3 will need to revisit if Scottie introduces similar cross-line
-                                    // state requirements (the spec.sync_position field is the trigger).
+                                    // PD modes compose RGB per-pair in place. Robot 72 and Scottie
+                                    // 1/2/DX also compose RGB in-place per radio line (see
+                                    // mode_robot::decode_r72_line, mode_scottie::decode_line); only
+                                    // the R36/R24 chroma-alternation + duplication path requires the
+                                    // side buffer. SstvMode is #[non_exhaustive], so the wildcard arm
+                                    // is required; future modes with cross-line chroma state would
+                                    // need to opt in here.
                                     _ => None,
                                 },
                             }));
@@ -440,6 +442,33 @@ impl SstvDecoder {
                         rate,
                         &mut d.image,
                         d.chroma_planes.as_mut(),
+                        pd_demod,
+                        snr_est,
+                        d.hedr_shift_hz,
+                    );
+                    let start = (line as usize) * line_pixels;
+                    let end = start + line_pixels;
+                    out.push(SstvEvent::LineDecoded {
+                        mode: d.mode,
+                        line_index: line,
+                        pixels: d.image.pixels[start..end].to_vec(),
+                    });
+                }
+            }
+            crate::modespec::ChannelLayout::RgbSequential => {
+                // Scottie family. Mid-line sync handling lives inside
+                // mode_scottie::decode_line. No chroma_planes — RGB is composed
+                // in-place per line (no deferred chroma like R36/R24).
+                for line in 0..d.spec.image_lines {
+                    let line_seconds_offset = f64::from(line) * d.spec.line_seconds;
+                    crate::mode_scottie::decode_line(
+                        d.spec,
+                        line,
+                        &d.audio,
+                        skip,
+                        line_seconds_offset,
+                        rate,
+                        &mut d.image,
                         pd_demod,
                         snr_est,
                         d.hedr_shift_hz,

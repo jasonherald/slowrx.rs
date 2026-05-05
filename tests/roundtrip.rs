@@ -220,3 +220,98 @@ fn robot36_roundtrip() {
 fn robot24_roundtrip() {
     run_robot_roundtrip(SstvMode::Robot24);
 }
+
+/// Build a synthetic RGB image for Scottie round-trip tests:
+/// horizontal red gradient + alternating green/blue stripes.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::many_single_char_names
+)]
+fn test_scottie_image(mode: SstvMode) -> (u32, u32, Vec<[u8; 3]>) {
+    let spec = slowrx::for_mode(mode);
+    let w = spec.line_pixels;
+    let h = spec.image_lines;
+    let mut rgb = Vec::with_capacity((w * h) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let r = ((f64::from(x)) / (f64::from(w)) * 255.0) as u8;
+            let g = if y % 8 < 4 { 200 } else { 56 };
+            let b = if (y + 2) % 8 < 4 { 200 } else { 56 };
+            rgb.push([r, g, b]);
+        }
+    }
+    (w, h, rgb)
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
+fn run_scottie_roundtrip(mode: SstvMode) {
+    let (w, h, rgb) = test_scottie_image(mode);
+
+    let vis_code = match mode {
+        SstvMode::Scottie1 => 0x3C,
+        SstvMode::Scottie2 => 0x38,
+        SstvMode::ScottieDx => 0x4C,
+        _ => unreachable!(),
+    };
+    let mut audio = slowrx::__test_support::vis::synth_vis(vis_code, 0.0);
+    audio.extend(slowrx::__test_support::mode_scottie::encode_scottie(
+        mode, &rgb,
+    ));
+    audio.extend(std::iter::repeat_n(0.0_f32, 8192));
+
+    let mut d = SstvDecoder::new(WORKING_SAMPLE_RATE_HZ).expect("decoder");
+    let events = d.process(&audio);
+
+    let img = events
+        .iter()
+        .find_map(|e| match e {
+            SstvEvent::ImageComplete {
+                image,
+                partial: false,
+            } => Some(image.clone()),
+            _ => None,
+        })
+        .expect("ImageComplete event");
+
+    assert_eq!(img.mode, mode);
+    assert_eq!(img.width, w);
+    assert_eq!(img.height, h);
+
+    let mut max_diff = 0_u8;
+    let mut sum_diff: u64 = 0;
+    let mut n: u64 = 0;
+    for (i, src_rgb) in rgb.iter().enumerate() {
+        let dec = img.pixels[i];
+        for ch in 0..3 {
+            let d = (i32::from(src_rgb[ch]) - i32::from(dec[ch])).unsigned_abs() as u8;
+            if d > max_diff {
+                max_diff = d;
+            }
+            sum_diff += u64::from(d);
+            n += 1;
+        }
+    }
+    let mean = sum_diff as f64 / n as f64;
+    assert!(mean < 5.0, "{mode:?}: max_diff={max_diff} mean={mean:.2}");
+}
+
+#[test]
+fn scottie1_roundtrip() {
+    run_scottie_roundtrip(SstvMode::Scottie1);
+}
+
+#[test]
+fn scottie2_roundtrip() {
+    run_scottie_roundtrip(SstvMode::Scottie2);
+}
+
+#[test]
+fn scottie_dx_roundtrip() {
+    run_scottie_roundtrip(SstvMode::ScottieDx);
+}

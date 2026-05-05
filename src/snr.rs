@@ -109,9 +109,11 @@ impl Default for HannBank {
 /// ```
 ///
 /// slowrx also bumps the index up by one for Scottie DX (`Mode == SDX`)
-/// when `WinIdx < 6`. We don't yet support Scottie modes, so that branch
-/// is omitted; once the SDX decoder lands it will pass `is_sdx: bool`
-/// or call a separate selector.
+/// when `WinIdx < 6`. The Scottie family decoder applies that bump
+/// post-hoc inside [`crate::mode_pd::decode_one_channel_into`]
+/// (matching slowrx C `video.c:367` exactly), so this bare selector
+/// — and the [`window_idx_for_snr_with_hysteresis`] variant — stay
+/// mode-agnostic.
 #[must_use]
 pub(crate) fn window_idx_for_snr(snr_db: f64) -> usize {
     if snr_db >= 20.0 {
