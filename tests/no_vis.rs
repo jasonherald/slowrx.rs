@@ -60,7 +60,13 @@ fn decoder_no_vis_on_white_noise() {
     // ~0.3 RMS — matches the measured level of the Zarya 2026-05-04
     // recording, so the decoder operates on realistic signal-strength
     // input rather than near-zero amplitudes.
-    let audio: Vec<f32> = (0..n).map(|_| rng.next_unit() * 0.6).collect();
+    //
+    // `next_unit()` is uniform on `[-0.5, 0.5]`, whose RMS is
+    // `1/sqrt(12) ≈ 0.2887`. Scaling by `target_rms * sqrt(12)` makes
+    // the resulting noise hit the target RMS exactly (modulo
+    // sample-count statistical jitter).
+    let noise_scale = 0.3_f32 * 12.0_f32.sqrt();
+    let audio: Vec<f32> = (0..n).map(|_| rng.next_unit() * noise_scale).collect();
 
     let mut decoder = SstvDecoder::new(SAMPLE_RATE_HZ).expect("decoder construct");
     let events = decoder.process(&audio);
