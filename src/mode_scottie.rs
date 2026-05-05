@@ -1,24 +1,37 @@
-//! Scottie-family mode decoder (Scottie 1, Scottie 2, Scottie DX).
+//! RGB-sequential mode decoder — Scottie 1/2/DX and Martin 1/2.
 //!
-//! Three-channel sequential RGB layout per radio line, with sync sitting
-//! between the B and R channels (mid-line). This is the V2.3 mid-line-
-//! sync forcing-function — `decoder.rs`'s line-clock advance and
-//! `find_sync`'s detection both stay generic; the mid-line idiosyncrasy
-//! lives entirely inside `decode_line`.
+//! Both families use [`crate::modespec::ChannelLayout::RgbSequential`]:
+//! three GBR channels per radio line, written to the image in-place
+//! via `image.put_pixel`. The two families differ in **where the sync
+//! pulse sits within a radio line**:
 //!
-//! Translated from slowrx's `video.c:72-79` (Scottie `ChanStart` layout)
-//! and `video.c:367` (SDX Hann-bump). slowrx's GBR storage convention
-//! (`video.c:440-444`) is bypassed: we write RGB directly via
-//! [`crate::image::SstvImage::put_pixel`].
+//! - **Scottie** ([`crate::modespec::SyncPosition::Scottie`]): sync
+//!   sits between the B and R channels (mid-line). `find_sync`
+//!   applies a Scottie-specific correction so `skip_samples` lands
+//!   at line 0's start.
+//! - **Martin** ([`crate::modespec::SyncPosition::LineStart`]): sync
+//!   at line start (standard SSTV convention); same as PD and Robot.
 //!
 //! ```text
-//! Scottie radio line layout:
-//!   [septr][ G pixels ][septr][ B pixels ][SYNC][porch][ R pixels ]
-//!     ^                                       ^
-//!     |                                       |
-//!     line start                              find_sync detects this
-//!                                             (mid-line)
+//! Scottie line layout:
+//!   [septr][G pixels][septr][B pixels][SYNC][porch][R pixels]
+//!     ^                                  ^
+//!     |                                  |
+//!     line start                         find_sync detects this
+//!                                        (mid-line — Scottie branch
+//!                                        in find_sync corrects skip)
+//!
+//! Martin line layout:
+//!   [SYNC][porch][G pixels][septr][B pixels][septr][R pixels]
+//!   ^
+//!   |
+//!   line start (sync at line start; standard PD/Robot path)
 //! ```
+//!
+//! Translated from slowrx's `video.c:72-79` (Scottie `ChanStart`) and
+//! the `video.c` "default" case (Martin/PD/Robot `ChanStart`). slowrx's
+//! GBR storage convention (`video.c:440-444`) is bypassed — we write
+//! RGB directly via [`crate::image::SstvImage::put_pixel`].
 //!
 //! See `NOTICE.md` for full slowrx attribution.
 
@@ -52,24 +65,29 @@ pub(crate) fn decode_line(
     let width = spec.line_pixels;
     let chan_len = f64::from(width) * pixel_secs;
 
-    // Scottie channel start times relative to *line start* (the start
-    // of the first septr at the beginning of line N). Translated from
-    // slowrx `video.c:72-79`:
-    //
-    //   [septr][G pixels][septr][B pixels][SYNC][porch][R pixels]
-    //   ^      ^                ^                       ^
-    //   0      septr            2·septr + chan_len      2·septr + 2·chan_len + sync + porch
-    //
-    // `find_sync` returns a `skip_samples` already corrected to point at
-    // line 0's start (its `SyncPosition::Scottie` branch applies
-    // `s = s - chan_len/2 + 2·porch` per slowrx `sync.c:123-125`), so
-    // these offsets are positive and identical to slowrx C's `ChanStart`
-    // values.
-    let chan_starts_sec: [f64; 3] = [
-        septr_secs,                                                 // G
-        2.0 * septr_secs + chan_len,                                // B
-        2.0 * septr_secs + 2.0 * chan_len + sync_secs + porch_secs, // R
-    ];
+    // Channel start times relative to *line start*. Scottie's mid-line
+    // sync sits at `2·septr + 2·chan_len`; the LineStart branch puts
+    // sync at offset 0 (G follows after sync + porch). find_sync
+    // returns `skip_samples` already corrected for both — Scottie
+    // applies `s = s − chan_len/2 + 2·porch` (slowrx C
+    // `sync.c:123-125`), LineStart uses the unmodified PD/Robot
+    // formula.
+    let chan_starts_sec: [f64; 3] = match spec.sync_position {
+        crate::modespec::SyncPosition::Scottie => [
+            septr_secs,                                                 // G (post-septr1)
+            2.0 * septr_secs + chan_len,                                // B (post-septr2)
+            2.0 * septr_secs + 2.0 * chan_len + sync_secs + porch_secs, // R (post-sync+porch)
+        ],
+        crate::modespec::SyncPosition::LineStart => [
+            // Martin layout — slowrx C video.c default case:
+            //   ChanStart[0] = sync + porch
+            //   ChanStart[1] = ChanStart[0] + chan_len + septr
+            //   ChanStart[2] = ChanStart[1] + chan_len + septr
+            sync_secs + porch_secs,                                     // G
+            sync_secs + porch_secs + chan_len + septr_secs,             // B
+            sync_secs + porch_secs + 2.0 * chan_len + 2.0 * septr_secs, // R
+        ],
+    };
 
     let width_us = width as usize;
 

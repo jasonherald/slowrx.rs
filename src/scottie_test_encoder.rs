@@ -1,22 +1,25 @@
-//! Synthetic Scottie encoder for round-trip testing. Produces
-//! continuous-phase FM audio matching the encoder side of the SSTV
-//! protocol for Scottie 1, Scottie 2, and Scottie DX.
+//! Synthetic RGB-sequential encoder for round-trip testing —
+//! handles both Scottie (1/2/DX) and Martin (1/2) families.
 //!
 //! Test-only — gated behind `cfg(any(test, feature = "test-support"))`.
-//! Lives in its own file so the production decoder stays under the
-//! 500-LOC ceiling.
 //!
-//! **Line layout per radio line:**
+//! **Per-line tone emission order branches on
+//! [`crate::modespec::SyncPosition`]:**
 //!
 //! ```text
-//! [septr 1500 Hz][G pixels 1500-2300 Hz][septr 1500 Hz]
-//! [B pixels 1500-2300 Hz][SYNC 1200 Hz][porch 1500 Hz]
-//! [R pixels 1500-2300 Hz]
+//! Scottie (sync_position::Scottie):
+//!   [septr 1500 Hz][G pixels 1500-2300 Hz][septr 1500 Hz]
+//!   [B pixels 1500-2300 Hz][SYNC 1200 Hz][porch 1500 Hz]
+//!   [R pixels 1500-2300 Hz]
+//!
+//! Martin (sync_position::LineStart):
+//!   [SYNC 1200 Hz][porch 1500 Hz][G pixels 1500-2300 Hz]
+//!   [septr 1500 Hz][B pixels 1500-2300 Hz][septr 1500 Hz]
+//!   [R pixels 1500-2300 Hz]
 //! ```
 //!
-//! Total per line = 2·SeptrTime + 2·ImgWidth·PixelTime + SyncTime +
-//! PorchTime + ImgWidth·PixelTime = LineTime exactly (verified against
-//! the `ModeSpec` table for Scottie 1 / 2 / DX in `modespec.rs`).
+//! Total per line = LineTime exactly (defensive pad fills the
+//! boundary if float arithmetic rounds short).
 
 #![allow(
     clippy::cast_precision_loss,
@@ -68,11 +71,15 @@ fn fill_to(out: &mut Vec<f32>, freq_hz: f64, target_n: usize, phase: &mut f64) {
 ///   7. R channel at `pixel_seconds` per pixel
 #[must_use]
 #[doc(hidden)]
-#[allow(dead_code)]
+#[allow(dead_code, clippy::too_many_lines)]
 pub fn encode_scottie(mode: SstvMode, rgb: &[[u8; 3]]) -> Vec<f32> {
     assert!(matches!(
         mode,
-        SstvMode::Scottie1 | SstvMode::Scottie2 | SstvMode::ScottieDx
+        SstvMode::Scottie1
+            | SstvMode::Scottie2
+            | SstvMode::ScottieDx
+            | SstvMode::Martin1
+            | SstvMode::Martin2
     ));
     let spec = crate::modespec::for_mode(mode);
     let w = spec.line_pixels;
@@ -90,76 +97,146 @@ pub fn encode_scottie(mode: SstvMode, rgb: &[[u8; 3]]) -> Vec<f32> {
     };
 
     for y in 0..h {
-        // Septr 1.
-        fill_to(
-            &mut out,
-            SEPTR_HZ,
-            advance(&mut t, spec.septr_seconds),
-            &mut phase,
-        );
+        match spec.sync_position {
+            crate::modespec::SyncPosition::Scottie => {
+                // Septr 1.
+                fill_to(
+                    &mut out,
+                    SEPTR_HZ,
+                    advance(&mut t, spec.septr_seconds),
+                    &mut phase,
+                );
 
-        // G channel.
-        for x in 0..w {
-            let g = rgb[(y * w + x) as usize][1];
-            fill_to(
-                &mut out,
-                lum_to_freq(g),
-                advance(&mut t, spec.pixel_seconds),
-                &mut phase,
-            );
+                // G channel.
+                for x in 0..w {
+                    let g = rgb[(y * w + x) as usize][1];
+                    fill_to(
+                        &mut out,
+                        lum_to_freq(g),
+                        advance(&mut t, spec.pixel_seconds),
+                        &mut phase,
+                    );
+                }
+
+                // Septr 2.
+                fill_to(
+                    &mut out,
+                    SEPTR_HZ,
+                    advance(&mut t, spec.septr_seconds),
+                    &mut phase,
+                );
+
+                // B channel.
+                for x in 0..w {
+                    let b = rgb[(y * w + x) as usize][2];
+                    fill_to(
+                        &mut out,
+                        lum_to_freq(b),
+                        advance(&mut t, spec.pixel_seconds),
+                        &mut phase,
+                    );
+                }
+
+                // Sync (mid-line, between B and R).
+                fill_to(
+                    &mut out,
+                    SYNC_HZ,
+                    advance(&mut t, spec.sync_seconds),
+                    &mut phase,
+                );
+
+                // Porch.
+                fill_to(
+                    &mut out,
+                    PORCH_HZ,
+                    advance(&mut t, spec.porch_seconds),
+                    &mut phase,
+                );
+
+                // R channel.
+                for x in 0..w {
+                    let r = rgb[(y * w + x) as usize][0];
+                    fill_to(
+                        &mut out,
+                        lum_to_freq(r),
+                        advance(&mut t, spec.pixel_seconds),
+                        &mut phase,
+                    );
+                }
+            }
+            crate::modespec::SyncPosition::LineStart => {
+                // Martin layout: sync at line start, then porch, then
+                // G/septr/B/septr/R.
+
+                // Sync.
+                fill_to(
+                    &mut out,
+                    SYNC_HZ,
+                    advance(&mut t, spec.sync_seconds),
+                    &mut phase,
+                );
+
+                // Porch.
+                fill_to(
+                    &mut out,
+                    PORCH_HZ,
+                    advance(&mut t, spec.porch_seconds),
+                    &mut phase,
+                );
+
+                // G channel.
+                for x in 0..w {
+                    let g = rgb[(y * w + x) as usize][1];
+                    fill_to(
+                        &mut out,
+                        lum_to_freq(g),
+                        advance(&mut t, spec.pixel_seconds),
+                        &mut phase,
+                    );
+                }
+
+                // Septr 1.
+                fill_to(
+                    &mut out,
+                    SEPTR_HZ,
+                    advance(&mut t, spec.septr_seconds),
+                    &mut phase,
+                );
+
+                // B channel.
+                for x in 0..w {
+                    let b = rgb[(y * w + x) as usize][2];
+                    fill_to(
+                        &mut out,
+                        lum_to_freq(b),
+                        advance(&mut t, spec.pixel_seconds),
+                        &mut phase,
+                    );
+                }
+
+                // Septr 2.
+                fill_to(
+                    &mut out,
+                    SEPTR_HZ,
+                    advance(&mut t, spec.septr_seconds),
+                    &mut phase,
+                );
+
+                // R channel.
+                for x in 0..w {
+                    let r = rgb[(y * w + x) as usize][0];
+                    fill_to(
+                        &mut out,
+                        lum_to_freq(r),
+                        advance(&mut t, spec.pixel_seconds),
+                        &mut phase,
+                    );
+                }
+            }
         }
 
-        // Septr 2.
-        fill_to(
-            &mut out,
-            SEPTR_HZ,
-            advance(&mut t, spec.septr_seconds),
-            &mut phase,
-        );
-
-        // B channel.
-        for x in 0..w {
-            let b = rgb[(y * w + x) as usize][2];
-            fill_to(
-                &mut out,
-                lum_to_freq(b),
-                advance(&mut t, spec.pixel_seconds),
-                &mut phase,
-            );
-        }
-
-        // Sync (mid-line, between B and R).
-        fill_to(
-            &mut out,
-            SYNC_HZ,
-            advance(&mut t, spec.sync_seconds),
-            &mut phase,
-        );
-
-        // Porch.
-        fill_to(
-            &mut out,
-            PORCH_HZ,
-            advance(&mut t, spec.porch_seconds),
-            &mut phase,
-        );
-
-        // R channel.
-        for x in 0..w {
-            let r = rgb[(y * w + x) as usize][0];
-            fill_to(
-                &mut out,
-                lum_to_freq(r),
-                advance(&mut t, spec.pixel_seconds),
-                &mut phase,
-            );
-        }
-
-        // Defensive pad to the line_seconds boundary. The Scottie line
-        // layout sums to exactly LineTime per the ModeSpec table, but
-        // float rounding could leave us a sample short — top up with
-        // PORCH_HZ (1500 Hz, the inter-line idle frequency) so the
-        // decoder's per-line timing model lines up with the audio.
+        // Defensive pad to the line_seconds boundary (existing logic
+        // — shape unchanged).
         let line_end_target = f64::from(y + 1) * spec.line_seconds;
         let pad_secs = line_end_target - t;
         if pad_secs > 0.0 {
