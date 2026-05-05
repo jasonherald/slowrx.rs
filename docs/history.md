@@ -56,7 +56,6 @@ sync placement explicitly.
 
 Closes V2.1 epic ([#63]). Tracks the V2 umbrella ([#9]).
 
-[#9]: https://github.com/jasonherald/slowrx.rs/issues/9
 [#63]: https://github.com/jasonherald/slowrx.rs/issues/63
 
 ### Added
@@ -66,7 +65,7 @@ Closes V2.1 epic ([#63]). Tracks the V2 umbrella ([#9]).
   `mode_pd::decode_pd_line_pair` unchanged. Timing constants from
   slowrx `modespec.c:299-310`.
 - **`SyncPosition` enum + `ModeSpec::sync_position` field.** V2 carve-out
-  per [V2 epic-split design](docs/superpowers/specs/2026-05-02-v2-epic-split-design.md).
+  per [V2 epic-split design](./superpowers/specs/2026-05-02-v2-epic-split-design.md).
   PD120/PD180/PD240 all use `SyncPosition::LineStart`. The
   `#[non_exhaustive]` enum will gain a Scottie variant in V2.3.
 
@@ -87,8 +86,8 @@ file catalogs every deliberate divergence from slowrx so future audits
 have somewhere to point first.
 
 [epic #12]: https://github.com/jasonherald/slowrx.rs/issues/12
-[`docs/audits/`]: ./docs/audits/
-[`docs/intentional-deviations.md`]: ./docs/intentional-deviations.md
+[`docs/audits/`]: ./audits/
+[`docs/intentional-deviations.md`]: ./intentional-deviations.md
 
 ### Added (CLI binary + R12BW parity + deviations doc — issues #7, #26, #39)
 
@@ -123,7 +122,7 @@ have somewhere to point first.
 
 ### Documentation (intentional deviations from slowrx — #39)
 
-- Added [`docs/intentional-deviations.md`](docs/intentional-deviations.md)
+- Added [`docs/intentional-deviations.md`](./intentional-deviations.md)
   cataloging every deliberate divergence from slowrx (currently 4):
   VIS stop-bit boundary precision, FindSync 90° deadband, VIS retry
   exhaustion, and the relaxed synthetic round-trip `max_diff` tolerance.
