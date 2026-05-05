@@ -3,17 +3,16 @@
 //! Translated from slowrx's `modespec.c` (Oona Räisänen, ISC License).
 //! See `NOTICE.md` for full attribution.
 //!
-//! Implemented as of V2.3 (0.4.0): PD120, PD180, PD240, Robot 24, Robot 36,
-//! Robot 72, Scottie 1, Scottie 2, Scottie DX. Scottie 1/2/DX are present
-//! in the [`SstvMode`] enum and the lookup tables as of 0.4.0 Phase 1
-//! scaffolding; the per-line demodulation lands in Phase 3 (see
-//! `mode_scottie::decode_line`). Remaining V2 modes (Martin 1/2) are
-//! not yet present and will land with their own PR.
+//! Implemented as of V2.4 (0.5.0): PD120, PD180, PD240, Robot 24,
+//! Robot 36, Robot 72, Scottie 1, Scottie 2, Scottie DX, Martin 1,
+//! Martin 2. All RGB-sequential modes (Scottie + Martin) share a
+//! single decode path; the per-line offsets branch on
+//! [`SyncPosition`].
 
 /// SSTV operating mode. Implemented: [`SstvMode::Pd120`], [`SstvMode::Pd180`],
 /// [`SstvMode::Pd240`], [`SstvMode::Robot24`], [`SstvMode::Robot36`],
 /// [`SstvMode::Robot72`], [`SstvMode::Scottie1`], [`SstvMode::Scottie2`],
-/// [`SstvMode::ScottieDx`]. Additional V2 modes (Martin) planned.
+/// [`SstvMode::ScottieDx`], [`SstvMode::Martin1`], [`SstvMode::Martin2`].
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SstvMode {

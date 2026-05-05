@@ -37,9 +37,22 @@
 
 use crate::modespec::ModeSpec;
 
-/// Decode one Scottie radio line into `image`. Reads G, B from before
-/// the sync (negative offsets relative to `sync_time`) and R from after,
-/// composing RGB in place.
+/// Decode one RGB-sequential radio line (Scottie or Martin) into
+/// `image`. Per-channel start times are line-start-relative and
+/// branch on `spec.sync_position`:
+///
+/// - [`crate::modespec::SyncPosition::Scottie`] — channels are
+///   `[septr, 2·septr+chan_len, 2·septr+2·chan_len+sync+porch]` from
+///   line start. The mid-line sync sits at `2·septr + 2·chan_len`;
+///   `find_sync` corrects `skip_samples` to land at line 0's start
+///   (slowrx C `sync.c:123-125`), so all three offsets stay positive.
+/// - [`crate::modespec::SyncPosition::LineStart`] — channels are
+///   `[sync+porch, sync+porch+chan_len+septr, sync+porch+2·chan_len+2·septr]`
+///   from line start, all post-sync. `find_sync` uses the unmodified
+///   PD/Robot formula. Same shape as Robot 72 with RGB instead of `YCrCb`.
+///
+/// In both cases RGB is composed in place via `image.put_pixel`; no
+/// chroma side-buffer is needed (cf. R36/R24's `chroma_planes`).
 ///
 /// `line_index` is the 0-based image row this radio line emits;
 /// `line_seconds_offset` is `f64::from(line_index) * spec.line_seconds`

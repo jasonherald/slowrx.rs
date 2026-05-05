@@ -70,6 +70,18 @@ fn fill_to(out: &mut Vec<f32>, freq_hz: f64, target_n: usize, phase: &mut f64) {
 ///   6. Porch at `PORCH_HZ`
 ///   7. R channel at `pixel_seconds` per pixel
 #[must_use]
+/// Encode an RGB image as continuous-phase FM audio for either
+/// Scottie (S1/S2/DX) or Martin (M1/M2). The per-line tone emission
+/// order branches on `spec.sync_position`:
+///
+/// - [`crate::modespec::SyncPosition::Scottie`] —
+///   `[septr][G][septr][B][SYNC][porch][R]` (sync mid-line).
+/// - [`crate::modespec::SyncPosition::LineStart`] —
+///   `[SYNC][porch][G][septr][B][septr][R]` (Martin / standard
+///   PD-Robot order).
+///
+/// Panics if `mode` is not one of the five supported variants or if
+/// `rgb.len() != line_pixels * image_lines`.
 #[doc(hidden)]
 #[allow(dead_code, clippy::too_many_lines)]
 pub fn encode_scottie(mode: SstvMode, rgb: &[[u8; 3]]) -> Vec<f32> {
