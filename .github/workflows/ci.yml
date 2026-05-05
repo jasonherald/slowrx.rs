@@ -34,8 +34,20 @@ jobs:
       - name: Build
         run: cargo build --all-features --locked
 
+      # Round-trip integration tests in `tests/roundtrip.rs` decode
+      # 200+ seconds of synthetic SSTV audio per mode × 11 modes. In
+      # debug mode locally these take ~547 s; on a 2-core GitHub
+      # runner they're materially slower (tests routinely log
+      # "running over 60 seconds" warnings). In release the same
+      # suite is ~11 s — release is also what end-users run, so
+      # decode-correctness coverage there is more representative.
+      # Trade-off: we lose `debug_assert!` / overflow-check panics
+      # from CI signal; the codebase doesn't lean on them, and the
+      # integer-truncation correctness checks (e.g. `get_bin` floor
+      # semantics, the round-2-audit findings) live in unit tests
+      # that this step still exercises in release mode.
       - name: Test
-        run: cargo test --all-features --locked
+        run: cargo test --all-features --locked --release
 
       - name: Doc build
         run: cargo doc --no-deps --all-features
