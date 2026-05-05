@@ -112,8 +112,3 @@ pub(crate) fn decode_line(
         image.put_pixel(x as u32, line_index, [r[x], g[x], b[x]]);
     }
 }
-
-#[cfg(test)]
-mod tests {
-    // Tests land in Phase 3 alongside the implementation.
-}

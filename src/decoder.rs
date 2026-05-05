@@ -121,12 +121,11 @@ struct DecodingState {
     /// wrote earlier.
     ///
     /// `None` for every other mode. PD composes RGB in-place per pair
-    /// (see `mode_pd::decode_pd_line_pair`); Robot 72 also composes
-    /// in-place (3-channel sequential — see
-    /// `mode_robot::decode_r72_line`), so it doesn't need the side
-    /// buffer either. `SstvMode` is `#[non_exhaustive]`; future modes
-    /// with cross-radio-line chroma state (e.g., Scottie in V2.3 if it
-    /// turns out to need similar plumbing) will need to extend the
+    /// (see `mode_pd::decode_pd_line_pair`); Robot 72 and Scottie 1/2/DX
+    /// also compose RGB in-place per radio line (see
+    /// `mode_robot::decode_r72_line` and `mode_scottie::decode_line`).
+    /// `SstvMode` is `#[non_exhaustive]`; any future mode that does
+    /// need cross-radio-line chroma state will need to extend the
     /// constructor's match in `process` to opt in.
     chroma_planes: Option<[Vec<u8>; 2]>,
 }
@@ -270,13 +269,13 @@ impl SstvDecoder {
                                             * (spec.line_pixels as usize);
                                         Some([vec![0_u8; n], vec![0_u8; n]])
                                     }
-                                    // PD modes compose RGB per-pair in place. Robot 72 also composes
-                                    // in-place (3-channel sequential — see mode_robot::decode_r72_line),
-                                    // so it doesn't need chroma_planes either; only the R36/R24 chroma-
-                                    // alternation + duplication path requires the side buffer.
-                                    // SstvMode is #[non_exhaustive], so the wildcard arm is required;
-                                    // V2.3 will need to revisit if Scottie introduces similar cross-line
-                                    // state requirements (the spec.sync_position field is the trigger).
+                                    // PD modes compose RGB per-pair in place. Robot 72 and Scottie
+                                    // 1/2/DX also compose RGB in-place per radio line (see
+                                    // mode_robot::decode_r72_line, mode_scottie::decode_line); only
+                                    // the R36/R24 chroma-alternation + duplication path requires the
+                                    // side buffer. SstvMode is #[non_exhaustive], so the wildcard arm
+                                    // is required; future modes with cross-line chroma state would
+                                    // need to opt in here.
                                     _ => None,
                                 },
                             }));
