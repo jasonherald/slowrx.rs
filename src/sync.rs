@@ -354,9 +354,27 @@ pub(crate) fn find_sync(has_sync: &[bool], initial_rate_hz: f64, spec: ModeSpec)
         xmax -= 350;
     }
 
-    // sync.c:120,127. V1 ports PD-family only; the Scottie branch
-    // (sync.c:123-125) is unreachable here.
-    let s_secs = (f64::from(xmax) / (X_ACC_BINS as f64)) * spec.line_seconds - spec.sync_seconds;
+    // sync.c:120 — base offset to start of line 0's content. The xmax
+    // detection lands at the falling edge of the sync pulse, so the
+    // raw `s_secs` is `(sync_pos_in_line + sync_secs) - sync_secs =
+    // sync_pos_in_line` for any mode. PD/Robot/Martin sync at line
+    // start: s_secs ≈ 0 (slightly negative → zero-pad). Scottie sync
+    // is mid-line, so `xmax` lands ~2/3 down the line. The
+    // `xmax > 350` slip check (sync.c:117) wraps it back to the left
+    // half of the line.
+    let s_secs_raw =
+        (f64::from(xmax) / (X_ACC_BINS as f64)) * spec.line_seconds - spec.sync_seconds;
+    // sync.c:123-125 — Scottie modes don't start lines with sync.
+    // The slip-wrapped xmax doesn't correspond to a line-start anchor,
+    // so apply slowrx C's mode-specific correction to bring `s_secs`
+    // back to ~0 (line 0's content start).
+    let s_secs = match spec.sync_position {
+        crate::modespec::SyncPosition::LineStart => s_secs_raw,
+        crate::modespec::SyncPosition::Scottie => {
+            let chan_len = f64::from(spec.line_pixels) * spec.pixel_seconds;
+            s_secs_raw - chan_len / 2.0 + 2.0 * spec.porch_seconds
+        }
+    };
     let skip_samples = (s_secs * rate).round() as i64;
 
     SyncResult {
