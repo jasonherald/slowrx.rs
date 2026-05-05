@@ -7,11 +7,14 @@
 //!
 //! ## Status
 //!
-//! `0.3.x` — V2.2 published. PD120/PD180/PD240 + Robot 24/36/72
-//! decoding from raw audio. PD120/PD180 validated against ARISS
-//! Dec-2017; Robot 36 validated against the ARISS Fram2 corpus
-//! (see `tests/ariss_fram2_validation.md`). The public API is
-//! `#[non_exhaustive]`-protected for additive growth as V2.x
+//! `0.4.x` — V2.3 published. PD120/PD180/PD240 + Robot 24/36/72 +
+//! Scottie 1 / Scottie 2 / Scottie DX decoding from raw audio.
+//! PD120/PD180 validated against ARISS Dec-2017; Robot 36 validated
+//! against the ARISS Fram2 corpus (see
+//! `tests/ariss_fram2_validation.md`). Scottie family is synthetic
+//! round-trip-validated only — no Scottie reference WAVs available.
+//! Martin family (M1, M2) is the next planned epic. The public API
+//! is `#[non_exhaustive]`-protected for additive growth as V2.x
 //! mode-family epics land. See
 //! <https://github.com/jasonherald/slowrx.rs/issues/9> for the V2 roadmap.
 //!
