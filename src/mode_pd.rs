@@ -505,7 +505,9 @@ pub(crate) fn decode_one_channel_into(
             // integration window. Applied AFTER the hysteresis selector so
             // `prev_win_idx` continues tracking the un-bumped SNR-derived index
             // (the bump shouldn't compound across pixels).
-            if spec.mode == crate::modespec::SstvMode::ScottieDx && win_idx < 6 {
+            if spec.mode == crate::modespec::SstvMode::ScottieDx
+                && win_idx < crate::snr::HANN_LENS.len() - 1
+            {
                 win_idx += 1;
             }
             let center_in_scratch = s - sweep_start;

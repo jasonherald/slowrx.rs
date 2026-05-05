@@ -98,8 +98,8 @@ pub enum ChannelLayout {
 /// Where the sync pulse sits within a radio line.
 ///
 /// PD/Robot/Martin all place sync at line start (the standard SSTV
-/// convention). Scottie modes are the exception — sync sits between G
-/// and B channels, not at line start. Stored here so future mode
+/// convention). Scottie modes are the exception — sync sits between B
+/// and R channels, not at line start. Stored here so future mode
 /// decoders are forced to make their sync placement explicit at dispatch
 /// time, surfacing the V1 line-clock-advance assumption that sync ==
 /// line start.
