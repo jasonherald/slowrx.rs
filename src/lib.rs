@@ -39,6 +39,7 @@ pub mod error;
 pub mod image;
 pub mod mode_pd;
 pub mod mode_robot;
+pub mod mode_scottie;
 pub mod modespec;
 pub mod resample;
 #[allow(dead_code)]
