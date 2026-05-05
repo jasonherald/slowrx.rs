@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-05
+
+Minor release adding Martin 1 (VIS `0x2C`) and Martin 2 (`0x28`) —
+both 320×256 GBR with sync at line start (standard SSTV convention).
+Reuses the `ChannelLayout::RgbSequential` infrastructure landed in
+V2.3 Scottie. Synthetic round-trip-validated; real-radio Martin
+capture validation is async ([#66]).
+
+[#66]: https://github.com/jasonherald/slowrx.rs/issues/66
+
+### Added
+
+- **`SstvMode::Martin1`** (VIS `0x2C`), **`Martin2`** (`0x28`).
+- Two new `ModeSpec` consts: `MARTIN1`, `MARTIN2`. Values
+  transcribed from slowrx C `modespec.c:39-63`.
+
+### Changed
+
+- **`mode_scottie::decode_line`** now branches on
+  `spec.sync_position` for `chan_starts_sec`. The `Scottie` branch
+  is unchanged from V2.3; the new `LineStart` branch handles Martin
+  via slowrx C `video.c` "default" case offsets (`sync + porch`,
+  then `+ chan_len + septr`, then `+ chan_len + septr`).
+- **`scottie_test_encoder::encode_scottie`** accepts Martin modes
+  and branches per-line tone emission on `spec.sync_position`.
+  Martin emission order: `[SYNC][porch][G][septr][B][septr][R]`.
+- **Module rustdocs** in `mode_scottie` and `scottie_test_encoder`
+  expanded to enumerate both Scottie and Martin families with
+  layout diagrams.
+- **`src/lib.rs` Status block** bumped from `0.4.x — V2.3 published`
+  to `0.5.x — V2.4 published`; Martin 1 / Martin 2 added to the
+  implemented-modes list.
+
+### Validation
+
+- Two new synthetic round-trips (`martin1_roundtrip`,
+  `martin2_roundtrip`) pass at unchanged `mean < 5.0` per-pixel-
+  RGB-diff threshold.
+- All 9 prior round-trips (PD120/180/240, R24/36/72, S1/S2/SDX)
+  continue to pass at the same threshold — regression net intact.
+- Coverage ≥ 92% per-file maintained.
+
+### Notes
+
+- Martin's `SyncPosition::LineStart` routes through the existing
+  PD/Robot path in `find_sync`; no `find_sync` changes were needed
+  (unlike V2.3 Scottie, which required a new branch).
+- Module / function names (`mode_scottie`, `encode_scottie`) stay
+  despite the family-scope expansion. Renaming was deferred per
+  the V2.4 epic's "Cross-mode shared-helper refactoring beyond
+  what naturally falls out of Scottie reuse" out-of-scope clause.
+- Real-radio Martin capture validation is async (no reference WAVs
+  available yet). [#70] (pixel-diff comparator), [#71] (squiggles),
+  and [#77] (SIMD multiversioning) remain pending.
+
+[#70]: https://github.com/jasonherald/slowrx.rs/issues/70
+[#71]: https://github.com/jasonherald/slowrx.rs/issues/71
+[#77]: https://github.com/jasonherald/slowrx.rs/issues/77
+
 ## [0.4.0] - 2026-05-04
 
 Minor release adding the Scottie family — Scottie 1, Scottie 2,

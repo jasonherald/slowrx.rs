@@ -3,17 +3,16 @@
 //! Translated from slowrx's `modespec.c` (Oona Räisänen, ISC License).
 //! See `NOTICE.md` for full attribution.
 //!
-//! Implemented as of V2.3 (0.4.0): PD120, PD180, PD240, Robot 24, Robot 36,
-//! Robot 72, Scottie 1, Scottie 2, Scottie DX. Scottie 1/2/DX are present
-//! in the [`SstvMode`] enum and the lookup tables as of 0.4.0 Phase 1
-//! scaffolding; the per-line demodulation lands in Phase 3 (see
-//! `mode_scottie::decode_line`). Remaining V2 modes (Martin 1/2) are
-//! not yet present and will land with their own PR.
+//! Implemented as of V2.4 (0.5.0): PD120, PD180, PD240, Robot 24,
+//! Robot 36, Robot 72, Scottie 1, Scottie 2, Scottie DX, Martin 1,
+//! Martin 2. All RGB-sequential modes (Scottie + Martin) share a
+//! single decode path; the per-line offsets branch on
+//! [`SyncPosition`].
 
 /// SSTV operating mode. Implemented: [`SstvMode::Pd120`], [`SstvMode::Pd180`],
 /// [`SstvMode::Pd240`], [`SstvMode::Robot24`], [`SstvMode::Robot36`],
 /// [`SstvMode::Robot72`], [`SstvMode::Scottie1`], [`SstvMode::Scottie2`],
-/// [`SstvMode::ScottieDx`]. Additional V2 modes (Martin) planned.
+/// [`SstvMode::ScottieDx`], [`SstvMode::Martin1`], [`SstvMode::Martin2`].
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SstvMode {
@@ -37,6 +36,10 @@ pub enum SstvMode {
     /// slowrx applies a +1 Hann-window-index bump in the per-pixel
     /// demod when this mode is active (see `mode_scottie::decode_line`).
     ScottieDx,
+    /// Martin 1 — VIS `0x2C`, 320×256 GBR, 0.4576 ms/pixel.
+    Martin1,
+    /// Martin 2 — VIS `0x28`, 320×256 GBR, 0.2288 ms/pixel.
+    Martin2,
 }
 
 /// Mode timing + layout table entry.
@@ -134,6 +137,8 @@ pub fn lookup(vis_code: u8) -> Option<ModeSpec> {
         0x04 => Some(ROBOT24),
         0x08 => Some(ROBOT36),
         0x0C => Some(ROBOT72),
+        0x28 => Some(MARTIN2),
+        0x2C => Some(MARTIN1),
         0x38 => Some(SCOTTIE2),
         0x3C => Some(SCOTTIE1),
         0x4C => Some(SCOTTIE_DX),
@@ -161,6 +166,8 @@ pub fn for_mode(mode: SstvMode) -> ModeSpec {
         SstvMode::Scottie1 => SCOTTIE1,
         SstvMode::Scottie2 => SCOTTIE2,
         SstvMode::ScottieDx => SCOTTIE_DX,
+        SstvMode::Martin1 => MARTIN1,
+        SstvMode::Martin2 => MARTIN2,
     }
 }
 
@@ -312,6 +319,42 @@ const SCOTTIE_DX: ModeSpec = ModeSpec {
     septr_seconds: 0.001_5,
     channel_layout: ChannelLayout::RgbSequential,
     sync_position: SyncPosition::Scottie,
+};
+
+/// Martin 1. slowrx `modespec.c:39-50`.
+const MARTIN1: ModeSpec = ModeSpec {
+    mode: SstvMode::Martin1,
+    vis_code: 0x2C,
+    line_pixels: 320,
+    image_lines: 256,
+    // slowrx modespec.c:39-50 — M1 LineTime = 446.446e-3,
+    // PixelTime = 0.4576e-3, SyncTime = 4.862e-3,
+    // PorchTime = 0.572e-3, SeptrTime = 0.572e-3.
+    line_seconds: 0.446_446,
+    sync_seconds: 0.004_862,
+    porch_seconds: 0.000_572,
+    pixel_seconds: 0.000_457_6,
+    septr_seconds: 0.000_572,
+    channel_layout: ChannelLayout::RgbSequential,
+    sync_position: SyncPosition::LineStart,
+};
+
+/// Martin 2. slowrx `modespec.c:52-63`.
+const MARTIN2: ModeSpec = ModeSpec {
+    mode: SstvMode::Martin2,
+    vis_code: 0x28,
+    line_pixels: 320,
+    image_lines: 256,
+    // slowrx modespec.c:52-63 — M2 LineTime = 226.7986e-3,
+    // PixelTime = 0.2288e-3, SyncTime = 4.862e-3,
+    // PorchTime = 0.572e-3, SeptrTime = 0.572e-3.
+    line_seconds: 0.226_798_6,
+    sync_seconds: 0.004_862,
+    porch_seconds: 0.000_572,
+    pixel_seconds: 0.000_228_8,
+    septr_seconds: 0.000_572,
+    channel_layout: ChannelLayout::RgbSequential,
+    sync_position: SyncPosition::LineStart,
 };
 
 #[cfg(test)]
@@ -512,5 +555,35 @@ mod tests {
             lookup(0x4C).expect("SDX VIS resolves").mode,
             SstvMode::ScottieDx
         );
+    }
+
+    #[test]
+    fn martin1_modespec() {
+        let spec = for_mode(SstvMode::Martin1);
+        assert_eq!(spec.mode, SstvMode::Martin1);
+        assert_eq!(spec.vis_code, 0x2C);
+        assert_eq!(spec.line_pixels, 320);
+        assert_eq!(spec.image_lines, 256);
+        assert_eq!(spec.channel_layout, ChannelLayout::RgbSequential);
+        assert_eq!(spec.sync_position, SyncPosition::LineStart);
+        assert!((spec.pixel_seconds - 0.000_457_6).abs() < 1e-9);
+        assert!((spec.line_seconds - 0.446_446).abs() < 1e-9);
+    }
+
+    #[test]
+    fn martin2_modespec() {
+        let spec = for_mode(SstvMode::Martin2);
+        assert_eq!(spec.mode, SstvMode::Martin2);
+        assert_eq!(spec.vis_code, 0x28);
+        assert!((spec.pixel_seconds - 0.000_228_8).abs() < 1e-9);
+        assert!((spec.line_seconds - 0.226_798_6).abs() < 1e-9);
+        assert_eq!(spec.channel_layout, ChannelLayout::RgbSequential);
+        assert_eq!(spec.sync_position, SyncPosition::LineStart);
+    }
+
+    #[test]
+    fn martin_vis_codes_resolve() {
+        assert_eq!(lookup(0x2C).expect("M1").mode, SstvMode::Martin1);
+        assert_eq!(lookup(0x28).expect("M2").mode, SstvMode::Martin2);
     }
 }

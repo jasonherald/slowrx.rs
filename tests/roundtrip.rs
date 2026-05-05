@@ -257,6 +257,8 @@ fn run_scottie_roundtrip(mode: SstvMode) {
         SstvMode::Scottie1 => 0x3C,
         SstvMode::Scottie2 => 0x38,
         SstvMode::ScottieDx => 0x4C,
+        SstvMode::Martin1 => 0x2C,
+        SstvMode::Martin2 => 0x28,
         _ => unreachable!(),
     };
     let mut audio = slowrx::__test_support::vis::synth_vis(vis_code, 0.0);
@@ -314,4 +316,14 @@ fn scottie2_roundtrip() {
 #[test]
 fn scottie_dx_roundtrip() {
     run_scottie_roundtrip(SstvMode::ScottieDx);
+}
+
+#[test]
+fn martin1_roundtrip() {
+    run_scottie_roundtrip(SstvMode::Martin1);
+}
+
+#[test]
+fn martin2_roundtrip() {
+    run_scottie_roundtrip(SstvMode::Martin2);
 }
