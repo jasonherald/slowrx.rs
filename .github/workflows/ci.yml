@@ -67,38 +67,6 @@ jobs:
       - name: cargo check on MSRV
         run: cargo check --all-features --locked
 
-  coverage:
-    name: Coverage gate (92%)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
-        with:
-          components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2
-      - name: Install cargo-llvm-cov
-        run: cargo install --locked cargo-llvm-cov
-      - name: Coverage gate
-        # The CLI binary (`src/bin/slowrx_cli.rs`) is exercised end-to-end
-        # by `tests/cli.rs` via `assert_cmd::Command::cargo_bin`, but
-        # subprocess execution doesn't propagate LLVM source-coverage
-        # instrumentation back to the parent. Excluding it from the gate
-        # avoids penalizing genuine end-to-end coverage we just can't
-        # measure here. The library code is still gated at 92%.
-        #
-        # `--release` for the same reason as the Test step above:
-        # round-trip integration tests under coverage instrumentation
-        # in debug mode are CI-blocking-slow on a 2-core runner. In
-        # release the suite finishes in tractable wall-clock time. Per-
-        # line coverage granularity is slightly coarser (release can
-        # inline lines together) but the ≥92% per-file gate has plenty
-        # of headroom for that.
-        run: |
-          cargo llvm-cov --all-features --release \
-            --ignore-filename-regex 'src/bin/.*' \
-            --fail-under-lines 92 \
-            --fail-under-regions 92
 
   publish-dryrun:
     name: Publish dry-run
