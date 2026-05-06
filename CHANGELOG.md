@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-05-05
+
+Patch release bundling the `slowrx-cli` mode-tag fix discovered during
+V2.5 Zarya real-radio validation work, plus the negative-regression
+integration tests added under #79. Both ride the `[Unreleased]` queue;
+no new crate-public API surface.
+
+### Fixed
+
+- **`slowrx-cli` saved Scottie and Martin images as `img-NNN-unknown.png`** —
+  the `mode_tag` match in `src/bin/slowrx_cli.rs` was missing arms for the V2.3
+  Scottie 1/2/DX and V2.4 Martin 1/2 variants. Same trap V2.1 fixed for PD240
+  and V2.2 caught for Robot 24/36/72; the wildcard arm absorbed the new
+  variants silently because `SstvMode` is `#[non_exhaustive]`. Surfaced
+  during V2.5 Zarya real-radio capture work when 3 Scottie 1 images decoded
+  from a 2013 Wolverine Radio shortwave broadcast all came out tagged
+  "unknown". Added the 5 missing arms (`scottie1`, `scottie2`, `scottiedx`,
+  `martin1`, `martin2`) plus a unit test
+  (`mode_tag_covers_all_known_variants`) that iterates every known
+  `SstvMode` variant and asserts each maps to a non-"unknown" tag — the
+  next mode-family addition can no longer slip through silently.
+
 ### Added
 
 - **Negative-regression integration tests** in `tests/no_vis.rs`:

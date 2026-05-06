@@ -287,12 +287,26 @@ fn mode_tag(mode: SstvMode) -> &'static str {
         SstvMode::Robot24 => "robot24",
         SstvMode::Robot36 => "robot36",
         SstvMode::Robot72 => "robot72",
-        // SstvMode is #[non_exhaustive] which forces a wildcard arm in
-        // matches even within the same crate. New variants will use
-        // this fallback — when adding one, also add an explicit arm
-        // above. (V2.1 PD240 trap: missed this match and shipped images
-        // as `img-NNN-unknown.png` until 0.2.1. Same trap caught for
-        // V2.2 Robot24/36/72 during code review of the dispatch refactor.)
+        SstvMode::Scottie1 => "scottie1",
+        SstvMode::Scottie2 => "scottie2",
+        SstvMode::ScottieDx => "scottiedx",
+        SstvMode::Martin1 => "martin1",
+        SstvMode::Martin2 => "martin2",
+        // SstvMode is #[non_exhaustive] which forces a wildcard arm
+        // here even within the same crate. New variants fall through
+        // to this fallback unless an explicit arm is added — and
+        // that's bitten us multiple times:
+        //
+        //   V2.1 PD240    — shipped as `img-NNN-unknown.png` until 0.2.1.
+        //   V2.2 Robot24/36/72 — caught during code review.
+        //   V2.3 Scottie 1/2/DX — slipped through; surfaced when a real
+        //                  Wolverine Radio shortwave broadcast decoded
+        //                  3 Scottie 1 images all tagged "unknown".
+        //   V2.4 Martin 1/2 — same root cause; same fix.
+        //
+        // When adding the next mode variant: add an explicit arm above
+        // AND an entry to `mode_tag_covers_all_known_variants` below
+        // so the test catches the omission automatically.
         _ => "unknown",
     }
 }
@@ -309,4 +323,38 @@ fn save_image(image: &SstvImage, path: &std::path::Path) -> Result<()> {
     img.save(path)
         .with_context(|| format!("write {}", path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every currently-known [`SstvMode`] variant must have an explicit
+    /// `mode_tag` arm — no falling through to "unknown". Keep this list
+    /// in lockstep with `SstvMode` (the enum is `#[non_exhaustive]`, so
+    /// the compiler can't enforce coverage; this test does).
+    #[test]
+    fn mode_tag_covers_all_known_variants() {
+        let known = [
+            SstvMode::Pd120,
+            SstvMode::Pd180,
+            SstvMode::Pd240,
+            SstvMode::Robot24,
+            SstvMode::Robot36,
+            SstvMode::Robot72,
+            SstvMode::Scottie1,
+            SstvMode::Scottie2,
+            SstvMode::ScottieDx,
+            SstvMode::Martin1,
+            SstvMode::Martin2,
+        ];
+        for mode in known {
+            let tag = mode_tag(mode);
+            assert_ne!(
+                tag, "unknown",
+                "mode_tag({mode:?}) returned 'unknown' — missing explicit match arm in src/bin/slowrx_cli.rs",
+            );
+            assert!(!tag.is_empty(), "mode_tag({mode:?}) returned empty string");
+        }
+    }
 }
