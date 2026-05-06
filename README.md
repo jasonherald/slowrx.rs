@@ -13,19 +13,21 @@
 
 ## Status
 
-🛰️ **0.3.0 — V2.2 published.** PD120, PD180, PD240, Robot 24, Robot 36, and Robot 72 decoding from raw audio.
+🛰️ **0.5.0 — V2.4 published.** PD120, PD180, PD240, Robot 24, Robot 36, Robot 72, Scottie 1, Scottie 2, Scottie DX, Martin 1, and Martin 2 decoding from raw audio. All four V2 mode families landed; the [V2 roadmap](https://github.com/jasonherald/slowrx.rs/issues/9) is closed.
 
 PD120, PD180, and Robot 36 are validated end-to-end against real-radio
 captures: PD120/PD180 against the ARISS Dec-2017 corpus (6 of 7
 fixtures decode to images visually matching the reference JPGs),
 Robot 36 against the ARISS Fram2 corpus (all 12 fixtures decode to
 images visually matching the reference JPGs — see
-`tests/ariss_fram2_validation.md`). PD240 ships with synthetic
-round-trip coverage only — a real-radio fixture is pending. Robot 24
-and Robot 72 ship with synthetic coverage; Robot 24 inherits Robot 36's
-evidence by structural identity (same decoder code path, only LineTime
-differs). Remaining V2 mode coverage (Scottie, Martin) is on the
-[roadmap](https://github.com/jasonherald/slowrx.rs/issues/9).
+`tests/ariss_fram2_validation.md`). PD240, Robot 24, Robot 72,
+Scottie 1/2/DX, and Martin 1/2 ship with synthetic round-trip coverage
+only — real-radio fixtures for those modes are pending. Robot 24
+inherits Robot 36's real-radio evidence by structural identity (same
+decoder code path, only LineTime differs). Scottie + Martin share an
+RGB-sequential decoder dispatched on `SyncPosition` (Scottie sync
+sits mid-line; Martin sync at line start, the standard SSTV
+convention).
 
 ## Install
 
@@ -65,14 +67,14 @@ slowrx-cli --input recording.wav --output ./out
 ## What it does
 
 `slowrx.rs` decodes Slow-Scan Television images from a stream of audio
-samples. Mode coverage roadmap:
+samples. Mode coverage:
 
-| Mode family | Shipped | Roadmap |
-|---|---|---|
-| **PD** | PD120, PD180, PD240 | — |
-| **Robot** | Robot 24, Robot 36, Robot 72 | — |
-| **Scottie** | — | Scottie 1, Scottie 2, Scottie DX |
-| **Martin** | — | Martin 1, Martin 2 |
+| Mode family | Shipped |
+|---|---|
+| **PD** | PD120, PD180, PD240 |
+| **Robot** | Robot 24, Robot 36, Robot 72 |
+| **Scottie** | Scottie 1, Scottie 2, Scottie DX |
+| **Martin** | Martin 1, Martin 2 |
 
 VIS header detection is automatic — feed the decoder audio, get images
 out as they complete.
