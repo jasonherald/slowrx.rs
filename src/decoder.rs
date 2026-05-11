@@ -319,7 +319,7 @@ impl SstvDecoder {
                         Self::restart_vis_detection(
                             &mut self.vis,
                             self.working_samples_emitted,
-                            residual,
+                            &residual,
                         );
                         continue;
                     }
@@ -382,7 +382,7 @@ impl SstvDecoder {
                     Self::restart_vis_detection(
                         &mut self.vis,
                         self.working_samples_emitted,
-                        trailing,
+                        &trailing,
                     );
                     break;
                 }
@@ -399,16 +399,13 @@ impl SstvDecoder {
     /// replaced rather than re-used. `working_samples_emitted` is the
     /// decoder's running working-rate output count (used to anchor the fresh
     /// detector).
-    // `leftover_audio` is taken by value because both call sites hand over an
-    // owned `Vec` they no longer need (`take_residual_buffer()` / `mem::take`).
-    #[allow(clippy::needless_pass_by_value)]
     fn restart_vis_detection(
         vis: &mut crate::vis::VisDetector,
         working_samples_emitted: u64,
-        leftover_audio: Vec<f32>,
+        leftover_audio: &[f32],
     ) {
         *vis = crate::vis::VisDetector::new(IS_KNOWN_VIS);
-        vis.process(&leftover_audio, working_samples_emitted);
+        vis.process(leftover_audio, working_samples_emitted);
     }
 
     /// Run [`find_sync`] over the buffered sync track, then decode every

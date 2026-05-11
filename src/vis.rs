@@ -360,9 +360,7 @@ fn estimate_peak_freq(spectrum: &[Complex<f32>]) -> f64 {
 /// A clean burst whose only parity-passing alignment maps to an *unknown* code
 /// (a real R12BW transmission, or an unimplemented mode) is still returned — as
 /// the `first_unknown` fallback — so the caller can surface it via
-/// `SstvEvent::UnknownVis` (added in #89 — note: a plain code span, not an
-/// intra-doc link, since `vis` is below `decoder` in the module graph). See
-/// `docs/intentional-deviations.md`
+/// `SstvEvent::UnknownVis`. See `docs/intentional-deviations.md`
 /// ("VIS: keep-searching for a known code; surface clean unknown bursts").
 fn match_vis_pattern(
     tones: &[f64; HISTORY_LEN],

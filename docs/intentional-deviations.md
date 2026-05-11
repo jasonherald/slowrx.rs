@@ -144,8 +144,9 @@ slowrx's `printf` is a console side effect with no programmatic surface; a
 library decoder should let callers observe "a burst arrived but I can't decode
 it" (stream monitors, diagnostics). Returning the unknown code as a fallback
 from `match_vis_pattern` (rather than `None`, which slowrx effectively does) is
-what makes that event possible. The keep-searching-for-a-known-code behavior is
-otherwise byte-for-byte slowrx's.
+what makes that event possible. The keep-searching-for-a-known-code behavior
+otherwise matches slowrx's (modulo the separate `HedrShift != 0` early-exit
+quirk documented above, which we also deliberately diverge from).
 
 ### When to revisit
 
