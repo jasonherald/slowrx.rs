@@ -13,7 +13,7 @@
 
 ## Status
 
-🛰️ **0.5.0 — V2.4 published.** PD120, PD180, PD240, Robot 24, Robot 36, Robot 72, Scottie 1, Scottie 2, Scottie DX, Martin 1, and Martin 2 decoding from raw audio. All four V2 mode families landed; the [V2 roadmap](https://github.com/jasonherald/slowrx.rs/issues/9) is closed.
+🛰️ **0.5.2 — V2.4 published.** PD120, PD180, PD240, Robot 24, Robot 36, Robot 72, Scottie 1, Scottie 2, Scottie DX, Martin 1, and Martin 2 decoding from raw audio. All four V2 mode families landed; the [V2 roadmap](https://github.com/jasonherald/slowrx.rs/issues/9) is closed. Post-V2.4 cleanup (code-review audit backlog, [epic #97](https://github.com/jasonherald/slowrx.rs/issues/97)) is in progress.
 
 PD120, PD180, and Robot 36 are validated end-to-end against real-radio
 captures: PD120/PD180 against the ARISS Dec-2017 corpus (6 of 7

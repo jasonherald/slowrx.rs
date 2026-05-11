@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-05-11
+
+The first two items off the post-V2.4 code-review audit backlog (epic #97):
+**VIS detector fidelity** (#89) and **multi-image streaming** (#90). Adds the
+`SstvEvent::UnknownVis` event for unrecognized-but-well-formed VIS bursts; the
+only removal is the never-constructed `Error::UnknownVisCode` variant. No
+change to decodable modes — still PD120/180/240 + Robot 24/36/72 + Scottie
+1/2/DX + Martin 1/2.
+
 ### Added
 
 - **`SstvEvent::UnknownVis { code, hedr_shift_hz, sample_offset }`** — a VIS
