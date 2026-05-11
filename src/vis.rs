@@ -33,6 +33,15 @@ pub(crate) const WINDOW_SAMPLES: usize = (0.020 * WORKING_SAMPLE_RATE_HZ as f64)
 pub(crate) const FFT_LEN: usize = 512;
 pub(crate) const HISTORY_LEN: usize = 45; // slowrx HedrBuf size
 
+/// VIS code for the (unimplemented) Robot 12 B/W mode. R12BW inverts the
+/// parity bit (slowrx `vis.c:116`). No `ModeSpec` exists for it yet, so
+/// `crate::modespec::lookup` returns `None` for it; `match_vis_pattern`
+/// still classifies it so a future R12BW implementation that adds it to
+/// `lookup` works without re-touching the parity logic.
+//
+// TODO: when R12BW gains a `ModeSpec`, derive this from `modespec`.
+pub(crate) const R12BW_VIS_CODE: u8 = 0x06;
+
 const SEARCH_LO_HZ: f64 = 500.0;
 const SEARCH_HI_HZ: f64 = 3300.0;
 
@@ -375,16 +384,20 @@ fn match_vis_pattern(tones: &[f64; HISTORY_LEN]) -> Option<(u8, f64, usize)> {
                     code |= bit << k;
                     parity ^= bit;
                 } else {
-                    // R12BW (`0x06`) inverts parity per slowrx `vis.c:116`:
-                    // `if (VISmap[VIS] == R12BW) Parity = !Parity;`. V1
-                    // doesn't decode R12BW (lookup returns None for 0x06),
-                    // but the parity check must still pass so a future V2
-                    // implementation that adds R12BW to the lookup table
-                    // doesn't silently reject every R12BW burst.
-                    let expected = if code == 0x06 { bit ^ 1 } else { bit };
-                    if parity != expected {
+                    // `bit` is the received parity bit. R12BW flips the
+                    // *accumulated* parity per slowrx `vis.c:116`:
+                    // `if (VISmap[VIS] == R12BW) Parity = !Parity;`. No
+                    // `ModeSpec` exists for R12BW yet (`lookup` returns
+                    // `None` for `R12BW_VIS_CODE`), but the parity check
+                    // must still pass so a future R12BW implementation that
+                    // adds it to `lookup` is not silently broken.
+                    if code == R12BW_VIS_CODE {
+                        parity ^= 1;
+                    }
+                    if parity != bit {
                         bit_ok = false;
                     }
+                    break; // k == 7 is the last iteration; explicit break mirrors the classify-fail arm
                 }
             }
             if bit_ok {
@@ -490,11 +503,11 @@ pub mod tests {
             parity ^= bit;
             emit(bit_freq(bit), 0.030, &mut out);
         }
-        // R12BW (code 0x06) inverts the parity bit per slowrx `vis.c:116`.
+        // R12BW (`R12BW_VIS_CODE`) inverts the parity bit per slowrx `vis.c:116`.
         // The detector's `match_vis_pattern` does the same inversion when
         // checking, so synthetic bursts must follow the same convention or
         // they'd fail parity at the receiver.
-        let parity_bit = if code == 0x06 { parity ^ 1 } else { parity };
+        let parity_bit = if code == R12BW_VIS_CODE { parity ^ 1 } else { parity };
         emit(bit_freq(parity_bit), 0.030, &mut out);
         emit(break_f, 0.030, &mut out);
         out
@@ -661,7 +674,7 @@ pub mod tests {
         emit(break_f, 0.030, &mut out);
         let mut parity = 0u8;
         for b in 0..7 {
-            let bit = (0x06_u8 >> b) & 1;
+            let bit = (R12BW_VIS_CODE >> b) & 1;
             parity ^= bit;
             emit(bit_freq(bit), 0.030, &mut out);
         }
