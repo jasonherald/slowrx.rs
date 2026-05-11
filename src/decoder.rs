@@ -154,6 +154,19 @@ struct DecodingState {
 /// pad the buffer to absorb additional offset.
 const FINDSYNC_AUDIO_HEADROOM: f64 = 1.00;
 
+/// How many `ModeSpec` line-times (`spec.line_seconds` — the per-radio-line
+/// duration; for PD, where a radio frame carries two image rows, that's
+/// twice as many *image* scan lines) of the *just-decoded* image audio to
+/// keep when re-arming the VIS detector after `ImageComplete` (issue #90 D4).
+/// A back-to-back transmission's VIS leader starts right after the image's
+/// last line; carrying back this much audio absorbs a fast transmitter clock
+/// (4 line-times ≈ 1.5–2 % of any mode's airtime — far more than any real
+/// clock error, <0.1 %) so the leader is always inside the carry-forward
+/// window. For a single transmission this is just the image's last few
+/// lines plus trailing silence; the fresh detector finds nothing and waits
+/// for more audio.
+const MULTI_IMAGE_CARRYBACK_LINES: u32 = 4;
+
 /// `|c| crate::modespec::lookup(c).is_some()` as an `fn` pointer — the
 /// "is this VIS code one we can decode?" predicate handed to every
 /// [`crate::vis::VisDetector`] (issue #89 A3). The closure captures nothing,
@@ -186,12 +199,17 @@ pub struct SstvDecoder {
     /// residual transfer is a borrow, not a retraction. Consequently the
     /// counter may be slightly ahead of what the image decoder has consumed.
     ///
-    /// This is intentional: `DetectedVis::end_sample` is computed directly
-    /// from `total_samples_consumed` and `buffer.len()` inside
-    /// `VisDetector::process` at the moment of detection, so `sample_offset`
-    /// in `SstvEvent::VisDetected` is always correct. The counter here is
-    /// only used to advance the VIS detector's anchor on each chunk; it does
-    /// not gate any decode logic.
+    /// The counter is used to anchor the VIS detector each time a fresh one
+    /// is constructed (initial, post-image, post-unknown-VIS). Note: for the
+    /// *first* detection on a freshly-built decoder, `DetectedVis::end_sample`
+    /// (→ `SstvEvent::VisDetected.sample_offset` / `UnknownVis.sample_offset`)
+    /// is an absolute working-rate index from sample 0. After a *restart*
+    /// (post-image — see `restart_vis_detection` — or post-unknown-VIS) the
+    /// fresh detector counts hops from 0, so a later detection's `sample_offset`
+    /// is relative to where the carry-forward audio began, not absolute. That
+    /// is acceptable — `sample_offset` is informational only — and tracked in
+    /// issue #99 (fixing it needs a `VisDetector` API change). The counter
+    /// here does not gate any decode logic.
     ///
     /// If mid-image VIS detection is ever re-activated (see the TODO in
     /// `process`), and a single `SstvDecoder` is reused across detections,
@@ -224,10 +242,14 @@ impl SstvDecoder {
     /// Process a chunk of mono `f32` audio samples in caller's rate.
     ///
     /// Returns events produced during this call's processing window.
+    // `too_many_lines`: `process` is the decoder's state-machine loop; splitting
+    // it (e.g. extracting `DecodingState::new`) is tracked in the code-review
+    // audit (B14, epic #97).
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
-        clippy::cast_sign_loss
+        clippy::cast_sign_loss,
+        clippy::too_many_lines
     )]
     pub fn process(&mut self, audio: &[f32]) -> Vec<SstvEvent> {
         let working = self.resampler.process(audio);
@@ -366,25 +388,31 @@ impl SstvDecoder {
                         &mut out,
                     );
 
-                    // Image complete. Preserve trailing audio not consumed —
-                    // it may contain the leading edge of a follow-up VIS
-                    // burst (ARISS multi-image case). Feed it into a fresh
-                    // VIS detector so the next process() call sees it.
-                    //
-                    // V2: After ImageComplete, this decoder re-enters
-                    // AwaitingVis automatically (continuous monitoring).
-                    // For true multi-image streams (back-to-back transmissions
-                    // on the same connection) the trailing audio here is fed
-                    // into a fresh VisDetector, so the next VIS burst is
-                    // detected without any caller intervention. Closes #31.
-                    let trailing = std::mem::take(&mut d.audio);
-                    self.state = State::AwaitingVis;
+                    // Image complete. Re-arm VIS detection in place (no
+                    // `break`! — the loop re-iterates into `AwaitingVis`) — a
+                    // back-to-back transmission's VIS leader starts right after
+                    // this image's last line, so feed the fresh detector only
+                    // the tail of the image audio (a few lines, to absorb a
+                    // fast TX clock) plus everything past it; the rest is
+                    // decoded video tones a VIS burst can't hide in. Falling
+                    // through (vs the old `break`) means that next VIS — and
+                    // the image after it — surface in this same `process()`
+                    // call, mirroring the known/unknown-code branches above.
+                    // Closes #31; #90 (A2 + D4). (`sample_offset` on detections
+                    // after the first is relative to the carry-forward start,
+                    // not absolute — #99.)
+                    let work_rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
+                    let carryback = (f64::from(MULTI_IMAGE_CARRYBACK_LINES)
+                        * d.spec.line_seconds
+                        * work_rate) as usize;
+                    let carry_from = d.target_audio_samples.saturating_sub(carryback);
                     Self::restart_vis_detection(
                         &mut self.vis,
                         self.working_samples_emitted,
-                        &trailing,
+                        &d.audio[carry_from..],
                     );
-                    break;
+                    self.state = State::AwaitingVis;
+                    remaining = &[]; // already folded into d.audio → now inside the fresh detector
                 }
             }
         }

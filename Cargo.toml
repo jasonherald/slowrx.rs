@@ -72,3 +72,7 @@ required-features = ["cli"]
 [[test]]
 name = "unknown_vis"
 required-features = ["test-support"]
+
+[[test]]
+name = "multi_image"
+required-features = ["test-support"]
