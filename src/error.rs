@@ -30,5 +30,4 @@ mod tests {
             "invalid sample rate: 0 (must be > 0 and ≤ 192000)"
         );
     }
-
 }

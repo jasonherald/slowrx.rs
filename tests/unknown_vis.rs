@@ -33,8 +33,18 @@ fn decoder_emits_unknown_vis_then_recovers() {
         .unwrap_or_else(|| panic!("no UnknownVis event for 0x{UNKNOWN_CODE:02x}; got {events:?}"));
     let detected_at = events
         .iter()
-        .position(|e| matches!(e, SstvEvent::VisDetected { mode: SstvMode::Pd120, .. }))
-        .unwrap_or_else(|| panic!("no VisDetected for PD120 after the unknown burst; got {events:?}"));
+        .position(|e| {
+            matches!(
+                e,
+                SstvEvent::VisDetected {
+                    mode: SstvMode::Pd120,
+                    ..
+                }
+            )
+        })
+        .unwrap_or_else(|| {
+            panic!("no VisDetected for PD120 after the unknown burst; got {events:?}")
+        });
     assert!(
         unknown_at < detected_at,
         "UnknownVis should precede the recovered VisDetected; got {events:?}"

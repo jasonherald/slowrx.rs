@@ -516,7 +516,11 @@ pub mod tests {
             p0 ^= b;
             t[18 + 3 * k] = bit_freq(b);
         }
-        let p0 = if phase0_code == R12BW_VIS_CODE { p0 ^ 1 } else { p0 };
+        let p0 = if phase0_code == R12BW_VIS_CODE {
+            p0 ^ 1
+        } else {
+            p0
+        };
         t[39] = bit_freq(p0);
         // Phase i=1: data bits at tones[19 + 3k], parity at tones[40].
         if let Some(c) = phase1_code {
@@ -579,7 +583,11 @@ pub mod tests {
         // The detector's `match_vis_pattern` does the same inversion when
         // checking, so synthetic bursts must follow the same convention or
         // they'd fail parity at the receiver.
-        let parity_bit = if code == R12BW_VIS_CODE { parity ^ 1 } else { parity };
+        let parity_bit = if code == R12BW_VIS_CODE {
+            parity ^ 1
+        } else {
+            parity
+        };
         emit(bit_freq(parity_bit), 0.030, &mut out);
         emit(break_f, 0.030, &mut out);
         out
