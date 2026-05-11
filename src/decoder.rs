@@ -138,6 +138,12 @@ struct DecodingState {
 /// pad the buffer to absorb additional offset.
 const FINDSYNC_AUDIO_HEADROOM: f64 = 1.00;
 
+/// `|c| crate::modespec::lookup(c).is_some()` as an `fn` pointer — the
+/// "is this VIS code one we can decode?" predicate handed to every
+/// [`crate::vis::VisDetector`] (issue #89 A3). The closure captures nothing,
+/// so it coerces to `fn(u8) -> bool` in const context.
+const IS_KNOWN_VIS: fn(u8) -> bool = |c| crate::modespec::lookup(c).is_some();
+
 /// Streaming SSTV decoder. Push audio buffers in via
 /// [`Self::process`]; consume the returned events.
 pub struct SstvDecoder {
@@ -190,7 +196,7 @@ impl SstvDecoder {
     pub fn new(input_sample_rate_hz: u32) -> Result<Self> {
         Ok(Self {
             resampler: Resampler::new(input_sample_rate_hz)?,
-            vis: crate::vis::VisDetector::new(),
+            vis: crate::vis::VisDetector::new(IS_KNOWN_VIS),
             pd_demod: crate::mode_pd::PdDemod::new(),
             snr_est: crate::snr::SnrEstimator::new(),
             state: State::AwaitingVis,
@@ -342,7 +348,7 @@ impl SstvDecoder {
                     // detected without any caller intervention. Closes #31.
                     let trailing = std::mem::take(&mut d.audio);
                     self.state = State::AwaitingVis;
-                    self.vis = crate::vis::VisDetector::new();
+                    self.vis = crate::vis::VisDetector::new(IS_KNOWN_VIS);
                     self.vis.process(&trailing, self.working_samples_emitted);
                     break;
                 }
@@ -499,7 +505,7 @@ impl SstvDecoder {
         self.state = State::AwaitingVis;
         self.samples_processed = 0;
         self.working_samples_emitted = 0;
-        self.vis = crate::vis::VisDetector::new();
+        self.vis = crate::vis::VisDetector::new(IS_KNOWN_VIS);
         self.resampler.reset_state();
         self.pd_demod = crate::mode_pd::PdDemod::new();
         self.snr_est = crate::snr::SnrEstimator::new();
