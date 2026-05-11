@@ -37,7 +37,7 @@ through the entry and note the PR.
 
 - All 11 `ModeSpec` timing constants match slowrx C byte-for-byte.
 - No `unsafe` anywhere (`#![deny(unsafe_code)]` holds).
-- No `unwrap` / `expect` / `panic!` in non-test library code (one defensive `expect` in `SstvImage::new`).
+- No `unwrap` / `panic!` in non-test library code; one defensive `expect` in `SstvImage::new`.
 - `#[non_exhaustive]` applied consistently to public enums.
 - The single-`round()` pixel-time formula is faithfully replicated everywhere it appears.
 - YCbCr→RGB plus `clip()` rounding matches `common.c`.
@@ -183,7 +183,8 @@ through the entry and note the PR.
 
 ## Proposed issue bundling
 
-So this lands as ~11 scoped issues rather than 58 micro-issues:
+So this lands as 12 issues rather than 58 micro-issues — 11 themed bundles below
+plus one standalone-items bucket (#96):
 
 1. **Shared DSP module** — B1 (`demod.rs`) + B8 (`dsp.rs`: Hann + power + get_bin + goertzel) + B3 (`ChannelDecodeCtx` / `DemodState`) + B5 (drop `chan_bounds_abs`) + B16 (rename `time_offset_seconds`) + C6 (`ycbcr_to_rgb` visibility) + C20 (write down the cast-safety argument). The big "make the architecture honest" PR.
 2. **Shared test-tone module** — B9 + B10 (`pub(crate)` the encoders) + E2 (scottie double-doc) + the `*_test_encoder` `with_capacity` / phase-wrap / `unreachable!` nits + F11 (encoder unit tests).
@@ -197,4 +198,4 @@ So this lands as ~11 scoped issues rather than 58 micro-issues:
 10. **Docs sweep** — E3 + E4 + E5 + E6 + E9 + E10 + E12 + E13 + B15 (record the rename deferral).
 11. **CI hardening** — F1 (CLI tests in CI) + G1 (fast debug job) + G2 (packaging/docs links) + B11 (`wav` module — enables the CLI tests) + C13/C14 (CLI exit codes / WAV format errors).
 
-**Standalone (don't bundle):** A4 (snr_db/prev_win_idx stickiness — needs a thread-or-document decision) · A5 (PD odd-height assert) · A9 (SNR `+∞`) · A10 (`pixel_freq` clamp comment) · B12 (`trait ModeDecoder` — the "if you want it genuinely nice" mega-refactor; probably its own epic) · C11 (`SstvImage` private buffer — breaking change, defer) · B14 (`DecodingState::new` extraction) · the remaining C16/C17/C18/C19 nits (a "small nits" grab-bag issue, or fold opportunistically into nearby PRs).
+12. **Standalone items** (#96) — A4 (snr_db/prev_win_idx stickiness — needs a thread-or-document decision) · A5 (PD odd-height assert) · A9 (SNR `+∞`) · A10 (`pixel_freq` clamp comment) · B14 (`DecodingState::new` extraction) · the remaining C16/C17/C18/C19 nits · plus two that probably warrant their own future epics noted in the issue: B12 (`trait ModeDecoder` — the "if you want it genuinely nice" mega-refactor) and C11 (`SstvImage` private buffer — breaking change, defer).
