@@ -22,6 +22,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the `#40` re-anchor contract (`hops_completed` / `history` were carried over
   into the next detection). It is now reseeded via the same `restart_vis_detection`
   helper the post-image path uses (#89 A1).
+- **Multi-image streams now decode all images within a single `process()` call.**
+  After `ImageComplete`, `SstvDecoder::process` re-enters VIS detection in-place
+  (the loop continues into `AwaitingVis` instead of `break`-ing), so a
+  back-to-back transmission's next VIS — and the image after it — surface in the
+  same call instead of requiring further `process()` calls (#90 A2). Note:
+  `sample_offset` on detections *after* the first is relative to the
+  carry-forward start, not absolute (#99).
+
+### Performance
+
+- After `ImageComplete`, the VIS detector is re-armed on only the last few scan
+  lines of the decoded image audio (plus everything past), not the entire
+  ~1.4–3 M-sample buffer — no more FFT-scanning ~10⁴ sliding-window hops of
+  decoded video tones for a VIS burst that can't be there (#90 D4).
 
 ### Removed
 

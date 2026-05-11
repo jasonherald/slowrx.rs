@@ -16,7 +16,7 @@ use slowrx::{SstvDecoder, SstvEvent, SstvMode, WORKING_SAMPLE_RATE_HZ};
 /// PD120 == VIS code 0x5F.
 const PD120_CODE: u8 = 0x5F;
 
-/// A small synthetic YCrCb image for PD120 (luma gradient + smooth chroma
+/// A small synthetic `YCrCb` image for PD120 (luma gradient + smooth chroma
 /// stripes — same shape as `tests/roundtrip.rs`'s `test_image`, so the
 /// encoder's adjacent-row chroma averaging has something it can reproduce).
 fn pd120_test_image() -> Vec<[u8; 3]> {
@@ -61,7 +61,15 @@ fn decoder_decodes_two_back_to_back_images() {
     let vis_positions: Vec<usize> = events
         .iter()
         .enumerate()
-        .filter(|(_, e)| matches!(e, SstvEvent::VisDetected { mode: SstvMode::Pd120, .. }))
+        .filter(|(_, e)| {
+            matches!(
+                e,
+                SstvEvent::VisDetected {
+                    mode: SstvMode::Pd120,
+                    ..
+                }
+            )
+        })
         .map(|(i, _)| i)
         .collect();
     let complete_positions: Vec<usize> = events
