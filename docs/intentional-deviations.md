@@ -116,6 +116,46 @@ If a real burst gives Rust a *different* valid VIS code than slowrx
 
 ---
 
+## VIS: keep-searching for a known code; surface clean unknown bursts
+
+### What slowrx does
+
+`vis.c`'s pattern matcher tries all 9 `(i, j)` alignments. For each alignment
+that passes parity it does `VISmap[VIS]` — and if the code is unknown it
+`printf`s `"Unknown VIS %d"`, leaves `gotvis = false`, and keeps trying the
+remaining alignments. Only a *known* code stops the search (`gotvis = true`).
+If no alignment yields a known code, `GetVIS()` returns `0` and `Listen()`'s
+`do { ... } while (Mode == 0)` loop re-detects from the audio stream.
+
+### What we do
+
+`match_vis_pattern` takes an `is_known` predicate (`|c| modespec::lookup(c).is_some()`)
+and mirrors slowrx: it tries all 9 alignments and returns the **first known**
+code. If no alignment is known but at least one parity-passing alignment maps
+to an **unknown** code, it returns the first such code as a fallback. The
+decoder then emits `SstvEvent::UnknownVis { code, hedr_shift_hz, sample_offset }`
+(our equivalent of slowrx's `printf`), reseeds the VIS detector on the
+post-stop-bit residue (the `#40` re-anchor contract), and stays in
+`AwaitingVis` — the same "try again" loop as slowrx.
+
+### Why we deviated
+
+slowrx's `printf` is a console side effect with no programmatic surface; a
+library decoder should let callers observe "a burst arrived but I can't decode
+it" (stream monitors, diagnostics). Returning the unknown code as a fallback
+from `match_vis_pattern` (rather than `None`, which slowrx effectively does) is
+what makes that event possible. The keep-searching-for-a-known-code behavior is
+otherwise byte-for-byte slowrx's.
+
+### When to revisit
+
+If R12BW (or any other currently-unimplemented mode) gains a `ModeSpec`, it
+becomes "known" automatically (the predicate is `lookup(...).is_some()`), and
+bursts for it stop surfacing as `UnknownVis` and start decoding. Nothing else
+to change.
+
+---
+
 ## Synthetic round-trip max_diff tolerance
 
 **Files:** `tests/roundtrip.rs`.

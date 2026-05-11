@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`SstvEvent::UnknownVis { code, hedr_shift_hz, sample_offset }`** — a VIS
+  burst that parses and passes parity but maps to no decodable SSTV mode is now
+  surfaced to callers (previously dropped silently). `match_vis_pattern` also
+  keeps searching its 9 alignments for a *known* code before falling back to an
+  unknown one, matching slowrx (#89 A3/C1).
+
+### Fixed
+
+- **Stale VIS detector after an unknown VIS code** — `SstvDecoder::process`
+  drained the detector's residual buffer but did not reconstruct it, violating
+  the `#40` re-anchor contract (`hops_completed` / `history` were carried over
+  into the next detection). It is now reseeded via the same `restart_vis_detection`
+  helper the post-image path uses (#89 A1).
+
+### Removed
+
+- **`Error::UnknownVisCode`** — never constructed (`SstvDecoder::process` does
+  not return `Result`; unknown codes are now reported via `SstvEvent::UnknownVis`).
+
+### Internal
+
+- `R12BW_VIS_CODE` named constant replacing bare `0x06` literals; faithful
+  parity-check shape in `match_vis_pattern` (flip the accumulated parity for
+  R12BW, matching slowrx `vis.c:116`) (#89 C5/C15).
+
 ## [0.5.1] - 2026-05-05
 
 Patch release bundling the `slowrx-cli` mode-tag fix discovered during

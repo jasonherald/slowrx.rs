@@ -127,10 +127,11 @@ pub enum SyncPosition {
 /// returns `None`. In slowrx (`vis.c:172-174`), an unknown VIS code causes
 /// `GetVIS()` to return 0 and `Listen()` loops back to re-detect
 /// (`do { ... } while (Mode == 0)`). Rust's equivalent is `None` from
-/// this function: the caller in `SstvDecoder::process` drains the VIS
-/// detector's buffer and stays in `AwaitingVis`, which has the same
-/// effect as slowrx's re-detect loop. Both treat an unknown code as a
-/// silent "try again" rather than an error.
+/// this function: the caller in `SstvDecoder::process` emits
+/// `SstvEvent::UnknownVis`, reseeds the VIS detector on the post-stop-bit
+/// residue, and stays in `AwaitingVis` — the same "try again" effect as
+/// slowrx's re-detect loop (slowrx's `printf("Unknown VIS")` becomes the
+/// `UnknownVis` event). An unknown code is never an `Error`.
 #[must_use]
 pub fn lookup(vis_code: u8) -> Option<ModeSpec> {
     match vis_code {
