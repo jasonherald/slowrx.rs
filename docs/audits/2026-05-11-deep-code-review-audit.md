@@ -13,9 +13,25 @@ Performed by five parallel reviewers over file clusters:
 ~75 raw findings → **58 deduplicated items** below. Each carries `file:line`, a fix
 sketch, a rough effort estimate, and (where useful) which cluster surfaced it.
 
-This document is the source of record for the issue backlog. As items are filed,
-add the issue number next to the entry. As items land, strike them through and note
-the PR.
+This document is the source of record for the issue backlog. As items land, strike
+through the entry and note the PR.
+
+**Filed as GitHub issues** — epic [#97](https://github.com/jasonherald/slowrx.rs/issues/97), bundled into 12 scoped issues:
+
+| Issue | Bundle | Audit IDs |
+|-------|--------|-----------|
+| [#85](https://github.com/jasonherald/slowrx.rs/issues/85) | Shared DSP / channel-demod module | B1, B8, B3, B5, B16, C6, C20 |
+| [#86](https://github.com/jasonherald/slowrx.rs/issues/86) | Shared test-tone module; encoders off the public API | B9, B10, E2, F11, C17 (partial) |
+| [#87](https://github.com/jasonherald/slowrx.rs/issues/87) | Resampler polish | D1, D2, D2b, F6 |
+| [#88](https://github.com/jasonherald/slowrx.rs/issues/88) | find_sync cleanup | B2, B4, C2, C10, A6, A7, A8, F2, F3 |
+| [#89](https://github.com/jasonherald/slowrx.rs/issues/89) | VIS detector fidelity | A1, A3, C1, C5, C15 |
+| [#90](https://github.com/jasonherald/slowrx.rs/issues/90) | Multi-image streaming | A2, D4 |
+| [#91](https://github.com/jasonherald/slowrx.rs/issues/91) | ModeSpec single source of truth | B7, B13, E1, E11, F8 |
+| [#92](https://github.com/jasonherald/slowrx.rs/issues/92) | API hygiene sweep | C3, C4, C9, C12, C7, C8, D7, D8, D9 |
+| [#93](https://github.com/jasonherald/slowrx.rs/issues/93) | Performance: scratch arena | D3, D5, D6 |
+| [#94](https://github.com/jasonherald/slowrx.rs/issues/94) | Docs sweep | E3, E4, E5, E6, E9, E10, E12, E13, E8, B15 |
+| [#95](https://github.com/jasonherald/slowrx.rs/issues/95) | CI hardening | F1, G1, G2, B11, C13, C14 |
+| [#96](https://github.com/jasonherald/slowrx.rs/issues/96) | Standalone items + ModeDecoder trait question | A4, A5, A9, A10, B14, C16–C19, B12, C11 |
 
 ## Clean bills of health (verified — not findings)
 
