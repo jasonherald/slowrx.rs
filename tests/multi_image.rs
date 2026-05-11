@@ -99,4 +99,11 @@ fn decoder_decodes_two_back_to_back_images() {
             && vis_positions[1] < complete_positions[1],
         "events out of order: vis@{vis_positions:?} complete@{complete_positions:?}"
     );
+    // Both completed images are PD120 (the carry-forward correctly delivered
+    // image 2's VIS + video to the re-armed detector).
+    for &i in &complete_positions {
+        if let SstvEvent::ImageComplete { image, .. } = &events[i] {
+            assert_eq!(image.mode, SstvMode::Pd120, "ImageComplete @{i} mode");
+        }
+    }
 }

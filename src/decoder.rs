@@ -154,15 +154,17 @@ struct DecodingState {
 /// pad the buffer to absorb additional offset.
 const FINDSYNC_AUDIO_HEADROOM: f64 = 1.00;
 
-/// How many scan lines of the *just-decoded* image audio to keep when
-/// re-arming the VIS detector after `ImageComplete` (issue #90 D4). A
-/// back-to-back transmission's VIS leader starts right after the image's
-/// last line; carrying back this many lines absorbs a fast transmitter
-/// clock (4 lines ≈ 0.8 % of a PD240's airtime, ~1.7 % of Robot24's — far
-/// more than any real clock error, <0.1 %) so the leader is always inside
-/// the carry-forward window. For a single transmission this is just the
-/// image's last few lines plus trailing silence; the fresh detector finds
-/// nothing and waits for more audio.
+/// How many `ModeSpec` line-times (`spec.line_seconds` — the per-radio-line
+/// duration; for PD, where a radio frame carries two image rows, that's
+/// twice as many *image* scan lines) of the *just-decoded* image audio to
+/// keep when re-arming the VIS detector after `ImageComplete` (issue #90 D4).
+/// A back-to-back transmission's VIS leader starts right after the image's
+/// last line; carrying back this much audio absorbs a fast transmitter clock
+/// (4 line-times ≈ 1.5–2 % of any mode's airtime — far more than any real
+/// clock error, <0.1 %) so the leader is always inside the carry-forward
+/// window. For a single transmission this is just the image's last few
+/// lines plus trailing silence; the fresh detector finds nothing and waits
+/// for more audio.
 const MULTI_IMAGE_CARRYBACK_LINES: u32 = 4;
 
 /// `|c| crate::modespec::lookup(c).is_some()` as an `fn` pointer — the
