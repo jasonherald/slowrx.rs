@@ -33,6 +33,15 @@ pub(crate) const WINDOW_SAMPLES: usize = (0.020 * WORKING_SAMPLE_RATE_HZ as f64)
 pub(crate) const FFT_LEN: usize = 512;
 pub(crate) const HISTORY_LEN: usize = 45; // slowrx HedrBuf size
 
+/// VIS code for the (unimplemented) Robot 12 B/W mode. R12BW inverts the
+/// parity bit (slowrx `vis.c:116`). No `ModeSpec` exists for it yet, so
+/// `crate::modespec::lookup` returns `None` for it; `match_vis_pattern`
+/// still classifies it so a future R12BW implementation that adds it to
+/// `lookup` works without re-touching the parity logic.
+//
+// TODO: when R12BW gains a `ModeSpec`, derive this from `modespec`.
+pub(crate) const R12BW_VIS_CODE: u8 = 0x06;
+
 const SEARCH_LO_HZ: f64 = 500.0;
 const SEARCH_HI_HZ: f64 = 3300.0;
 
@@ -55,6 +64,11 @@ pub(crate) struct VisDetector {
     /// Hops FFT'd; combined with `audio_origin_sample` it locates each window.
     hops_completed: u64,
     detected: Option<DetectedVis>,
+    /// `|c| crate::modespec::lookup(c).is_some()` — passed to
+    /// [`match_vis_pattern`] so the matcher keeps searching alignments for a
+    /// *known* VIS code (issue #89 A3). An `fn` pointer: the closure captures
+    /// nothing, so it coerces.
+    is_known_vis: fn(u8) -> bool,
 }
 
 /// Result of a successful VIS detection.
@@ -73,7 +87,7 @@ pub(crate) struct DetectedVis {
 impl VisDetector {
     /// Construct a fresh VIS detector. Allocates the FFT plan + reusable
     /// buffers; reuse across many `process` calls.
-    pub fn new() -> Self {
+    pub fn new(is_known_vis: fn(u8) -> bool) -> Self {
         let mut planner = FftPlanner::<f32>::new();
         let fft = planner.plan_fft_forward(FFT_LEN);
         let scratch_len = fft.get_inplace_scratch_len();
@@ -89,6 +103,7 @@ impl VisDetector {
             history_filled: 0,
             hops_completed: 0,
             detected: None,
+            is_known_vis,
         }
     }
 
@@ -121,7 +136,7 @@ impl VisDetector {
 
             if self.history_filled >= HISTORY_LEN {
                 if let Some((code, hedr_shift_hz, i_match)) =
-                    match_vis_pattern(&self.rotated_history())
+                    match_vis_pattern(&self.rotated_history(), self.is_known_vis)
                 {
                     // Stop-bit hop = `tone[14*3+i]` = `(2-i)` hops back
                     // from the latest. The bit is 30 ms = 3 hops long,
@@ -321,8 +336,9 @@ fn estimate_peak_freq(spectrum: &[Complex<f32>]) -> f64 {
 }
 
 /// Match the 14-window VIS pattern in a 45-entry frequency history.
-/// Tries 9 alignments (i × j, 3 phases × 3 leader candidates). Returns
-/// `(vis_code, hedr_shift_hz, i)` on detection (`hedr_shift_hz =
+/// Tries 9 alignments (i × j, 3 phases × 3 leader candidates). Returns the
+/// first **known** parity-passing alignment as `(vis_code, hedr_shift_hz, i)`
+/// (or the first parity-passing **unknown** code as a fallback) (`hedr_shift_hz =
 /// observed_leader - 1900`, `i` is the matched phase). Uses relative
 /// ±25 Hz tolerance — slowrx vis.c lines 82-104. (Indices like `3 + i`
 /// spell out slowrx's `tone[1*3+i]` so parity with C is one-to-one.)
@@ -338,8 +354,20 @@ fn estimate_peak_freq(spectrum: &[Complex<f32>]) -> f64 {
 /// exit is a quirk of its `HedrShift`-set-before-parity-check pattern. The
 /// difference only manifests on mistuned radios (`HedrShift` ≠ 0) where the
 /// first pattern match has parity failure — a rare edge case in practice.
-fn match_vis_pattern(tones: &[f64; HISTORY_LEN]) -> Option<(u8, f64, usize)> {
+///
+/// **Keep-searching for a known code (issue #89, A3):** like slowrx (`vis.c`),
+/// this tries all 9 alignments and returns the *first known* code (`is_known`).
+/// A clean burst whose only parity-passing alignment maps to an *unknown* code
+/// (a real R12BW transmission, or an unimplemented mode) is still returned — as
+/// the `first_unknown` fallback — so the caller can surface it via
+/// `SstvEvent::UnknownVis`. See `docs/intentional-deviations.md`
+/// ("VIS: keep-searching for a known code; surface clean unknown bursts").
+fn match_vis_pattern(
+    tones: &[f64; HISTORY_LEN],
+    is_known: impl Fn(u8) -> bool,
+) -> Option<(u8, f64, usize)> {
     let tol = TONE_TOLERANCE_HZ;
+    let mut first_unknown: Option<(u8, f64, usize)> = None;
     for i in 0..3 {
         for j in 0..3 {
             let leader = tones[j];
@@ -375,24 +403,32 @@ fn match_vis_pattern(tones: &[f64; HISTORY_LEN]) -> Option<(u8, f64, usize)> {
                     code |= bit << k;
                     parity ^= bit;
                 } else {
-                    // R12BW (`0x06`) inverts parity per slowrx `vis.c:116`:
-                    // `if (VISmap[VIS] == R12BW) Parity = !Parity;`. V1
-                    // doesn't decode R12BW (lookup returns None for 0x06),
-                    // but the parity check must still pass so a future V2
-                    // implementation that adds R12BW to the lookup table
-                    // doesn't silently reject every R12BW burst.
-                    let expected = if code == 0x06 { bit ^ 1 } else { bit };
-                    if parity != expected {
+                    // `bit` is the received parity bit. R12BW flips the
+                    // *accumulated* parity per slowrx `vis.c:116`:
+                    // `if (VISmap[VIS] == R12BW) Parity = !Parity;`. No
+                    // `ModeSpec` exists for R12BW yet (`lookup` returns
+                    // `None` for `R12BW_VIS_CODE`), but the parity check
+                    // must still pass so a future R12BW implementation that
+                    // adds it to `lookup` is not silently broken.
+                    if code == R12BW_VIS_CODE {
+                        parity ^= 1;
+                    }
+                    if parity != bit {
                         bit_ok = false;
                     }
+                    break; // k == 7 is the last iteration; explicit break mirrors the classify-fail arm
                 }
             }
             if bit_ok {
-                return Some((code, leader - LEADER_HZ, i));
+                let m = (code, leader - LEADER_HZ, i);
+                if is_known(code) {
+                    return Some(m); // slowrx breaks on the first known code
+                }
+                first_unknown.get_or_insert(m);
             }
         }
     }
-    None
+    first_unknown
 }
 
 #[inline]
@@ -453,6 +489,57 @@ pub mod tests {
             .collect()
     }
 
+    /// Build a 45-entry tone history (`HedrBuf` order: `[0]` oldest) that the
+    /// matcher reads as `phase0_code` at phase `i = 0` and, if `phase1_code`
+    /// is `Some(c)`, as `c` at phase `i = 1`. Phase `i = 2`'s bit slots are
+    /// left as leader tones, so it fails bit classification (never matches).
+    /// All leader / break slots are positioned so phases 0 and 1 pass those
+    /// checks. Tones are at the un-shifted (`hedr_shift = 0`) frequencies.
+    fn synth_tone_history(phase0_code: u8, phase1_code: Option<u8>) -> [f64; HISTORY_LEN] {
+        let leader = LEADER_HZ;
+        let break_f = leader + BREAK_HZ_OFFSET;
+        let zero_f = leader + BIT_ZERO_OFFSET;
+        let one_f = leader + BIT_ONE_OFFSET;
+        let bit_freq = |b: u8| if b == 1 { one_f } else { zero_f };
+        let mut t = [leader; HISTORY_LEN];
+        // Break tones — checked at indices 15+i and 42+i for i in 0..3.
+        t[15] = break_f;
+        t[16] = break_f;
+        t[42] = break_f;
+        t[43] = break_f;
+        // Phase i=0: data bits at tones[18 + 3k] (k=0..6), parity at tones[39].
+        let mut p0 = 0u8;
+        for k in 0..7 {
+            let b = (phase0_code >> k) & 1;
+            p0 ^= b;
+            t[18 + 3 * k] = bit_freq(b);
+        }
+        let p0 = if phase0_code == R12BW_VIS_CODE {
+            p0 ^ 1
+        } else {
+            p0
+        };
+        t[39] = bit_freq(p0);
+        // Phase i=1: data bits at tones[19 + 3k], parity at tones[40].
+        if let Some(c) = phase1_code {
+            let mut p1 = 0u8;
+            for k in 0..7 {
+                let b = (c >> k) & 1;
+                p1 ^= b;
+                t[19 + 3 * k] = bit_freq(b);
+            }
+            let p1 = if c == R12BW_VIS_CODE { p1 ^ 1 } else { p1 };
+            t[40] = bit_freq(p1);
+        }
+        t
+    }
+
+    /// `is_known` predicate as used in production: a 7-bit VIS code is "known"
+    /// iff it maps to a `ModeSpec`.
+    fn vis_known(code: u8) -> bool {
+        crate::modespec::lookup(code).is_some()
+    }
+
     /// Build a synthetic VIS burst encoding `code` with even parity.
     /// `freq_offset_hz` shifts every tone (mistuned-radio test fixture).
     /// Continuous-phase: avoids bit-boundary discontinuities that would
@@ -490,11 +577,15 @@ pub mod tests {
             parity ^= bit;
             emit(bit_freq(bit), 0.030, &mut out);
         }
-        // R12BW (code 0x06) inverts the parity bit per slowrx `vis.c:116`.
+        // R12BW (`R12BW_VIS_CODE`) inverts the parity bit per slowrx `vis.c:116`.
         // The detector's `match_vis_pattern` does the same inversion when
         // checking, so synthetic bursts must follow the same convention or
         // they'd fail parity at the receiver.
-        let parity_bit = if code == 0x06 { parity ^ 1 } else { parity };
+        let parity_bit = if code == R12BW_VIS_CODE {
+            parity ^ 1
+        } else {
+            parity
+        };
         emit(bit_freq(parity_bit), 0.030, &mut out);
         emit(break_f, 0.030, &mut out);
         out
@@ -507,7 +598,7 @@ pub mod tests {
 
     /// Helper: feed `audio` into a fresh detector and return the result.
     fn run(audio: &[f32]) -> Option<DetectedVis> {
-        let mut det = VisDetector::new();
+        let mut det = VisDetector::new(vis_known);
         det.process(audio, audio.len() as u64);
         det.take_detected()
     }
@@ -661,7 +752,7 @@ pub mod tests {
         emit(break_f, 0.030, &mut out);
         let mut parity = 0u8;
         for b in 0..7 {
-            let bit = (0x06_u8 >> b) & 1;
+            let bit = (R12BW_VIS_CODE >> b) & 1;
             parity ^= bit;
             emit(bit_freq(bit), 0.030, &mut out);
         }
@@ -688,6 +779,38 @@ pub mod tests {
         }
         audio.extend(std::iter::repeat_n(0.0_f32, 256));
         assert!(run(&audio).is_none());
+    }
+
+    #[test]
+    fn match_vis_pattern_clean_known_code() {
+        // 0x5F == PD120 is in the lookup table.
+        let tones = synth_tone_history(0x5F, None);
+        let m = match_vis_pattern(&tones, vis_known).expect("known code matches");
+        assert_eq!(m.0, 0x5F);
+        assert!(m.1.abs() < 1e-9, "hedr_shift should be 0, got {}", m.1);
+        assert_eq!(m.2, 0, "matched at phase i = 0");
+    }
+
+    #[test]
+    fn match_vis_pattern_clean_unknown_code_falls_back() {
+        // 0x01 is a valid 7-bit code with parity 1, but maps to no mode.
+        assert!(crate::modespec::lookup(0x01).is_none());
+        let tones = synth_tone_history(0x01, None);
+        let m = match_vis_pattern(&tones, vis_known)
+            .expect("an unknown-but-parity-passing code is still returned (fallback)");
+        assert_eq!(m.0, 0x01);
+        assert_eq!(m.2, 0);
+    }
+
+    #[test]
+    fn match_vis_pattern_prefers_known_over_earlier_unknown() {
+        // Phase i=0 spells unknown 0x01; phase i=1 spells known 0x5F.
+        // The (i,j) loop hits i=0 first — the old code returned 0x01 there;
+        // the fix must skip it and return 0x5F at i=1.
+        let tones = synth_tone_history(0x01, Some(0x5F));
+        let m = match_vis_pattern(&tones, vis_known).expect("known code at a later alignment");
+        assert_eq!(m.0, 0x5F, "should skip the earlier unknown 0x01 alignment");
+        assert_eq!(m.2, 1, "matched at phase i = 1");
     }
 
     #[cfg(test)]

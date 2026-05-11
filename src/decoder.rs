@@ -32,6 +32,22 @@ pub enum SstvEvent {
         /// (`vis.c` line 106 → `video.c` line 406).
         hedr_shift_hz: f64,
     },
+    /// A VIS header parsed and passed parity, but its 7-bit code maps to no
+    /// SSTV mode this build can decode (reserved / undefined, or a mode not
+    /// yet implemented). The decoder discards the burst and resumes scanning
+    /// for the next VIS — equivalent to slowrx's `printf("Unknown VIS %d")`
+    /// plus its retry-`GetVIS()` loop.
+    UnknownVis {
+        /// The 7-bit VIS code that did not resolve.
+        code: u8,
+        /// Radio mistuning offset in Hz: `observed_leader_hz - 1900` (the
+        /// same quantity as [`SstvEvent::VisDetected`]'s `hedr_shift_hz`).
+        /// Surfaced for diagnostics; the burst is dropped, so it does not
+        /// feed any decode.
+        hedr_shift_hz: f64,
+        /// Working-rate (11025 Hz) sample offset where the VIS stop bit ended.
+        sample_offset: u64,
+    },
     /// One scan line completed (callers may render incrementally).
     ///
     /// For PD and Robot 72: `pixels` is fully composed at emission time
@@ -138,6 +154,12 @@ struct DecodingState {
 /// pad the buffer to absorb additional offset.
 const FINDSYNC_AUDIO_HEADROOM: f64 = 1.00;
 
+/// `|c| crate::modespec::lookup(c).is_some()` as an `fn` pointer — the
+/// "is this VIS code one we can decode?" predicate handed to every
+/// [`crate::vis::VisDetector`] (issue #89 A3). The closure captures nothing,
+/// so it coerces to `fn(u8) -> bool` in const context.
+const IS_KNOWN_VIS: fn(u8) -> bool = |c| crate::modespec::lookup(c).is_some();
+
 /// Streaming SSTV decoder. Push audio buffers in via
 /// [`Self::process`]; consume the returned events.
 pub struct SstvDecoder {
@@ -190,7 +212,7 @@ impl SstvDecoder {
     pub fn new(input_sample_rate_hz: u32) -> Result<Self> {
         Ok(Self {
             resampler: Resampler::new(input_sample_rate_hz)?,
-            vis: crate::vis::VisDetector::new(),
+            vis: crate::vis::VisDetector::new(IS_KNOWN_VIS),
             pd_demod: crate::mode_pd::PdDemod::new(),
             snr_est: crate::snr::SnrEstimator::new(),
             state: State::AwaitingVis,
@@ -281,10 +303,25 @@ impl SstvDecoder {
                             }));
                             continue; // re-enter loop to process leftover audio
                         }
-                        // Unknown VIS codes silently drop. Reset the
-                        // detector's buffer so it does not accumulate
-                        // forever on uninterpretable bursts.
-                        let _ = self.vis.take_residual_buffer();
+                        // Unknown VIS code: surface it so stream-monitoring
+                        // callers know a burst arrived, then reseed the
+                        // detector (the `#40` re-anchor contract) on the
+                        // post-stop-bit residue and re-enter the loop — a
+                        // back-to-back VIS in the residue then surfaces in
+                        // this same `process` call. Mirrors the known-code
+                        // branch's `continue`.
+                        out.push(SstvEvent::UnknownVis {
+                            code: detected.code,
+                            hedr_shift_hz: detected.hedr_shift_hz,
+                            sample_offset: detected.end_sample,
+                        });
+                        let residual = self.vis.take_residual_buffer();
+                        Self::restart_vis_detection(
+                            &mut self.vis,
+                            self.working_samples_emitted,
+                            &residual,
+                        );
+                        continue;
                     }
                     break;
                 }
@@ -342,13 +379,33 @@ impl SstvDecoder {
                     // detected without any caller intervention. Closes #31.
                     let trailing = std::mem::take(&mut d.audio);
                     self.state = State::AwaitingVis;
-                    self.vis = crate::vis::VisDetector::new();
-                    self.vis.process(&trailing, self.working_samples_emitted);
+                    Self::restart_vis_detection(
+                        &mut self.vis,
+                        self.working_samples_emitted,
+                        &trailing,
+                    );
                     break;
                 }
             }
         }
         out
+    }
+
+    /// Discard `vis` and start a fresh detector on `leftover_audio`
+    /// (post-stop-bit residue, or trailing image audio). Honors the `#40`
+    /// re-anchor contract documented on
+    /// [`crate::vis::VisDetector::take_residual_buffer`] — a spent detector's
+    /// `hops_completed` / `history` state is never reset, so it must be
+    /// replaced rather than re-used. `working_samples_emitted` is the
+    /// decoder's running working-rate output count (used to anchor the fresh
+    /// detector).
+    fn restart_vis_detection(
+        vis: &mut crate::vis::VisDetector,
+        working_samples_emitted: u64,
+        leftover_audio: &[f32],
+    ) {
+        *vis = crate::vis::VisDetector::new(IS_KNOWN_VIS);
+        vis.process(leftover_audio, working_samples_emitted);
     }
 
     /// Run [`find_sync`] over the buffered sync track, then decode every
@@ -499,7 +556,7 @@ impl SstvDecoder {
         self.state = State::AwaitingVis;
         self.samples_processed = 0;
         self.working_samples_emitted = 0;
-        self.vis = crate::vis::VisDetector::new();
+        self.vis = crate::vis::VisDetector::new(IS_KNOWN_VIS);
         self.resampler.reset_state();
         self.pd_demod = crate::mode_pd::PdDemod::new();
         self.snr_est = crate::snr::SnrEstimator::new();

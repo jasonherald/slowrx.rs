@@ -68,3 +68,7 @@ required-features = ["test-support"]
 [[test]]
 name = "cli"
 required-features = ["cli"]
+
+[[test]]
+name = "unknown_vis"
+required-features = ["test-support"]
