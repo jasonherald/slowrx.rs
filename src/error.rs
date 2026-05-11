@@ -13,12 +13,6 @@ pub enum Error {
         /// The rate the caller passed.
         got: u32,
     },
-
-    /// VIS code does not map to a known SSTV mode.
-    ///
-    /// The `u8` value is the raw 7-bit VIS byte read from the audio stream.
-    #[error("VIS code {0:#04x} does not map to a known SSTV mode")]
-    UnknownVisCode(u8),
 }
 
 /// Convenient `Result` alias used throughout the crate.
@@ -37,12 +31,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn unknown_vis_code_renders_in_hex() {
-        let e = Error::UnknownVisCode(0x42);
-        assert_eq!(
-            e.to_string(),
-            "VIS code 0x42 does not map to a known SSTV mode"
-        );
-    }
 }
