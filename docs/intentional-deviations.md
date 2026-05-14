@@ -469,3 +469,66 @@ improvement that's worth shipping on its own.
    output** and finds slowrx's `usize` bin counts matter in some
    specific way. Unlikely — bandwidth integration is in Hz domain —
    but possible.
+
+---
+
+## FindSync skip_samples rounding: round-to-nearest vs slowrx's truncation
+
+**Files:** `src/sync.rs::find_sync` ↔ slowrx `sync.c:120`.
+**Tracking issue:** (none — sub-sample effect, no observable behavior change).
+
+### What slowrx does
+
+`Skip = s * Rate;` is an implicit `double → int` cast, which in C
+truncates toward zero. A `s_secs * rate` of `0.6` lands at `0`.
+
+### What we do
+
+`let skip_samples = (s_secs * rate).round() as i64;` rounds to nearest.
+
+### Why we deviated
+
+Truncation in slowrx isn't a deliberate choice — it's the side effect
+of an implicit C cast idiom. Round-to-nearest minimizes the max
+sub-sample error (½ sample vs 1 sample). The difference is at most
+1 sample at our 11025 Hz working rate (~91 µs) — well below SSTV's
+per-pixel duration (~0.5 ms at PD120) and invisible in real-radio
+capture.
+
+### When to revisit
+
+If a bit-exact parity test against slowrx-C reference output ever
+requires matching to the integer sample, switch back to truncation.
+
+---
+
+## FindSync retry-exhaustion: keep last estimate vs slowrx's reset to 44100
+
+**Files:** `src/sync.rs::find_sync` ↔ slowrx `sync.c:86-90`.
+**Tracking issue:** (none).
+
+### What slowrx does
+
+After `MAX_SLANT_RETRIES` Hough passes without locking inside the
+`(89°, 91°)` window, slowrx resets `Rate` to 44100 (its working
+sample rate) — i.e. throws away all the slant-correction progress
+made over the retries.
+
+### What we do
+
+We keep the last adjusted `rate` even when the lock window isn't
+reached.
+
+### Why we deviated
+
+Re-anchoring a near-locked input is harmful: a borderline lock that
+converged to ~91.1° (one 0.5° Hough bin outside the lock window)
+would be reset back to 44100 in slowrx, discarding all the
+correction the retry loop did. Keeping the last estimate gives a
+better decode on those borderline cases.
+
+### When to revisit
+
+If a regression surfaces where rate-correction overshoots and an
+explicit reset gives a better outcome. Has not happened in the
+Dec-2017 ARISS validation set.

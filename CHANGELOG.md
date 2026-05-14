@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- **`find_sync` cleanup** — decomposes the 160-line `find_sync` into
+  three pure helpers (`hough_detect_slant`, `find_falling_edge` /
+  `falling_edge_from_x_acc`, `skip_seconds_for`), drops the
+  `#[allow(clippy::too_many_lines)]` attribute. Moves the Scottie
+  mid-line skip correction onto `ModeSpec::skip_correction_seconds()`
+  (audit B4) so `find_sync` is mode-agnostic. Names three magic
+  numbers (`X_ACC_SLIP_THRESHOLD`, `SYNC_EDGE_KERNEL`,
+  `SYNC_EDGE_KERNEL_LEN` — audit C2). Replaces bare-int 2D indexing
+  with local `sync_img_idx` / `lines_idx` closures (audit C10). Fixes
+  one real off-by-one bug in the falling-edge convolution loop —
+  Rust's native `windows(8)` over a 700-bin slice yields 693 windows
+  but slowrx C iterates exactly 692; `.take(X_ACC_BINS - 8)` brings
+  us to bit-exact parity (audit A6). Documents two slowrx-C-vs-Rust
+  behavioral choices in `docs/intentional-deviations.md`: `.round()`
+  vs implicit truncate for `skip_samples` (A7), and keep-last-estimate
+  vs reset-to-44100 on retry exhaustion (A8). Adds three new tests:
+  two Hough slant-correction tests (0.5% and 1% drift — audit F2), one
+  Scottie skip-correction test (audit F3), plus two A6 regression
+  guards on `falling_edge_from_x_acc`. (#88; audit B2/B4/C2/C10/A6/A7/A8/F2/F3.)
+
 - **Resampler polish** — `Resampler` now uses a true 256-phase polyphase
   tap bank (precomputed in `new()`, ~64 KB) instead of recomputing all 64
   Hann-windowed-sinc taps per output sample; eliminates ~1.4 M `sin()`

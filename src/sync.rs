@@ -68,6 +68,21 @@ const X_ACC_BINS: usize = 700;
 const SYNC_IMG_Y_BINS: usize = 630;
 const LINES_D_BINS: usize = 600;
 
+/// Right-edge slip threshold for the falling-edge `xmax`: if `xmax`
+/// exceeds half the column-accumulator span, the detected pulse
+/// belongs to the next line's leading sync — wrap left by this
+/// amount. Matches slowrx `sync.c:117` (`if (xmax > 350) xmax -= 350;`).
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+const X_ACC_SLIP_THRESHOLD: i32 = (X_ACC_BINS / 2) as i32; // 350
+
+/// 8-tap falling-edge detection kernel: leading 4 ones, trailing 4
+/// negative ones. Convolved with the column-accumulator `x_acc`;
+/// the position of the maximum response is the falling edge of the
+/// dominant sync pulse. Matches slowrx `sync.c:108` (the inline
+/// literal `{1,1,1,1,-1,-1,-1,-1}`).
+const SYNC_EDGE_KERNEL: [i32; 8] = [1, 1, 1, 1, -1, -1, -1, -1];
+const SYNC_EDGE_KERNEL_LEN: usize = SYNC_EDGE_KERNEL.len();
+
 /// Convert degrees to radians. Matches slowrx `common.c::deg2rad`.
 fn deg2rad(deg: f64) -> f64 {
     deg * std::f64::consts::PI / 180.0
@@ -205,20 +220,82 @@ pub(crate) struct SyncResult {
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
-    clippy::too_many_lines
+    clippy::cast_possible_wrap
 )]
 pub(crate) fn find_sync(has_sync: &[bool], initial_rate_hz: f64, spec: ModeSpec) -> SyncResult {
     let line_width: usize = ((spec.line_seconds / spec.sync_seconds) * 4.0) as usize;
-    // (150-30) / 0.5 = 240 half-degree bins.
-    let n_slant_bins = ((MAX_SLANT_DEG - MIN_SLANT_DEG) / SLANT_STEP_DEG).round() as usize;
+    let num_lines = spec.image_lines as usize;
     let mut rate = initial_rate_hz;
     let mut slant_deg_detected: Option<f64> = None;
+
+    for retry in 0..=MAX_SLANT_RETRIES {
+        let Some((slant, adjusted)) = hough_detect_slant(has_sync, rate, spec, line_width) else {
+            // No sync pulses → no Hough peak → no rate correction.
+            break;
+        };
+        slant_deg_detected = Some(slant);
+
+        // Apply a deadband at 90° so an exact-rate input is not
+        // perturbed by half-degree Hough quantization noise (see
+        // docs/intentional-deviations.md "FindSync 90° slant deadband").
+        if (slant - 90.0).abs() > SLANT_STEP_DEG {
+            rate = adjusted;
+        }
+
+        // sync.c:86-90 resets to 44100 on retry exhaustion; we keep
+        // our last estimate (see docs/intentional-deviations.md
+        // "FindSync retry-exhaustion"). Open interval (89, 91) matches
+        // slowrx sync.c:83 exactly — half-open `89.0..91.0` would
+        // widen the lock by one 0.5°-Hough bin (round-2 audit
+        // Finding 7).
+        if (slant > SLANT_OK_LO_DEG && slant < SLANT_OK_HI_DEG) || retry == MAX_SLANT_RETRIES {
+            break;
+        }
+    }
+
+    let xmax = find_falling_edge(has_sync, rate, spec, num_lines);
+    let s_secs = skip_seconds_for(xmax, spec);
+    let skip_samples = (s_secs * rate).round() as i64;
+
+    SyncResult {
+        adjusted_rate_hz: rate,
+        skip_samples,
+        slant_deg: slant_deg_detected,
+    }
+}
+
+/// Build the 2D sync image at `rate_hz`, then linear-Hough-transform
+/// it to find the dominant slant angle. Returns `None` when no sync
+/// pulses register at all (degenerate input). The returned
+/// `adjusted_rate` already has the standard Hough-derived correction
+/// applied (`rate × tan(90° − slant) / line_width × rate`); the
+/// caller applies the 90° deadband before adopting it.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap
+)]
+fn hough_detect_slant(
+    has_sync: &[bool],
+    rate_hz: f64,
+    spec: ModeSpec,
+    line_width: usize,
+) -> Option<(f64 /* slant_deg */, f64 /* adjusted_rate */)> {
+    let n_slant_bins = ((MAX_SLANT_DEG - MIN_SLANT_DEG) / SLANT_STEP_DEG).round() as usize;
     let num_lines = spec.image_lines as usize;
 
-    // slowrx's `(int)(t * Rate / 13.0)` becomes `(int)(t * rate / STRIDE)`
-    // (the "13" in slowrx's index normalizes to stride units).
-    let probe_index = |t: f64, rate_hz: f64| -> usize {
+    // Column-major: x is the outer dim because the Hough vote loop
+    // iterates `for cy { for cx { … } }` and we want sequential x to
+    // share a cache line. Matches slowrx C's `SyncImg[700][630]`
+    // shape (C10 audit).
+    let sync_img_idx = |x: usize, y: usize| x * SYNC_IMG_Y_BINS + y;
+
+    // Row-major: d is the outer dim (the slowrx C `Lines[600][240]`
+    // shape). Vote increments scan q-inner.
+    let lines_idx = |d: usize, q: usize| d * n_slant_bins + q;
+
+    let probe_index = |t: f64| -> usize {
         let raw = t * rate_hz / (SYNC_PROBE_STRIDE as f64);
         if raw < 0.0 {
             0
@@ -227,149 +304,138 @@ pub(crate) fn find_sync(has_sync: &[bool], initial_rate_hz: f64, spec: ModeSpec)
         }
     };
 
+    // Draw the 2D sync signal at current rate.
     let mut sync_img = vec![false; X_ACC_BINS * SYNC_IMG_Y_BINS];
-    // lines[d][q] flattened as lines[d * n_slant_bins + q].
-    let mut lines = vec![0u16; LINES_D_BINS * n_slant_bins];
-
-    for retry in 0..=MAX_SLANT_RETRIES {
-        // Draw the 2D sync signal at current rate.
-        sync_img.fill(false);
-        for y in 0..num_lines.min(SYNC_IMG_Y_BINS) {
-            for x in 0..line_width.min(X_ACC_BINS) {
-                let t = ((y as f64) + (x as f64) / (line_width as f64)) * spec.line_seconds;
-                let idx = probe_index(t, rate);
-                if idx < has_sync.len() {
-                    sync_img[x * SYNC_IMG_Y_BINS + y] = has_sync[idx];
-                }
+    for y in 0..num_lines.min(SYNC_IMG_Y_BINS) {
+        for x in 0..line_width.min(X_ACC_BINS) {
+            let t = ((y as f64) + (x as f64) / (line_width as f64)) * spec.line_seconds;
+            let idx = probe_index(t);
+            if idx < has_sync.len() {
+                sync_img[sync_img_idx(x, y)] = has_sync[idx];
             }
         }
+    }
 
-        // Linear Hough transform.
-        lines.fill(0);
-        let mut q_most = 0_usize;
-        let mut max_count = 0_u16;
-        for cy in 0..num_lines.min(SYNC_IMG_Y_BINS) {
-            for cx in 0..line_width.min(X_ACC_BINS) {
-                if !sync_img[cx * SYNC_IMG_Y_BINS + cy] {
-                    continue;
-                }
-                for q in 0..n_slant_bins {
-                    let theta = deg2rad(MIN_SLANT_DEG + (q as f64) * SLANT_STEP_DEG);
-                    let d_signed = (line_width as f64)
-                        + (-(cx as f64) * theta.sin() + (cy as f64) * theta.cos()).round();
-                    if d_signed > 0.0 && d_signed < (line_width as f64) {
-                        let d = d_signed as usize;
-                        if d < LINES_D_BINS {
-                            let cell = &mut lines[d * n_slant_bins + q];
-                            *cell = cell.saturating_add(1);
-                            if *cell > max_count {
-                                max_count = *cell;
-                                q_most = q;
-                            }
+    // Linear Hough transform.
+    let mut lines = vec![0u16; LINES_D_BINS * n_slant_bins];
+    let mut q_most = 0_usize;
+    let mut max_count = 0_u16;
+    for cy in 0..num_lines.min(SYNC_IMG_Y_BINS) {
+        for cx in 0..line_width.min(X_ACC_BINS) {
+            if !sync_img[sync_img_idx(cx, cy)] {
+                continue;
+            }
+            for q in 0..n_slant_bins {
+                let theta = deg2rad(MIN_SLANT_DEG + (q as f64) * SLANT_STEP_DEG);
+                let d_signed = (line_width as f64)
+                    + (-(cx as f64) * theta.sin() + (cy as f64) * theta.cos()).round();
+                if d_signed > 0.0 && d_signed < (line_width as f64) {
+                    let d = d_signed as usize;
+                    if d < LINES_D_BINS {
+                        let cell = &mut lines[lines_idx(d, q)];
+                        *cell = cell.saturating_add(1);
+                        if *cell > max_count {
+                            max_count = *cell;
+                            q_most = q;
                         }
                     }
                 }
             }
         }
+    }
 
-        if max_count == 0 {
-            break;
-        }
+    if max_count == 0 {
+        return None;
+    }
 
-        let slant_angle = MIN_SLANT_DEG + (q_most as f64) * SLANT_STEP_DEG;
-        slant_deg_detected = Some(slant_angle);
+    let slant_angle = MIN_SLANT_DEG + (q_most as f64) * SLANT_STEP_DEG;
+    let adjusted_rate =
+        rate_hz + (deg2rad(90.0 - slant_angle).tan() / (line_width as f64)) * rate_hz;
+    Some((slant_angle, adjusted_rate))
+}
 
-        // Apply a deadband at 90° so an exact-rate input is not perturbed
-        // by half-degree Hough quantization noise — without this, a 90.5°
-        // bin lands a 0.0085% rate "correction" that compounds across the
-        // per-line xAcc projection and corrupts the falling-edge find.
-        if (slant_angle - 90.0).abs() > SLANT_STEP_DEG {
-            rate += (deg2rad(90.0 - slant_angle).tan() / (line_width as f64)) * rate;
-        }
-
-        // sync.c:86-90 resets to 44100 on retry exhaustion; we keep our
-        // last estimate (re-anchoring a near-locked input is harmful).
-        //
-        // Open interval (89, 91) — matching slowrx `sync.c:83`:
-        //   `if (slantAngle > 89 && slantAngle < 91)`.
-        // The half-open range syntax `89.0..91.0` would include 89.0° and
-        // exclude 91.0°, widening the lock window by one 0.5°-Hough bin vs
-        // slowrx. Use explicit comparisons for exact parity (round-2 audit
-        // Finding 7).
-        if (slant_angle > SLANT_OK_LO_DEG && slant_angle < SLANT_OK_HI_DEG)
-            || retry == MAX_SLANT_RETRIES
-        {
-            break;
+/// Pure 8-tap falling-edge convolution + slip-wrap. Returns `xmax`
+/// already adjusted for the `X_ACC_SLIP_THRESHOLD` right-edge slip.
+///
+/// **A6 fix (#88):** The loop iterates exactly
+/// `X_ACC_BINS - SYNC_EDGE_KERNEL_LEN` times — matching slowrx C's
+/// `for (n=0; n<X_ACC_BINS-8; n++)` (692 iterations). Rust's native
+/// `Iterator::windows(8)` yields 693 windows over a 700-element
+/// slice (indices 0..=692); the `.take(X_ACC_BINS - SYNC_EDGE_KERNEL_LEN)`
+/// caps it at 692 (indices 0..=691), so `xAcc[699]` is never read.
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+fn falling_edge_from_x_acc(x_acc: &[u32]) -> i32 {
+    debug_assert_eq!(x_acc.len(), X_ACC_BINS, "x_acc must be X_ACC_BINS long");
+    let mut xmax: i32 = 0;
+    let mut max_convd: i32 = 0;
+    for (x, window) in x_acc
+        .windows(SYNC_EDGE_KERNEL_LEN)
+        .take(X_ACC_BINS - SYNC_EDGE_KERNEL_LEN)
+        .enumerate()
+    {
+        let convd: i32 = window
+            .iter()
+            .zip(SYNC_EDGE_KERNEL.iter())
+            .map(|(&v, &k)| (v as i32) * k)
+            .sum();
+        if convd > max_convd {
+            max_convd = convd;
+            xmax = (x as i32) + (SYNC_EDGE_KERNEL_LEN as i32) / 2;
         }
     }
 
-    // Column accumulator + 8-tap convolution edge-find (sync.c:96-113).
+    // sync.c:117 — pulse near the right edge slipped from previous left.
+    if xmax > X_ACC_SLIP_THRESHOLD {
+        xmax -= X_ACC_SLIP_THRESHOLD;
+    }
+
+    xmax
+}
+
+/// Column-accumulate `has_sync` into `X_ACC_BINS` bins at `rate_hz`,
+/// then convolve with `SYNC_EDGE_KERNEL` to find the steepest
+/// falling edge. Returns the `xmax` integer with the
+/// `X_ACC_SLIP_THRESHOLD` right-edge slip-wrap already applied.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn find_falling_edge(has_sync: &[bool], rate_hz: f64, spec: ModeSpec, num_lines: usize) -> i32 {
+    let probe_index = |t: f64| -> usize {
+        let raw = t * rate_hz / (SYNC_PROBE_STRIDE as f64);
+        if raw < 0.0 {
+            0
+        } else {
+            raw as usize
+        }
+    };
+
     let mut x_acc = vec![0u32; X_ACC_BINS];
     for y in 0..num_lines {
         for (x, slot) in x_acc.iter_mut().enumerate() {
             let t = (y as f64) * spec.line_seconds
                 + ((x as f64) / (X_ACC_BINS as f64)) * spec.line_seconds;
-            let idx = probe_index(t, rate);
+            let idx = probe_index(t);
             if idx < has_sync.len() && has_sync[idx] {
                 *slot = slot.saturating_add(1);
             }
         }
     }
 
-    // 8-tap kernel snapshots `xmax = x+4` at the steepest falling edge.
-    // slowrx `sync.c:29-30`: `double maxconvd=0; int xmax=0;`.
-    // `max_convd` init must be 0 (not `i32::MIN`) — with zero input every
-    // `convd == 0` would beat `i32::MIN` and place xmax at the last window
-    // position, diverging from slowrx's "no update" on zero/negative convd
-    // (round-2 audit Finding 6).
-    let kernel: [i32; 8] = [1, 1, 1, 1, -1, -1, -1, -1];
-    let mut xmax: i32 = 0;
-    let mut max_convd: i32 = 0;
-    for (x, window) in x_acc.windows(8).enumerate() {
-        let convd: i32 = window
-            .iter()
-            .zip(kernel.iter())
-            .map(|(&v, &k)| (v as i32) * k)
-            .sum();
-        if convd > max_convd {
-            max_convd = convd;
-            xmax = (x as i32) + 4;
-        }
-    }
+    falling_edge_from_x_acc(&x_acc)
+}
 
-    // sync.c:117 — pulse near the right edge slipped from previous left.
-    if xmax > 350 {
-        xmax -= 350;
-    }
-
-    // sync.c:120 — base offset to start of line 0's content. The xmax
-    // detection lands at the falling edge of the sync pulse, so the
-    // raw `s_secs` is `(sync_pos_in_line + sync_secs) - sync_secs =
-    // sync_pos_in_line` for any mode. PD/Robot/Martin sync at line
-    // start: s_secs ≈ 0 (slightly negative → zero-pad). Scottie sync
-    // is mid-line, so `xmax` lands ~2/3 down the line. The
-    // `xmax > 350` slip check (sync.c:117) wraps it back to the left
-    // half of the line.
-    let s_secs_raw =
-        (f64::from(xmax) / (X_ACC_BINS as f64)) * spec.line_seconds - spec.sync_seconds;
-    // sync.c:123-125 — Scottie modes don't start lines with sync.
-    // The slip-wrapped xmax doesn't correspond to a line-start anchor,
-    // so apply slowrx C's mode-specific correction to bring `s_secs`
-    // back to ~0 (line 0's content start).
-    let s_secs = match spec.sync_position {
-        crate::modespec::SyncPosition::LineStart => s_secs_raw,
-        crate::modespec::SyncPosition::Scottie => {
-            let chan_len = f64::from(spec.line_pixels) * spec.pixel_seconds;
-            s_secs_raw - chan_len / 2.0 + 2.0 * spec.porch_seconds
-        }
-    };
-    let skip_samples = (s_secs * rate).round() as i64;
-
-    SyncResult {
-        adjusted_rate_hz: rate,
-        skip_samples,
-        slant_deg: slant_deg_detected,
-    }
+/// Convert a falling-edge `xmax` (post-slip-wrap) to skip seconds,
+/// applying the mode's sync-position offset. Pure arithmetic — no
+/// global state. The raw `s_secs` is computed assuming the falling
+/// edge lands at `(xmax / X_ACC_BINS) × line_seconds` and the sync
+/// pulse runs `sync_seconds` long; `ModeSpec::skip_correction_seconds()`
+/// then hoists the result for mid-line-sync modes (Scottie).
+#[allow(clippy::cast_precision_loss)]
+fn skip_seconds_for(xmax: i32, spec: ModeSpec) -> f64 {
+    let raw = (f64::from(xmax) / (X_ACC_BINS as f64)) * spec.line_seconds - spec.sync_seconds;
+    raw + spec.skip_correction_seconds()
 }
 
 #[cfg(test)]
@@ -428,6 +494,39 @@ mod tests {
                 (f64::from(y) * spec.line_seconds * rate_hz / (SYNC_PROBE_STRIDE as f64)) as usize;
             let i_end = ((f64::from(y) * spec.line_seconds + spec.sync_seconds) * rate_hz
                 / (SYNC_PROBE_STRIDE as f64)) as usize;
+            for slot in track.iter_mut().take(i_end.min(total)).skip(i_start) {
+                *slot = true;
+            }
+        }
+        track
+    }
+
+    /// Build a synthetic `has_sync` track where the signal was *captured*
+    /// at `capture_rate_hz` but the true line cadence runs at
+    /// `true_rate_hz`. Each captured line is `true_rate / capture_rate`
+    /// of a real line, so sync pulses drift through the (probe-stride-
+    /// quantized) track — i.e. the slant is non-90°.
+    fn synth_has_sync_slanted(
+        spec: ModeSpec,
+        true_rate_hz: f64,
+        // Documents the intended `find_sync(track, capture_rate, spec)`
+        // call site; not used in synthesis (pulses are placed at
+        // true-rate cadence — find_sync interprets the buffer at
+        // capture_rate_hz, so the y-linear position difference between
+        // expected and actual indices is the slant). Underscored to
+        // suppress the unused-arg warning; keep the parameter as
+        // self-documenting API.
+        _capture_rate_hz: f64,
+    ) -> Vec<bool> {
+        let total = (f64::from(spec.image_lines) * spec.line_seconds * true_rate_hz
+            / (SYNC_PROBE_STRIDE as f64)) as usize
+            + 16;
+        let mut track = vec![false; total];
+        for y in 0..spec.image_lines {
+            let i_start = (f64::from(y) * spec.line_seconds * true_rate_hz
+                / (SYNC_PROBE_STRIDE as f64)) as usize;
+            let i_end =
+                i_start + (spec.sync_seconds * true_rate_hz / (SYNC_PROBE_STRIDE as f64)) as usize;
             for slot in track.iter_mut().take(i_end.min(total)).skip(i_start) {
                 *slot = true;
             }
@@ -500,5 +599,148 @@ mod tests {
             "rate should be unchanged, got {}",
             r.adjusted_rate_hz
         );
+    }
+
+    /// F2 (#88). Hough slant correction path — 0.5% capture-rate drift
+    /// produces a slant well outside the (89°, 91°) lock window
+    /// (`tan(90° − slant)/line_width ≈ 0.005` implies a Hough peak
+    /// near 63° or 117° depending on which symmetry the dominant
+    /// line in `sync_img` lands in). The retry loop must shrink the
+    /// rate error toward zero; we assert it ends up under half the
+    /// initial drift.
+    /// (0.3% drift falls *inside* the 0.5°-quantized Hough bins as
+    /// near-90°, hits the 0.5° deadband, and never triggers
+    /// correction; 0.5% is the minimum drift that reliably runs the
+    /// correction path.)
+    #[test]
+    fn find_sync_corrects_0p5pct_slant_at_pd120() {
+        let spec = modespec::for_mode(crate::modespec::SstvMode::Pd120);
+        let true_rate = f64::from(WORKING_SAMPLE_RATE_HZ);
+        let capture_rate = true_rate * 1.005;
+        let track = synth_has_sync_slanted(spec, true_rate, capture_rate);
+        let r = find_sync(&track, capture_rate, spec);
+        let err_pct = (r.adjusted_rate_hz - true_rate).abs() / true_rate * 100.0;
+        let initial_err_pct = (capture_rate - true_rate).abs() / true_rate * 100.0;
+        // Verify sync was detected at all.
+        assert!(
+            r.slant_deg.is_some(),
+            "expected sync to be detected (slant_deg should be Some)"
+        );
+        // Rate should have moved toward true_rate (correction was applied).
+        assert!(
+            r.adjusted_rate_hz < capture_rate,
+            "adjusted rate {:.2} should be less than capture_rate {capture_rate:.2} (slant correction moved it toward true_rate)",
+            r.adjusted_rate_hz
+        );
+        // Final error should be well under the initial drift.
+        assert!(
+            err_pct < initial_err_pct / 2.0,
+            "rate err {err_pct:.3}% should be < half of initial {initial_err_pct:.3}%"
+        );
+    }
+
+    /// F2 (#88). Larger drift (1% capture-rate offset) produces a
+    /// Hough peak far outside the lock window — the retry loop must
+    /// do real work to converge. Verify the retry loop actually
+    /// progresses: the final rate error must be strictly smaller
+    /// than the initial guess.
+    #[test]
+    fn find_sync_corrects_1pct_slant_via_retries() {
+        let spec = modespec::for_mode(crate::modespec::SstvMode::Pd120);
+        let true_rate = f64::from(WORKING_SAMPLE_RATE_HZ);
+        let capture_rate = true_rate * 1.01;
+        let track = synth_has_sync_slanted(spec, true_rate, capture_rate);
+        let r = find_sync(&track, capture_rate, spec);
+        let initial_err_pct = (capture_rate - true_rate).abs() / true_rate * 100.0;
+        let final_err_pct = (r.adjusted_rate_hz - true_rate).abs() / true_rate * 100.0;
+        assert!(
+            final_err_pct < initial_err_pct,
+            "retry should shrink rate error: initial {initial_err_pct:.3}% → final {final_err_pct:.3}%"
+        );
+        assert!(
+            final_err_pct < 0.2,
+            "rate err after retries should be ≤ 0.2%, got {final_err_pct:.3}%"
+        );
+    }
+
+    /// F3 (#88). Scottie modes use mid-line sync; the
+    /// `skip_correction_seconds()` path on `ModeSpec` subtracts
+    /// `chan_len/2 - 2*porch` from the raw `s_secs`. Feeding
+    /// line-start pulses (the existing `synth_has_sync` helper)
+    /// with a Scottie spec lands `xmax` near 0 (small), so
+    /// `s_secs_raw ≈ 0` and the final skip should equal the
+    /// correction itself (negative, ~ -65 ms for Scottie1 at
+    /// 11025 Hz).
+    #[test]
+    fn find_sync_scottie_applies_skip_correction() {
+        let spec = modespec::for_mode(crate::modespec::SstvMode::Scottie1);
+        let rate = f64::from(WORKING_SAMPLE_RATE_HZ);
+        let track = synth_has_sync(spec, rate);
+        let r = find_sync(&track, rate, spec);
+
+        let chan_len = f64::from(spec.line_pixels) * spec.pixel_seconds;
+        let expected_secs = -chan_len / 2.0 + 2.0 * spec.porch_seconds;
+        let expected_skip = (expected_secs * rate).round() as i64;
+        let tolerance = (0.005 * rate) as i64; // ~55 samples ≈ 5 ms
+
+        assert!(
+            (r.skip_samples - expected_skip).abs() < tolerance,
+            "Scottie skip {} should be ≈ {expected_skip} (correction = {expected_secs:.4}s, tol = {tolerance})",
+            r.skip_samples
+        );
+        // Sanity: Scottie correction is always negative.
+        assert!(
+            r.skip_samples < 0,
+            "Scottie skip should be negative (mid-line hoist); got {}",
+            r.skip_samples
+        );
+    }
+
+    /// A6 regression guard (#88). slowrx C's loop runs `n ∈ 0..691`
+    /// (`for (n=0; n<X_ACC_BINS-8; n++)`), so `xAcc[699]` is never
+    /// read. Rust's native `windows(8)` over a 700-bin slice yields
+    /// 693 windows (`n ∈ 0..=692`); without `.take(X_ACC_BINS - 8)`
+    /// the kernel would read `xAcc[699]` at `n=692`. This test
+    /// constructs an `x_acc` whose strongest convd at n=692 differs
+    /// from the strongest at n=691: pre-fix lands at n=692 (xmax=696
+    /// → slip-wrap → 346); post-fix lands at n=691 (xmax=695 →
+    /// slip-wrap → 345). The assertion fails on the pre-fix code and
+    /// passes on the post-fix code.
+    #[test]
+    fn falling_edge_from_x_acc_off_by_one_a6() {
+        let mut x_acc = vec![0u32; X_ACC_BINS];
+        // x_acc[691..=695] = 100, x_acc[696..=699] = 0.
+        for slot in x_acc.iter_mut().take(696).skip(691) {
+            *slot = 100;
+        }
+        // n=691: window = [100,100,100,100,100,0,0,0]
+        //   convd = 4*100 - 100 - 0 - 0 - 0 = 300.
+        // n=692: window = [100,100,100,100,0,0,0,0]
+        //   convd = 4*100 - 0 = 400  (pre-fix only).
+        // Pre-fix max at n=692 → xmax = 696 → slip-wrap → 346.
+        // Post-fix max at n=691 → xmax = 695 → slip-wrap → 345.
+        let xmax = falling_edge_from_x_acc(&x_acc);
+        assert_eq!(
+            xmax, 345,
+            "post-A6-fix should pick n=691 (xmax=695, slip=345); pre-fix would give 346"
+        );
+    }
+
+    /// A6 baseline: an edge well away from the right edge produces
+    /// the same `xmax` pre-fix and post-fix. Sanity check that the
+    /// `.take(...)` bound only changes behavior at the very right
+    /// edge, not anywhere else.
+    #[test]
+    fn falling_edge_from_x_acc_detects_mid_array_edge() {
+        let mut x_acc = vec![0u32; X_ACC_BINS];
+        // Edge at indices 100..=103.
+        for slot in x_acc.iter_mut().take(104).skip(100) {
+            *slot = 100;
+        }
+        // n=100: window = [100,100,100,100,0,0,0,0], convd = 400,
+        // xmax = 100 + 4 = 104. 104 < X_ACC_SLIP_THRESHOLD (350), no
+        // slip-wrap. Pre-fix and post-fix agree.
+        let xmax = falling_edge_from_x_acc(&x_acc);
+        assert_eq!(xmax, 104, "mid-array edge detection unchanged by A6 fix");
     }
 }

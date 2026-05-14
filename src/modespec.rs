@@ -116,6 +116,25 @@ pub enum SyncPosition {
     Scottie,
 }
 
+impl ModeSpec {
+    /// Offset (seconds) applied to the raw `xmax`-derived skip to
+    /// land on line 0's content start. `LineStart` modes return 0;
+    /// `Scottie` modes return `-chan_len/2 + 2 × porch_seconds` (the
+    /// Scottie sync is mid-line, so the slip-wrapped `xmax` needs
+    /// to be hoisted back left to align with line 0's content
+    /// start). Audit #88 B4.
+    #[must_use]
+    pub(crate) fn skip_correction_seconds(&self) -> f64 {
+        match self.sync_position {
+            SyncPosition::LineStart => 0.0,
+            SyncPosition::Scottie => {
+                let chan_len = f64::from(self.line_pixels) * self.pixel_seconds;
+                -chan_len / 2.0 + 2.0 * self.porch_seconds
+            }
+        }
+    }
+}
+
 /// Look up the [`ModeSpec`] for a given 7-bit VIS code. Returns `None`
 /// if the code is reserved, undefined, or maps to a mode not yet
 /// implemented in this release.
@@ -586,5 +605,44 @@ mod tests {
     fn martin_vis_codes_resolve() {
         assert_eq!(lookup(0x2C).expect("M1").mode, SstvMode::Martin1);
         assert_eq!(lookup(0x28).expect("M2").mode, SstvMode::Martin2);
+    }
+
+    #[test]
+    fn skip_correction_seconds_zero_for_line_start_modes() {
+        for mode in [
+            SstvMode::Pd120,
+            SstvMode::Pd240,
+            SstvMode::Pd180,
+            SstvMode::Robot24,
+            SstvMode::Robot36,
+            SstvMode::Robot72,
+            SstvMode::Martin1,
+            SstvMode::Martin2,
+        ] {
+            let spec = for_mode(mode);
+            assert_eq!(
+                spec.skip_correction_seconds(),
+                0.0,
+                "{mode:?} expected 0.0 skip correction"
+            );
+        }
+    }
+
+    #[test]
+    fn skip_correction_seconds_scottie_formula() {
+        for mode in [SstvMode::Scottie1, SstvMode::Scottie2, SstvMode::ScottieDx] {
+            let spec = for_mode(mode);
+            let expected =
+                -f64::from(spec.line_pixels) * spec.pixel_seconds / 2.0 + 2.0 * spec.porch_seconds;
+            assert!(
+                (spec.skip_correction_seconds() - expected).abs() < 1e-12,
+                "{mode:?} got {} expected {expected}",
+                spec.skip_correction_seconds()
+            );
+            assert!(
+                spec.skip_correction_seconds() < 0.0,
+                "{mode:?} Scottie correction should be negative"
+            );
+        }
     }
 }
