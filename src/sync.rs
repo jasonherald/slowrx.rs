@@ -318,28 +318,44 @@ pub(crate) fn find_sync(has_sync: &[bool], initial_rate_hz: f64, spec: ModeSpec)
         }
     }
 
-    // Column accumulator + 8-tap convolution edge-find (sync.c:96-113).
-    let mut x_acc = vec![0u32; X_ACC_BINS];
-    for y in 0..num_lines {
-        for (x, slot) in x_acc.iter_mut().enumerate() {
-            let t = (y as f64) * spec.line_seconds
-                + ((x as f64) / (X_ACC_BINS as f64)) * spec.line_seconds;
-            let idx = probe_index(t, rate);
-            if idx < has_sync.len() && has_sync[idx] {
-                *slot = slot.saturating_add(1);
-            }
-        }
-    }
+    // sync.c:96-117 — column-accumulator + falling-edge convolution
+    // + slip-wrap. Extracted into `find_falling_edge` (audit B2);
+    // pure-helper `falling_edge_from_x_acc` carries the A6
+    // off-by-one fix tested separately.
+    let xmax = find_falling_edge(has_sync, rate, spec, num_lines);
 
-    // 8-tap kernel snapshots `xmax = x+4` at the steepest falling edge.
-    // slowrx `sync.c:29-30`: `double maxconvd=0; int xmax=0;`.
-    // `max_convd` init must be 0 (not `i32::MIN`) — with zero input every
-    // `convd == 0` would beat `i32::MIN` and place xmax at the last window
-    // position, diverging from slowrx's "no update" on zero/negative convd
-    // (round-2 audit Finding 6).
+    // sync.c:120-125 — convert xmax to skip seconds. The Scottie
+    // mid-line correction lives on ModeSpec; see
+    // `ModeSpec::skip_correction_seconds`.
+    let s_secs = skip_seconds_for(xmax, spec);
+    let skip_samples = (s_secs * rate).round() as i64;
+
+    SyncResult {
+        adjusted_rate_hz: rate,
+        skip_samples,
+        slant_deg: slant_deg_detected,
+    }
+}
+
+/// Pure 8-tap falling-edge convolution + slip-wrap. Returns `xmax`
+/// already adjusted for the `X_ACC_SLIP_THRESHOLD` right-edge slip.
+///
+/// **A6 fix (#88):** The loop iterates exactly
+/// `X_ACC_BINS - SYNC_EDGE_KERNEL_LEN` times — matching slowrx C's
+/// `for (n=0; n<X_ACC_BINS-8; n++)` (692 iterations). Rust's native
+/// `Iterator::windows(8)` yields 693 windows over a 700-element
+/// slice (indices 0..=692); the `.take(X_ACC_BINS - SYNC_EDGE_KERNEL_LEN)`
+/// caps it at 692 (indices 0..=691), so `xAcc[699]` is never read.
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+fn falling_edge_from_x_acc(x_acc: &[u32]) -> i32 {
+    debug_assert_eq!(x_acc.len(), X_ACC_BINS, "x_acc must be X_ACC_BINS long");
     let mut xmax: i32 = 0;
     let mut max_convd: i32 = 0;
-    for (x, window) in x_acc.windows(SYNC_EDGE_KERNEL_LEN).enumerate() {
+    for (x, window) in x_acc
+        .windows(SYNC_EDGE_KERNEL_LEN)
+        .take(X_ACC_BINS - SYNC_EDGE_KERNEL_LEN)
+        .enumerate()
+    {
         let convd: i32 = window
             .iter()
             .zip(SYNC_EDGE_KERNEL.iter())
@@ -356,17 +372,41 @@ pub(crate) fn find_sync(has_sync: &[bool], initial_rate_hz: f64, spec: ModeSpec)
         xmax -= X_ACC_SLIP_THRESHOLD;
     }
 
-    // sync.c:120-125 — convert xmax to skip seconds. The Scottie
-    // mid-line correction lives on ModeSpec; see
-    // `ModeSpec::skip_correction_seconds`.
-    let s_secs = skip_seconds_for(xmax, spec);
-    let skip_samples = (s_secs * rate).round() as i64;
+    xmax
+}
 
-    SyncResult {
-        adjusted_rate_hz: rate,
-        skip_samples,
-        slant_deg: slant_deg_detected,
+/// Column-accumulate `has_sync` into `X_ACC_BINS` bins at `rate_hz`,
+/// then convolve with `SYNC_EDGE_KERNEL` to find the steepest
+/// falling edge. Returns the `xmax` integer with the
+/// `X_ACC_SLIP_THRESHOLD` right-edge slip-wrap already applied.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn find_falling_edge(has_sync: &[bool], rate_hz: f64, spec: ModeSpec, num_lines: usize) -> i32 {
+    let probe_index = |t: f64| -> usize {
+        let raw = t * rate_hz / (SYNC_PROBE_STRIDE as f64);
+        if raw < 0.0 {
+            0
+        } else {
+            raw as usize
+        }
+    };
+
+    let mut x_acc = vec![0u32; X_ACC_BINS];
+    for y in 0..num_lines {
+        for (x, slot) in x_acc.iter_mut().enumerate() {
+            let t = (y as f64) * spec.line_seconds
+                + ((x as f64) / (X_ACC_BINS as f64)) * spec.line_seconds;
+            let idx = probe_index(t);
+            if idx < has_sync.len() && has_sync[idx] {
+                *slot = slot.saturating_add(1);
+            }
+        }
     }
+
+    falling_edge_from_x_acc(&x_acc)
 }
 
 /// Convert a falling-edge `xmax` (post-slip-wrap) to skip seconds,
@@ -509,5 +549,53 @@ mod tests {
             "rate should be unchanged, got {}",
             r.adjusted_rate_hz
         );
+    }
+
+    /// A6 regression guard (#88). slowrx C's loop runs `n ∈ 0..691`
+    /// (`for (n=0; n<X_ACC_BINS-8; n++)`), so `xAcc[699]` is never
+    /// read. Rust's native `windows(8)` over a 700-bin slice yields
+    /// 693 windows (`n ∈ 0..=692`); without `.take(X_ACC_BINS - 8)`
+    /// the kernel would read `xAcc[699]` at `n=692`. This test
+    /// constructs an `x_acc` whose strongest convd at n=692 differs
+    /// from the strongest at n=691: pre-fix lands at n=692 (xmax=696
+    /// → slip-wrap → 346); post-fix lands at n=691 (xmax=695 →
+    /// slip-wrap → 345). The assertion fails on the pre-fix code and
+    /// passes on the post-fix code.
+    #[test]
+    fn falling_edge_from_x_acc_off_by_one_a6() {
+        let mut x_acc = vec![0u32; X_ACC_BINS];
+        // x_acc[691..=695] = 100, x_acc[696..=699] = 0.
+        for slot in x_acc.iter_mut().take(696).skip(691) {
+            *slot = 100;
+        }
+        // n=691: window = [100,100,100,100,100,0,0,0]
+        //   convd = 4*100 - 100 - 0 - 0 - 0 = 300.
+        // n=692: window = [100,100,100,100,0,0,0,0]
+        //   convd = 4*100 - 0 = 400  (pre-fix only).
+        // Pre-fix max at n=692 → xmax = 696 → slip-wrap → 346.
+        // Post-fix max at n=691 → xmax = 695 → slip-wrap → 345.
+        let xmax = falling_edge_from_x_acc(&x_acc);
+        assert_eq!(
+            xmax, 345,
+            "post-A6-fix should pick n=691 (xmax=695, slip=345); pre-fix would give 346"
+        );
+    }
+
+    /// A6 baseline: an edge well away from the right edge produces
+    /// the same `xmax` pre-fix and post-fix. Sanity check that the
+    /// `.take(...)` bound only changes behavior at the very right
+    /// edge, not anywhere else.
+    #[test]
+    fn falling_edge_from_x_acc_detects_mid_array_edge() {
+        let mut x_acc = vec![0u32; X_ACC_BINS];
+        // Edge at indices 100..=103.
+        for slot in x_acc.iter_mut().take(104).skip(100) {
+            *slot = 100;
+        }
+        // n=100: window = [100,100,100,100,0,0,0,0], convd = 400,
+        // xmax = 100 + 4 = 104. 104 < X_ACC_SLIP_THRESHOLD (350), no
+        // slip-wrap. Pre-fix and post-fix agree.
+        let xmax = falling_edge_from_x_acc(&x_acc);
+        assert_eq!(xmax, 104, "mid-array edge detection unchanged by A6 fix");
     }
 }
