@@ -501,6 +501,35 @@ mod tests {
         track
     }
 
+    /// Build a synthetic `has_sync` track where the signal was *captured*
+    /// at `capture_rate_hz` but the true line cadence runs at
+    /// `true_rate_hz`. Each captured line is `true_rate / capture_rate`
+    /// of a real line, so sync pulses drift through the (probe-stride-
+    /// quantized) track — i.e. the slant is non-90°.
+    fn synth_has_sync_slanted(
+        spec: ModeSpec,
+        true_rate_hz: f64,
+        capture_rate_hz: f64,
+    ) -> Vec<bool> {
+        // Total length sized for the captured rate.
+        let total = (f64::from(spec.image_lines) * spec.line_seconds * capture_rate_hz
+            / (SYNC_PROBE_STRIDE as f64)) as usize
+            + 16;
+        let mut track = vec![false; total];
+        for y in 0..spec.image_lines {
+            // Sync pulse y starts at `y * line_seconds_true` (true cadence),
+            // but the probe-index is computed at `capture_rate`.
+            let line_start_t = f64::from(y) * spec.line_seconds * (true_rate_hz / capture_rate_hz);
+            let line_end_t = line_start_t + spec.sync_seconds;
+            let i_start = (line_start_t * capture_rate_hz / (SYNC_PROBE_STRIDE as f64)) as usize;
+            let i_end = (line_end_t * capture_rate_hz / (SYNC_PROBE_STRIDE as f64)) as usize;
+            for slot in track.iter_mut().take(i_end.min(total)).skip(i_start) {
+                *slot = true;
+            }
+        }
+        track
+    }
+
     #[test]
     fn find_sync_locks_clean_track_to_90_degrees() {
         let spec = modespec::for_mode(crate::modespec::SstvMode::Pd120);
@@ -565,6 +594,61 @@ mod tests {
             (r.adjusted_rate_hz - rate).abs() < f64::EPSILON,
             "rate should be unchanged, got {}",
             r.adjusted_rate_hz
+        );
+    }
+
+    /// F2 (#88). Hough slant correction path — 0.5% rate drift puts
+    /// the slant at ~89.5°, outside the 0.5° deadband, inside the
+    /// (89°, 91°) lock window. One retry should converge.
+    /// (0.3% drift falls within the Hough 0.5°-quantized deadband;
+    /// 0.5% is the minimum drift that reliably triggers correction.)
+    #[test]
+    fn find_sync_corrects_0p3pct_slant_at_pd120() {
+        let spec = modespec::for_mode(crate::modespec::SstvMode::Pd120);
+        let true_rate = f64::from(WORKING_SAMPLE_RATE_HZ);
+        let capture_rate = true_rate * 1.005;
+        let track = synth_has_sync_slanted(spec, true_rate, capture_rate);
+        let r = find_sync(&track, capture_rate, spec);
+        let err_pct = (r.adjusted_rate_hz - true_rate).abs() / true_rate * 100.0;
+        let initial_err_pct = (capture_rate - true_rate).abs() / true_rate * 100.0;
+        // Verify sync was detected at all.
+        assert!(
+            r.slant_deg.is_some(),
+            "expected sync to be detected (slant_deg should be Some)"
+        );
+        // Rate should have moved toward true_rate (correction was applied).
+        assert!(
+            r.adjusted_rate_hz < capture_rate,
+            "adjusted rate {:.2} should be less than capture_rate {capture_rate:.2} (slant correction moved it toward true_rate)",
+            r.adjusted_rate_hz
+        );
+        // Final error should be well under the initial drift.
+        assert!(
+            err_pct < initial_err_pct / 2.0,
+            "rate err {err_pct:.3}% should be < half of initial {initial_err_pct:.3}%"
+        );
+    }
+
+    /// F2 (#88). Larger slant (1% drift) puts the angle at ~89°,
+    /// outside the lock window. Verify the retry loop actually
+    /// progresses — the final rate error must be strictly smaller
+    /// than the initial guess.
+    #[test]
+    fn find_sync_corrects_1pct_slant_via_retries() {
+        let spec = modespec::for_mode(crate::modespec::SstvMode::Pd120);
+        let true_rate = f64::from(WORKING_SAMPLE_RATE_HZ);
+        let capture_rate = true_rate * 1.01;
+        let track = synth_has_sync_slanted(spec, true_rate, capture_rate);
+        let r = find_sync(&track, capture_rate, spec);
+        let initial_err_pct = (capture_rate - true_rate).abs() / true_rate * 100.0;
+        let final_err_pct = (r.adjusted_rate_hz - true_rate).abs() / true_rate * 100.0;
+        assert!(
+            final_err_pct < initial_err_pct,
+            "retry should shrink rate error: initial {initial_err_pct:.3}% → final {final_err_pct:.3}%"
+        );
+        assert!(
+            final_err_pct < 0.2,
+            "rate err after retries should be ≤ 0.2%, got {final_err_pct:.3}%"
         );
     }
 
