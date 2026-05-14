@@ -35,10 +35,6 @@ use crate::test_tone::{lum_to_freq, ToneWriter, PORCH_HZ, SEPTR_HZ, SYNC_HZ};
 #[must_use]
 #[allow(dead_code)]
 pub(crate) fn encode_robot(mode: SstvMode, ycrcb: &[[u8; 3]]) -> Vec<f32> {
-    assert!(matches!(
-        mode,
-        SstvMode::Robot24 | SstvMode::Robot36 | SstvMode::Robot72
-    ));
     let spec = crate::modespec::for_mode(mode);
     let w = spec.line_pixels;
     let h = spec.image_lines;
@@ -58,7 +54,10 @@ pub(crate) fn encode_robot(mode: SstvMode, ycrcb: &[[u8; 3]]) -> Vec<f32> {
         SstvMode::Robot24 | SstvMode::Robot36 => {
             encode_r36_or_r24(&mut tone, &mut t, advance, &spec, ycrcb);
         }
-        _ => unreachable!(),
+        // SstvMode is `#[non_exhaustive]` so the wildcard arm is structurally
+        // required even though the three Robot variants above are the only
+        // mode values this fn is meant to handle. (audit C17)
+        _ => unreachable!("encode_robot called with non-Robot mode {mode:?}"),
     }
 
     tone.into_vec()
