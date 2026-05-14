@@ -652,6 +652,39 @@ mod tests {
         );
     }
 
+    /// F3 (#88). Scottie modes use mid-line sync; the
+    /// `skip_correction_seconds()` path on `ModeSpec` subtracts
+    /// `chan_len/2 - 2*porch` from the raw `s_secs`. Feeding
+    /// line-start pulses (the existing `synth_has_sync` helper)
+    /// with a Scottie spec lands `xmax` near 0 (small), so
+    /// `s_secs_raw ≈ 0` and the final skip should equal the
+    /// correction itself (negative, ~ -65 ms for Scottie1 at
+    /// 11025 Hz).
+    #[test]
+    fn find_sync_scottie_applies_skip_correction() {
+        let spec = modespec::for_mode(crate::modespec::SstvMode::Scottie1);
+        let rate = f64::from(WORKING_SAMPLE_RATE_HZ);
+        let track = synth_has_sync(spec, rate);
+        let r = find_sync(&track, rate, spec);
+
+        let chan_len = f64::from(spec.line_pixels) * spec.pixel_seconds;
+        let expected_secs = -chan_len / 2.0 + 2.0 * spec.porch_seconds;
+        let expected_skip = (expected_secs * rate).round() as i64;
+        let tolerance = (0.005 * rate) as i64; // ~55 samples ≈ 5 ms
+
+        assert!(
+            (r.skip_samples - expected_skip).abs() < tolerance,
+            "Scottie skip {} should be ≈ {expected_skip} (correction = {expected_secs:.4}s, tol = {tolerance})",
+            r.skip_samples
+        );
+        // Sanity: Scottie correction is always negative.
+        assert!(
+            r.skip_samples < 0,
+            "Scottie skip should be negative (mid-line hoist); got {}",
+            r.skip_samples
+        );
+    }
+
     /// A6 regression guard (#88). slowrx C's loop runs `n ∈ 0..691`
     /// (`for (n=0; n<X_ACC_BINS-8; n++)`), so `xAcc[699]` is never
     /// read. Rust's native `windows(8)` over a 700-bin slice yields
