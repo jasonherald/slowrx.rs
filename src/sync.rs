@@ -220,113 +220,40 @@ pub(crate) struct SyncResult {
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
-    clippy::too_many_lines
+    clippy::cast_possible_wrap
 )]
 pub(crate) fn find_sync(has_sync: &[bool], initial_rate_hz: f64, spec: ModeSpec) -> SyncResult {
     let line_width: usize = ((spec.line_seconds / spec.sync_seconds) * 4.0) as usize;
-    // (150-30) / 0.5 = 240 half-degree bins.
-    let n_slant_bins = ((MAX_SLANT_DEG - MIN_SLANT_DEG) / SLANT_STEP_DEG).round() as usize;
+    let num_lines = spec.image_lines as usize;
     let mut rate = initial_rate_hz;
     let mut slant_deg_detected: Option<f64> = None;
-    let num_lines = spec.image_lines as usize;
-
-    // slowrx's `(int)(t * Rate / 13.0)` becomes `(int)(t * rate / STRIDE)`
-    // (the "13" in slowrx's index normalizes to stride units).
-    let probe_index = |t: f64, rate_hz: f64| -> usize {
-        let raw = t * rate_hz / (SYNC_PROBE_STRIDE as f64);
-        if raw < 0.0 {
-            0
-        } else {
-            raw as usize
-        }
-    };
-
-    let mut sync_img = vec![false; X_ACC_BINS * SYNC_IMG_Y_BINS];
-    // lines[d][q] flattened as lines[d * n_slant_bins + q].
-    let mut lines = vec![0u16; LINES_D_BINS * n_slant_bins];
 
     for retry in 0..=MAX_SLANT_RETRIES {
-        // Draw the 2D sync signal at current rate.
-        sync_img.fill(false);
-        for y in 0..num_lines.min(SYNC_IMG_Y_BINS) {
-            for x in 0..line_width.min(X_ACC_BINS) {
-                let t = ((y as f64) + (x as f64) / (line_width as f64)) * spec.line_seconds;
-                let idx = probe_index(t, rate);
-                if idx < has_sync.len() {
-                    sync_img[x * SYNC_IMG_Y_BINS + y] = has_sync[idx];
-                }
-            }
-        }
-
-        // Linear Hough transform.
-        lines.fill(0);
-        let mut q_most = 0_usize;
-        let mut max_count = 0_u16;
-        for cy in 0..num_lines.min(SYNC_IMG_Y_BINS) {
-            for cx in 0..line_width.min(X_ACC_BINS) {
-                if !sync_img[cx * SYNC_IMG_Y_BINS + cy] {
-                    continue;
-                }
-                for q in 0..n_slant_bins {
-                    let theta = deg2rad(MIN_SLANT_DEG + (q as f64) * SLANT_STEP_DEG);
-                    let d_signed = (line_width as f64)
-                        + (-(cx as f64) * theta.sin() + (cy as f64) * theta.cos()).round();
-                    if d_signed > 0.0 && d_signed < (line_width as f64) {
-                        let d = d_signed as usize;
-                        if d < LINES_D_BINS {
-                            let cell = &mut lines[d * n_slant_bins + q];
-                            *cell = cell.saturating_add(1);
-                            if *cell > max_count {
-                                max_count = *cell;
-                                q_most = q;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if max_count == 0 {
+        let Some((slant, adjusted)) = hough_detect_slant(has_sync, rate, spec, line_width) else {
+            // No sync pulses → no Hough peak → no rate correction.
             break;
+        };
+        slant_deg_detected = Some(slant);
+
+        // Apply a deadband at 90° so an exact-rate input is not
+        // perturbed by half-degree Hough quantization noise (see
+        // docs/intentional-deviations.md "FindSync 90° slant deadband").
+        if (slant - 90.0).abs() > SLANT_STEP_DEG {
+            rate = adjusted;
         }
 
-        let slant_angle = MIN_SLANT_DEG + (q_most as f64) * SLANT_STEP_DEG;
-        slant_deg_detected = Some(slant_angle);
-
-        // Apply a deadband at 90° so an exact-rate input is not perturbed
-        // by half-degree Hough quantization noise — without this, a 90.5°
-        // bin lands a 0.0085% rate "correction" that compounds across the
-        // per-line xAcc projection and corrupts the falling-edge find.
-        if (slant_angle - 90.0).abs() > SLANT_STEP_DEG {
-            rate += (deg2rad(90.0 - slant_angle).tan() / (line_width as f64)) * rate;
-        }
-
-        // sync.c:86-90 resets to 44100 on retry exhaustion; we keep our
-        // last estimate (re-anchoring a near-locked input is harmful).
-        //
-        // Open interval (89, 91) — matching slowrx `sync.c:83`:
-        //   `if (slantAngle > 89 && slantAngle < 91)`.
-        // The half-open range syntax `89.0..91.0` would include 89.0° and
-        // exclude 91.0°, widening the lock window by one 0.5°-Hough bin vs
-        // slowrx. Use explicit comparisons for exact parity (round-2 audit
+        // sync.c:86-90 resets to 44100 on retry exhaustion; we keep
+        // our last estimate (see docs/intentional-deviations.md
+        // "FindSync retry-exhaustion"). Open interval (89, 91) matches
+        // slowrx sync.c:83 exactly — half-open `89.0..91.0` would
+        // widen the lock by one 0.5°-Hough bin (round-2 audit
         // Finding 7).
-        if (slant_angle > SLANT_OK_LO_DEG && slant_angle < SLANT_OK_HI_DEG)
-            || retry == MAX_SLANT_RETRIES
-        {
+        if (slant > SLANT_OK_LO_DEG && slant < SLANT_OK_HI_DEG) || retry == MAX_SLANT_RETRIES {
             break;
         }
     }
 
-    // sync.c:96-117 — column-accumulator + falling-edge convolution
-    // + slip-wrap. Extracted into `find_falling_edge` (audit B2);
-    // pure-helper `falling_edge_from_x_acc` carries the A6
-    // off-by-one fix tested separately.
     let xmax = find_falling_edge(has_sync, rate, spec, num_lines);
-
-    // sync.c:120-125 — convert xmax to skip seconds. The Scottie
-    // mid-line correction lives on ModeSpec; see
-    // `ModeSpec::skip_correction_seconds`.
     let s_secs = skip_seconds_for(xmax, spec);
     let skip_samples = (s_secs * rate).round() as i64;
 
@@ -335,6 +262,96 @@ pub(crate) fn find_sync(has_sync: &[bool], initial_rate_hz: f64, spec: ModeSpec)
         skip_samples,
         slant_deg: slant_deg_detected,
     }
+}
+
+/// Build the 2D sync image at `rate_hz`, then linear-Hough-transform
+/// it to find the dominant slant angle. Returns `None` when no sync
+/// pulses register at all (degenerate input). The returned
+/// `adjusted_rate` already has the standard Hough-derived correction
+/// applied (`rate × tan(90° − slant) / line_width × rate`); the
+/// caller applies the 90° deadband before adopting it.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap
+)]
+fn hough_detect_slant(
+    has_sync: &[bool],
+    rate_hz: f64,
+    spec: ModeSpec,
+    line_width: usize,
+) -> Option<(f64 /* slant_deg */, f64 /* adjusted_rate */)> {
+    let n_slant_bins = ((MAX_SLANT_DEG - MIN_SLANT_DEG) / SLANT_STEP_DEG).round() as usize;
+    let num_lines = spec.image_lines as usize;
+
+    // Column-major: x is the outer dim because the Hough vote loop
+    // iterates `for cy { for cx { … } }` and we want sequential x to
+    // share a cache line. Matches slowrx C's `SyncImg[700][630]`
+    // shape (C10 audit).
+    let sync_img_idx = |x: usize, y: usize| x * SYNC_IMG_Y_BINS + y;
+
+    // Row-major: d is the outer dim (the slowrx C `Lines[600][240]`
+    // shape). Vote increments scan q-inner.
+    let lines_idx = |d: usize, q: usize| d * n_slant_bins + q;
+
+    let probe_index = |t: f64| -> usize {
+        let raw = t * rate_hz / (SYNC_PROBE_STRIDE as f64);
+        if raw < 0.0 {
+            0
+        } else {
+            raw as usize
+        }
+    };
+
+    // Draw the 2D sync signal at current rate.
+    let mut sync_img = vec![false; X_ACC_BINS * SYNC_IMG_Y_BINS];
+    for y in 0..num_lines.min(SYNC_IMG_Y_BINS) {
+        for x in 0..line_width.min(X_ACC_BINS) {
+            let t = ((y as f64) + (x as f64) / (line_width as f64)) * spec.line_seconds;
+            let idx = probe_index(t);
+            if idx < has_sync.len() {
+                sync_img[sync_img_idx(x, y)] = has_sync[idx];
+            }
+        }
+    }
+
+    // Linear Hough transform.
+    let mut lines = vec![0u16; LINES_D_BINS * n_slant_bins];
+    let mut q_most = 0_usize;
+    let mut max_count = 0_u16;
+    for cy in 0..num_lines.min(SYNC_IMG_Y_BINS) {
+        for cx in 0..line_width.min(X_ACC_BINS) {
+            if !sync_img[sync_img_idx(cx, cy)] {
+                continue;
+            }
+            for q in 0..n_slant_bins {
+                let theta = deg2rad(MIN_SLANT_DEG + (q as f64) * SLANT_STEP_DEG);
+                let d_signed = (line_width as f64)
+                    + (-(cx as f64) * theta.sin() + (cy as f64) * theta.cos()).round();
+                if d_signed > 0.0 && d_signed < (line_width as f64) {
+                    let d = d_signed as usize;
+                    if d < LINES_D_BINS {
+                        let cell = &mut lines[lines_idx(d, q)];
+                        *cell = cell.saturating_add(1);
+                        if *cell > max_count {
+                            max_count = *cell;
+                            q_most = q;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if max_count == 0 {
+        return None;
+    }
+
+    let slant_angle = MIN_SLANT_DEG + (q_most as f64) * SLANT_STEP_DEG;
+    let adjusted_rate =
+        rate_hz + (deg2rad(90.0 - slant_angle).tan() / (line_width as f64)) * rate_hz;
+    Some((slant_angle, adjusted_rate))
 }
 
 /// Pure 8-tap falling-edge convolution + slip-wrap. Returns `xmax`
