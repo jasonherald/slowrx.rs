@@ -284,12 +284,18 @@ mod tests {
         assert!(max_diff < 0.01, "max_diff={max_diff}");
     }
 
-    /// D1 regression net (#87). Pre-#87 the resampler attenuated by ~6 dB
-    /// because its 64 Hann-windowed sinc taps weren't normalized to unit
-    /// DC gain. At `input_rate == WORKING_SAMPLE_RATE_HZ` the stride is
-    /// exactly 1.0 and every output sample has `frac == 0`, so the
-    /// fractional-delay machinery isn't exercised — the test exposes the
-    /// gain issue cleanly.
+    /// Unit-gain regression guard (#87). The audit (D1) claimed the 64
+    /// Hann-windowed sinc taps weren't normalized to unit DC gain and the
+    /// resampler attenuated by ~6 dB. Empirically false — the
+    /// windowed-sinc form `2·fc · sin(2π·fc·n)/(π·n)` already sums to
+    /// ~1.0 at typical `fc` (the audit appears to have confused the Hann
+    /// *window*'s mean (= 0.5) with the Hann-*windowed-sinc*'s DC gain).
+    /// This test passes on current code and stays as a guard against any
+    /// future change (rate changes, tap-count tweaks, window swaps) that
+    /// breaks unit gain unexpectedly. At
+    /// `input_rate == WORKING_SAMPLE_RATE_HZ` the stride is exactly 1.0
+    /// and every output sample has `frac == 0`, so the fractional-delay
+    /// machinery isn't exercised — gain issues show up cleanly.
     #[test]
     fn exact_rate_preserves_amplitude_and_no_attenuation() {
         let mut r = Resampler::new(WORKING_SAMPLE_RATE_HZ).unwrap();
@@ -297,8 +303,8 @@ mod tests {
         let amplitude = 0.8_f32;
         let in_audio: Vec<f32> = (0..200)
             .map(|i| {
-                let t = (i as f64) / f64::from(WORKING_SAMPLE_RATE_HZ);
-                (amplitude as f64 * (2.0 * PI * 1500.0 * t).sin()) as f32
+                let t = f64::from(i) / f64::from(WORKING_SAMPLE_RATE_HZ);
+                (f64::from(amplitude) * (2.0 * PI * 1500.0 * t).sin()) as f32
             })
             .collect();
         let out = r.process(&in_audio);
@@ -309,10 +315,9 @@ mod tests {
             .iter()
             .fold(0.0_f32, |m, &x| m.max(x.abs()));
         let in_peak = in_audio.iter().fold(0.0_f32, |m, &x| m.max(x.abs()));
-        // Allow ±5 % of input peak. Pre-#87 the resampler attenuated by ~50 %
-        // (the Hann-windowed-sinc taps summed to ~0.5 at every phase),
-        // failing this assertion. Post-#87 (unit-gain normalization) the
-        // ratio should be near 1.0.
+        // Allow ±5 % of input peak. The audit predicted ~50 % attenuation
+        // (taps would sum to ~0.5); empirically the ratio is ~1.0 — the
+        // windowed-sinc taps already have unity DC gain.
         let ratio = out_peak / in_peak;
         assert!(
             (ratio - 1.0).abs() < 0.05,

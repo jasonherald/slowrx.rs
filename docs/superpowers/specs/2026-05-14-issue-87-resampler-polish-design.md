@@ -2,13 +2,13 @@
 
 **Issue:** [#87](https://github.com/jasonherald/slowrx.rs/issues/87) (audit bundle 3 of 12 — IDs D1, D2, D2b, F6)
 **Source of record:** `docs/audits/2026-05-11-deep-code-review-audit.md`
-**Scope:** all-in-one cleanup of `src/resample.rs`. Behavior changes for the gain (D1, removes ~6 dB attenuation) and the polyphase quantization (D2, ≈ −52 dB phase noise on a 2300 Hz tone); doc-only fixes for the cutoff formula and group delay (D2b); off-by-one bug fix in `needed_end` (D2b); five new tests (F6).
+**Scope:** all-in-one cleanup of `src/resample.rs`. Behavior change for the polyphase quantization (D2, ≈ −52 dB phase noise on a 2300 Hz tone); doc-only fixes for the cutoff formula and group delay (D2b); off-by-one bug fix in `needed_end` (D2b); five new tests (F6). D1 turned out to be a phantom finding (verified during T1) — kept as a regression-guarding test; no code change needed.
 
 ## Background
 
 `src/resample.rs` is the input-rate → 11025 Hz working-rate FIR resampler. The audit flagged four issues:
 
-- **D1 — unit-gain miss.** The 64 Hann-windowed sinc taps are accumulated raw; sum-of-taps ≈ 0.5 → resampler attenuates output by ~6 dB. Functionally harmless for SSTV (FM/frequency-based decoding doesn't care; the existing Goertzel-ratio tests in `resample::tests` happen to also not care because they compare bin-to-bin), but surprising for a public `Resampler`.
+- **D1 — unit-gain miss** *(phantom finding, see note below)*. The audit claimed the 64 Hann-windowed sinc taps were accumulated raw with sum-of-taps ≈ 0.5 → ~6 dB attenuation. **Empirically verified false** during T1's TDD-red step: the `exact_rate_preserves_amplitude_and_no_attenuation` test passes on the current code with `output_peak / input_peak ≈ 1.0`. The audit author appears to have confused the Hann *window*'s mean (= 0.5 by definition) with the Hann-*windowed-sinc*'s DC gain (= ~1.0 because the sinc's `2·fc · sin(2π·fc·n)/(2π·fc·n)` form already has unity passband gain). **D1 is therefore docs/test-only**: we keep the amplitude test added by F6 as a regression guard, but no normalization is needed in the polyphase build (the raw windowed-sinc taps already sum to ~1.0).
 - **D2 — "polyphase" misnomer + per-output-sample transcendentals.** Module/struct docs say "polyphase FIR" but `process` recomputes all 64 taps fresh each output sample (64 × `.sin()` for the sinc plus 64 × `.cos()` for the Hann = ~128 transcendentals per output × 11025 outputs/sec ≈ 1.4 M/sec). An inline comment on line 76 even admits "true fractional-delay FIR rather than the quantized integer-delay version" — contradicting "polyphase."
 - **D2b — three doc/logic bugs:**
   - `cutoff_hz` doc says `min(input/2, working/2) × 0.45` (Nyquist form) but the code is `min(input, working) × 0.45 cap 4500` (full-rate form). The code is correct (`0.9 × Nyquist` of the lower rate); the doc is wrong and would imply a cutoff below 2300 Hz, which would break SSTV.
@@ -18,7 +18,7 @@
 
 ## Design
 
-### Part 1 — Polyphase tap bank (D2) + unit-gain normalization (D1)
+### Part 1 — Polyphase tap bank (D2)
 
 **Struct shape:**
 
@@ -34,9 +34,10 @@ pub struct Resampler {
     /// 256-phase polyphase tap bank, indexed by `frac` quantized to 1/256
     /// sub-sample. Built once in `new()` (~64 KB, static for the
     /// resampler's lifetime). Each row is a Hann-windowed sinc at the
-    /// corresponding fractional delay, **normalized to unit DC gain
-    /// (sum-of-taps == 1.0)** so the resampler doesn't attenuate (audit
-    /// D1).
+    /// corresponding fractional delay. Raw taps (no normalization
+    /// pass) — the windowed-sinc form already sums to ~1.0 at typical
+    /// `fc`; verified by the `exact_rate_preserves_amplitude_and_no_attenuation`
+    /// test.
     taps: Box<[[f32; FIR_TAPS]; NUM_PHASES]>,
 }
 ```
@@ -50,21 +51,13 @@ let cutoff_norm = cutoff_hz(input_rate) / f64::from(input_rate);
 let mut taps = Box::new([[0.0_f32; FIR_TAPS]; NUM_PHASES]);
 for phase_idx in 0..NUM_PHASES {
     let frac = (phase_idx as f64) / (NUM_PHASES as f64);
-    // 64-tap Hann-windowed sinc at this fractional delay, in f64.
-    let mut row = [0.0_f64; FIR_TAPS];
     for k in 0..FIR_TAPS {
-        row[k] = raw_tap_f64(k, frac, cutoff_norm);
-    }
-    // D1 — unit DC gain: divide by sum-of-taps.
-    let sum: f64 = row.iter().sum();
-    let inv = if sum.abs() > 1e-12 { 1.0 / sum } else { 1.0 };
-    for k in 0..FIR_TAPS {
-        taps[phase_idx][k] = (row[k] * inv) as f32;
+        taps[phase_idx][k] = fir_tap(k, frac, cutoff_norm);
     }
 }
 ```
 
-Where `raw_tap_f64(k, frac, fc) -> f64` is the existing `fir_tap` body returning `f64` (we sum 64 small values before the `as f32` cast — preserves precision in the normalization). The current module-level `fir_tap` standalone fn moves into the build loop / a private helper; the runtime hot path no longer calls it.
+The existing `fir_tap(tap_index, frac, fc) -> f32` fn stays — it's still the per-tap formula, now called only during construction. The runtime hot path no longer invokes it. No D1 normalization step (the audit's D1 was a phantom finding; raw taps already sum to ~1.0).
 
 **`process()` hot path** becomes:
 
@@ -97,7 +90,7 @@ No transcendentals in the hot path; 64 MACs per output sample. The `center` / `h
 
 **Quantization noise** at 256 phases: max sub-sample position error = 1/512 sample ≈ 177 ns at 11.025 kHz. For a 2300 Hz tone, phase-noise contribution ≈ −52 dB — well below SSTV's noise floor on real radio. No lerp between adjacent phases for the first cut; the F6 amplitude test will catch anything bigger.
 
-**Module-level doc** updates the opening paragraph from "Hand-rolled 64-tap Hann-windowed-sinc polyphase FIR" to **"Hand-rolled 64-tap Hann-windowed-sinc polyphase FIR with 256 phase positions, unit-gain normalized"** — both "polyphase" and "unit gain" are now honestly described.
+**Module-level doc** updates the opening paragraph from "Hand-rolled 64-tap Hann-windowed-sinc polyphase FIR" to **"Hand-rolled 64-tap Hann-windowed-sinc polyphase FIR with 256 phase positions"** — "polyphase" is now honestly described (the per-output-sample tap recomputation is gone).
 
 ### Part 2 — D2b: three doc/logic fixes
 
@@ -142,7 +135,7 @@ fn cutoff_hz(input_rate: u32) -> f64 { /* unchanged */ }
 
 All added to the existing `#[cfg(test)] mod tests` in `src/resample.rs`. The existing tests stay (they exercise Goertzel-ratio properties that the refactor preserves).
 
-1. **`exact_rate_preserves_amplitude_and_no_attenuation`** — the D1 regression net. `Resampler::new(WORKING_SAMPLE_RATE_HZ)` (stride = 1.0, every output sample has `frac = 0`). Feed 200 samples of a 1500 Hz tone at amplitude 0.8 (above the 64-tap kernel ramp-up). Assert output peak amplitude is within ±5 % of input peak. **Pre-#87 this would fail (~50 % attenuation); post-#87 it passes.**
+1. **`exact_rate_preserves_amplitude_and_no_attenuation`** — the D1 regression guard. `Resampler::new(WORKING_SAMPLE_RATE_HZ)` (stride = 1.0, every output sample has `frac = 0`). Feed 200 samples of a 1500 Hz tone at amplitude 0.8 (above the 64-tap kernel ramp-up). Assert output peak amplitude is within ±5 % of input peak. **Passes on current pre-#87 code** (the audit's D1 claim turned out to be wrong — see Background note). Kept as a regression guard so a future tap-formula change can't silently introduce attenuation.
 
 2. **`upsampling_8khz_to_11025`** — `Resampler::new(8000)`. `stride ≈ 0.726` — fractional `frac` varies on every output sample, exercising the polyphase lookup path. Feed 8000 samples of a 1500 Hz tone; assert (a) output length ≈ 11025 ± 64, and (b) Goertzel power at 1500 Hz dominates neighboring bins (signal preserved across the rate change).
 
@@ -158,11 +151,11 @@ All added to the existing `#[cfg(test)] mod tests` in `src/resample.rs`. The exi
 
 ## CHANGELOG entry
 
-> **Resampler polish** — `Resampler` now uses a true 256-phase polyphase tap bank (precomputed in `new()`, ~64 KB) instead of recomputing all 64 Hann-windowed-sinc taps per output sample; eliminates ~1.4 M `sin()`+`cos()` calls/sec from the hot path. Taps are normalized to unit DC gain (audit D1) — `Resampler` no longer attenuates by ~6 dB. Off-by-one in `needed_end` (was `ceil(phase + 64)` causing one extra sample of buffering; now `floor(phase) + 64`) fixed. Group delay documented (`(FIR_TAPS - 1) / 2 = 31.5` input-rate samples). `cutoff_hz` doc corrected (the Nyquist factor was wrong in the doc; the code was right). Five new tests (`exact_rate_preserves_amplitude_and_no_attenuation`, `upsampling_8khz_to_11025`, `max_input_rate_192khz`, `tiny_chunks_emit_nothing_then_catch_up`, `empty_input_returns_empty`). Quantization noise at 256 phases is ≈ −52 dB phase noise on a 2300 Hz tone — well below SSTV's noise floor. (#87; audit D1/D2/D2b/F6.)
+> **Resampler polish** — `Resampler` now uses a true 256-phase polyphase tap bank (precomputed in `new()`, ~64 KB) instead of recomputing all 64 Hann-windowed-sinc taps per output sample; eliminates ~1.4 M `sin()`+`cos()` calls/sec from the hot path. Off-by-one in `needed_end` (was `ceil(phase + 64)` causing one extra sample of buffering; now `floor(phase) + 64`) fixed. Group delay documented (`(FIR_TAPS - 1) / 2 = 31.5` input-rate samples). `cutoff_hz` doc corrected (the Nyquist factor was wrong in the doc; the code was right). Five new tests (`exact_rate_preserves_amplitude_and_no_attenuation`, `upsampling_8khz_to_11025`, `max_input_rate_192khz`, `tiny_chunks_emit_nothing_then_catch_up`, `empty_input_returns_empty`). The audit's D1 ("FIR taps not normalized to unit DC gain → ~6 dB attenuation") turned out to be a phantom finding — verified during T1, taps already sum to ~1.0; the amplitude test stays as a regression guard. Quantization noise at 256 phases is ≈ −52 dB phase noise on a 2300 Hz tone — well below SSTV's noise floor. (#87; audit D2/D2b/F6.)
 
 ## Verification
 
-Full local CI gate. The `cargo test --release` step is the load-bearing one — `tests/roundtrip.rs` decodes one image per mode through the resampler (any drift in polyphase quantization surfaces as a pixel-diff regression), the existing `resample::tests` Goertzel suite still passes (it's preservation-of-power-ratio, unaffected by the unit-gain change), the 5 new F6 tests cover the audit gaps.
+Full local CI gate. The `cargo test --release` step is the load-bearing one — `tests/roundtrip.rs` decodes one image per mode through the resampler (any drift in polyphase quantization surfaces as a pixel-diff regression), the existing `resample::tests` Goertzel suite still passes (it's preservation-of-power-ratio, unaffected by the polyphase quantization), the 5 new F6 tests cover the audit gaps.
 
 - `cargo test --all-features --locked --release`
 - `cargo fmt --all -- --check`

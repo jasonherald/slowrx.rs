@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Polish `src/resample.rs` end-to-end — implement a real 256-phase polyphase tap bank (D2; eliminates ~1.4 M transcendentals/sec from the hot path), normalize taps to unit DC gain (D1; kills the ~6 dB attenuation), fix the `needed_end` off-by-one (D2b), correct the `cutoff_hz` doc and document the group delay (D2b), and add five new tests for previously-uncovered behavior (F6).
+**Goal:** Polish `src/resample.rs` end-to-end — implement a real 256-phase polyphase tap bank (D2; eliminates ~1.4 M transcendentals/sec from the hot path), fix the `needed_end` off-by-one (D2b), correct the `cutoff_hz` doc and document the group delay (D2b), and add five new tests for previously-uncovered behavior (F6). **D1 is a phantom finding** — empirically the existing taps already sum to ~1.0 (verified in T1); the audit confused the Hann *window*'s mean (= 0.5) with the Hann-*windowed-sinc*'s DC gain. T1's amplitude test stays as a regression guard.
 
-**Architecture:** TDD-red first — Task 1 lands the five F6 tests; one of them (`exact_rate_preserves_amplitude_and_no_attenuation`) fails on the current code because the ~6 dB attenuation breaks the ±5 % peak-amplitude assertion. Task 2 implements the polyphase bank + unit-gain normalization + `needed_end` fix, turning that test green and accelerating the hot path. Task 3 lands the remaining D2b doc fixes (`cutoff_hz` doc, struct-level group-delay note, dead-branch comment). Task 4 lands the CHANGELOG and runs the full gate. Each task leaves a working state with the test suite green (modulo the deliberately-failing T1 test until T2 lands).
+**Architecture:** Task 1 lands the five F6 tests — all five pass on current code (including the amplitude test, which acts as a regression guard rather than the TDD-red target the audit predicted). Task 2 implements the polyphase bank + `needed_end` fix, accelerating the hot path (D2 perf win) without changing measurable amplitude behavior. Task 3 lands the remaining D2b doc fixes (`cutoff_hz` doc, struct-level group-delay note, dead-branch comment). Task 4 lands the CHANGELOG and runs the full gate. Each task leaves a working state with the test suite green.
 
 **Tech Stack:** Rust 2021, MSRV 1.85. CI gate: `cargo test --all-features --locked --release`, `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `RUSTDOCFLAGS=-D warnings cargo doc --no-deps --all-features`. No GPG signing.
 
@@ -21,7 +21,7 @@
 | `src/resample.rs` | modify | The entire change. `Resampler` struct gains `taps: Box<[[f32; FIR_TAPS]; NUM_PHASES]>`, drops `cutoff_norm`. `new()` builds the polyphase bank. `process()` hot loop uses the bank (no transcendentals). 5 new tests in the existing `tests` mod. Module-level doc + struct doc + `cutoff_hz` doc updates. |
 | `CHANGELOG.md` | modify | `[Unreleased]` `### Internal` bullet (T4). |
 
-Task order: **T1** (TDD-red — 5 F6 tests, 1 fails) → **T2** (polyphase + unit-gain + `needed_end`; turns the failing test green) → **T3** (remaining D2b doc fixes) → **T4** (CHANGELOG + final gate).
+Task order: **T1** (5 F6 tests, all pass — amplitude test is a regression guard, not TDD-red) → **T2** (polyphase + `needed_end`; D2 perf win) → **T3** (remaining D2b doc fixes) → **T4** (CHANGELOG + final gate).
 
 **Verification after each task** (the rule for this PR):
 
@@ -32,13 +32,13 @@ cargo test --all-features --locked --release
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 ```
 
-(Task 1 is the deliberate exception — its test run is expected to surface exactly one failing test, `exact_rate_preserves_amplitude_and_no_attenuation`, which Task 2 then turns green.)
+All four must pass after every task (including T1 — see T1 Step 2 expectations).
 
 ---
 
-## Task 1: TDD-red — add the five F6 tests
+## Task 1: Add the five F6 tests (regression guards)
 
-Five new `#[test]` fns in the existing `#[cfg(test)] mod tests` in `src/resample.rs`. One (`exact_rate_preserves_amplitude_and_no_attenuation`) will fail on the current code — that's the D1 regression net. The other four (`upsampling_8khz_to_11025`, `max_input_rate_192khz`, `tiny_chunks_emit_nothing_then_catch_up`, `empty_input_returns_empty`) cover paths that aren't tested today and should pass even on the current pre-T2 code.
+Five new `#[test]` fns in the existing `#[cfg(test)] mod tests` in `src/resample.rs`. All five pass on current code. `exact_rate_preserves_amplitude_and_no_attenuation` was originally planned as a TDD-red target for D1, but D1 turned out to be a phantom finding — the test passes on current code because the Hann-windowed-sinc taps already sum to ~1.0 (the audit confused the Hann window's mean with the Hann-windowed-sinc's DC gain). We keep it as a regression guard against any future change that breaks unit gain unexpectedly. The other four (`upsampling_8khz_to_11025`, `max_input_rate_192khz`, `tiny_chunks_emit_nothing_then_catch_up`, `empty_input_returns_empty`) cover paths that aren't tested today.
 
 **Files:**
 - Modify: `src/resample.rs`
@@ -48,12 +48,18 @@ Five new `#[test]` fns in the existing `#[cfg(test)] mod tests` in `src/resample
 Open `src/resample.rs`. Find the existing `#[cfg(test)] mod tests { ... }` block (around line 149 to the end of the file). Add these five `#[test]` fns immediately before the closing `}` of `mod tests`:
 
 ```rust
-    /// D1 regression net (#87). Pre-#87 the resampler attenuated by ~6 dB
-    /// because its 64 Hann-windowed sinc taps weren't normalized to unit
-    /// DC gain. At `input_rate == WORKING_SAMPLE_RATE_HZ` the stride is
-    /// exactly 1.0 and every output sample has `frac == 0`, so the
-    /// fractional-delay machinery isn't exercised — the test exposes the
-    /// gain issue cleanly.
+    /// Unit-gain regression guard (#87). The audit (D1) claimed the 64
+    /// Hann-windowed sinc taps weren't normalized to unit DC gain and the
+    /// resampler attenuated by ~6 dB. Empirically false — the windowed-sinc
+    /// form `2·fc · sin(2π·fc·n)/(π·n)` already sums to ~1.0 at typical
+    /// `fc` (the audit appears to have confused the Hann *window*'s mean
+    /// (= 0.5) with the Hann-*windowed-sinc*'s DC gain). This test passes
+    /// on current code and stays as a guard against any future change
+    /// (rate changes, tap-count tweaks, window swaps) that breaks unit
+    /// gain unexpectedly. At `input_rate == WORKING_SAMPLE_RATE_HZ` the
+    /// stride is exactly 1.0 and every output sample has `frac == 0`, so
+    /// the fractional-delay machinery isn't exercised — gain issues show
+    /// up cleanly.
     #[test]
     fn exact_rate_preserves_amplitude_and_no_attenuation() {
         let mut r = Resampler::new(WORKING_SAMPLE_RATE_HZ).unwrap();
@@ -73,10 +79,9 @@ Open `src/resample.rs`. Find the existing `#[cfg(test)] mod tests { ... }` block
             .iter()
             .fold(0.0_f32, |m, &x| m.max(x.abs()));
         let in_peak = in_audio.iter().fold(0.0_f32, |m, &x| m.max(x.abs()));
-        // Allow ±5 % of input peak. Pre-#87 the resampler attenuated by ~50 %
-        // (the Hann-windowed-sinc taps summed to ~0.5 at every phase),
-        // failing this assertion. Post-#87 (unit-gain normalization) the
-        // ratio should be near 1.0.
+        // Allow ±5 % of input peak. The audit predicted ~50 % attenuation
+        // (taps would sum to ~0.5); empirically the ratio is ~1.0 — the
+        // windowed-sinc taps already have unity DC gain.
         let ratio = out_peak / in_peak;
         assert!(
             (ratio - 1.0).abs() < 0.05,
@@ -198,36 +203,40 @@ Open `src/resample.rs`. Find the existing `#[cfg(test)] mod tests { ... }` block
     }
 ```
 
-- [ ] **Step 2: Run the tests — exactly one should fail**
+- [ ] **Step 2: Run the gate — all five should pass**
 
-Run: `cargo test --all-features --release --lib resample`
+```bash
+cargo fmt --all
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-features --locked --release
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+```
 
-Expected output (the key data point):
-- `test resample::tests::exact_rate_preserves_amplitude_and_no_attenuation ... FAILED`
-- All other resample tests (incl. the four new ones) pass.
+Expected: all five new tests pass. The amplitude test's ratio should be very close to 1.0 (not the ~0.5 the audit predicted).
 
-The failure should show a ratio significantly below 1.0 (around 0.5) — the visible signature of D1's ~6 dB attenuation.
+If `exact_rate_preserves_amplitude_and_no_attenuation` **fails** with a ratio near 0.5, STOP and report — that would mean D1 *is* real on this machine and the plan needs to revert to the original normalization scope.
 
-If `exact_rate_preserves_amplitude_and_no_attenuation` **passes** on the current code, STOP and report: that suggests the D1 issue isn't manifesting the way the audit described, and we need to re-examine before proceeding.
+If any of the **other** four new tests fail, STOP and report — they cover paths/inputs the existing tests don't and they should all pass on current code.
 
-If any of the **other** four new tests fail unexpectedly on the current code, STOP and report — the spec assumed they'd pass pre-#87 since they cover paths/inputs the existing tests don't.
-
-- [ ] **Step 3: Commit (with the deliberately-failing test)**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add src/resample.rs
-git commit -m "test(resample): F6 — five new tests; exact_rate_… fails as D1 regression net (#87)
+git commit -m "test(resample): F6 — five regression-guard tests for resampler (#87)
+
+Includes \`exact_rate_preserves_amplitude_and_no_attenuation\` as a guard
+for unit gain — verifies the audit's D1 claim is phantom (taps already
+sum to ~1.0) and protects against future regressions.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
 
-(This commit deliberately leaves the suite red on `exact_rate_preserves_amplitude_and_no_attenuation` — Task 2's polyphase rewrite + unit-gain normalization turns it green.)
-
 ---
 
-## Task 2: Polyphase tap bank + unit-gain + `needed_end` fix
+## Task 2: Polyphase tap bank + `needed_end` fix
 
-The algorithmic refactor. Replaces the per-sample tap computation with a precomputed 256-phase bank built in `new()` and normalized to unit DC gain. Fixes the `needed_end` off-by-one as part of the hot-path rewrite. Turns the T1 deliberately-failing test green.
+The algorithmic refactor. Replaces the per-sample tap computation with a precomputed 256-phase bank built in `new()`. **No normalization pass** — D1 was a phantom finding; the raw windowed-sinc taps already sum to ~1.0 (verified empirically in T1). Fixes the `needed_end` off-by-one as part of the hot-path rewrite. Test suite stays green throughout (T1's amplitude test continues to pass; quantization noise at 256 phases ≈ −52 dB on a 2300 Hz tone, well below the ±5 % tolerance).
 
 **Files:**
 - Modify: `src/resample.rs`
@@ -265,7 +274,7 @@ Replace with:
 //! Internal rational resampler: caller's audio rate → 11025 Hz working rate.
 //!
 //! Hand-rolled 64-tap Hann-windowed-sinc polyphase FIR with 256 phase
-//! positions, unit-gain normalized. Tap rows are precomputed once in
+//! positions. Tap rows are precomputed once in
 //! [`Resampler::new`] (~64 KB); the hot path in [`Resampler::process`] is
 //! a quantized-phase lookup + 64-tap multiply-accumulate — no
 //! transcendentals per output sample.
@@ -277,23 +286,17 @@ Replace with:
 //! inside `pcm.c`'s 44.1 kHz read loop.
 ```
 
-- [ ] **Step 2: Rename `fir_tap` → `raw_tap_f64` and change return type to `f64`**
+- [ ] **Step 2: Re-purpose `fir_tap` — caller is now `Resampler::new` only**
 
-Find the existing `fn fir_tap(...) -> f32` (around lines 49-63). Apply these edits:
+The existing `fn fir_tap(tap_index: usize, frac: f64, fc: f64) -> f32` (around lines 49-63) is mathematically correct; only its caller site changes (from per-output-sample in `process` to per-(`NUM_PHASES × FIR_TAPS`) in `new`). Leave the body unchanged, but update its doc comment to reflect the new role:
 
-(a) Rename it: `fn fir_tap` → `fn raw_tap_f64`.
-
-(b) Change the return type: `-> f32` → `-> f64`.
-
-(c) Drop the final `as f32` cast on the last line — return the `f64` value directly.
-
-The full result:
+Replace the existing doc comment immediately preceding `fn fir_tap`:
 
 ```rust
-/// Compute one raw FIR tap value (Hann-windowed sinc, not yet normalized
-/// for unit DC gain) for a given tap index and fractional phase, in `f64`.
-/// Called only by [`Resampler::new`] to build the polyphase tap bank;
-/// the runtime hot path never invokes this.
+/// Compute one Hann-windowed sinc FIR tap value for a given tap index
+/// and fractional phase. Called once per `(phase, tap)` pair from
+/// [`Resampler::new`] to populate the polyphase tap bank — never called
+/// from the hot path.
 ///
 /// `tap_index` is in 0..`FIR_TAPS`. `frac` is in [0, 1) — the sub-sample
 /// offset of the output sample's center from the integer input grid.
@@ -302,21 +305,14 @@ The full result:
 /// Sinc shifts with `frac`; Hann window stays anchored to the tap grid.
 /// This is the standard windowed-sinc fractional-delay formulation —
 /// see e.g. Smith, "Digital Audio Resampling Home Page" (CCRMA, 2002).
-#[allow(clippy::cast_precision_loss)]
-fn raw_tap_f64(tap_index: usize, frac: f64, fc: f64) -> f64 {
-    let m = FIR_TAPS as f64;
-    let n = (tap_index as f64) - (m - 1.0) / 2.0 - frac;
-    let sinc = if n.abs() < 1e-12 {
-        2.0 * fc
-    } else {
-        (2.0 * std::f64::consts::PI * fc * n).sin() / (std::f64::consts::PI * n)
-    };
-    let w = 0.5 * (1.0 - (2.0 * std::f64::consts::PI * (tap_index as f64) / (m - 1.0)).cos());
-    sinc * w
-}
+///
+/// The taps already sum to ~1.0 at typical `fc` (the audit's D1 claim of
+/// "~6 dB attenuation" was a phantom finding — see the
+/// `exact_rate_preserves_amplitude_and_no_attenuation` test for the
+/// regression guard).
 ```
 
-(Note: the `#[allow(clippy::cast_possible_truncation)]` that was on `fir_tap` is no longer needed — without the `as f32` there's nothing being truncated.)
+Body stays exactly as it is. No rename, no return-type change.
 
 - [ ] **Step 3: Replace the `Resampler` struct: drop `cutoff_norm`, add `taps`**
 
@@ -352,9 +348,10 @@ pub struct Resampler {
     /// 256-phase polyphase tap bank, indexed by `frac` quantized to
     /// 1/256 sub-sample. Built once in [`Resampler::new`] (~64 KB, static
     /// for the resampler's lifetime). Each row is a Hann-windowed sinc at
-    /// the corresponding fractional delay, normalized to unit DC gain
-    /// (sum-of-taps == 1.0) so the resampler doesn't attenuate (audit
-    /// #87 D1).
+    /// the corresponding fractional delay. Raw taps (no normalization
+    /// pass) — the windowed-sinc form already sums to ~1.0 at typical
+    /// `fc` (the audit's D1 claim of "~6 dB attenuation" was a phantom
+    /// finding, verified by the `exact_rate_…` test in T1).
     taps: Box<[[f32; FIR_TAPS]; NUM_PHASES]>,
 }
 ```
@@ -372,22 +369,18 @@ Find `pub fn new(input_rate: u32) -> Result<Self>` (around lines 70-83). Replace
         }
         let cutoff_norm = cutoff_hz(input_rate) / f64::from(input_rate);
 
-        // Build the polyphase tap bank — 256 rows of 64 taps each, normalized
-        // to unit DC gain per row (audit #87 D1).
+        // Build the 256-phase polyphase tap bank — one 64-tap row per
+        // quantized fractional phase. Computed once here, looked up in
+        // the hot path (no transcendentals per output sample). No
+        // normalization pass: raw Hann-windowed-sinc taps already sum
+        // to ~1.0 at typical `fc` (audit #87 D1 — phantom finding,
+        // verified by `exact_rate_preserves_amplitude_and_no_attenuation`).
         let mut taps: Box<[[f32; FIR_TAPS]; NUM_PHASES]> =
             Box::new([[0.0_f32; FIR_TAPS]; NUM_PHASES]);
         for phase_idx in 0..NUM_PHASES {
             let frac = (phase_idx as f64) / (NUM_PHASES as f64);
-            // Compute the 64 raw Hann-windowed-sinc taps for this frac, in f64
-            // so the sum-normalization preserves precision across 64 small values.
-            let mut row = [0.0_f64; FIR_TAPS];
             for k in 0..FIR_TAPS {
-                row[k] = raw_tap_f64(k, frac, cutoff_norm);
-            }
-            let sum: f64 = row.iter().sum();
-            let inv = if sum.abs() > 1e-12 { 1.0 / sum } else { 1.0 };
-            for k in 0..FIR_TAPS {
-                taps[phase_idx][k] = (row[k] * inv) as f32;
+                taps[phase_idx][k] = fir_tap(k, frac, cutoff_norm);
             }
         }
 
@@ -441,8 +434,8 @@ Replace the entire fn body with:
             let taps = &self.taps[phase_idx];
             let start = self.phase.floor() as isize;
 
-            // Convolve using the precomputed unit-gain taps at this quantized
-            // phase. No transcendentals in the hot path.
+            // Convolve using the precomputed taps at this quantized phase.
+            // No transcendentals in the hot path.
             let mut acc: f32 = 0.0;
             for k in 0..FIR_TAPS {
                 let idx = start + k as isize;
@@ -479,13 +472,20 @@ cargo test --all-features --locked --release
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 ```
 
-All four must pass. The previously-failing `exact_rate_preserves_amplitude_and_no_attenuation` now passes (unit gain restored); the other 142+ tests stay green (including `tests/roundtrip.rs` 11/11 — the polyphase quantization at 256 phases is well below SSTV's noise floor, so the per-mode pixel-diff checks aren't perturbed).
+All four must pass. The amplitude test continues to pass (T1 already established it does on raw taps; the polyphase bank changes nothing about the per-row tap values for `frac == 0`). The full test suite stays green — including `tests/roundtrip.rs` 11/11 — since 256-phase quantization noise is ≈ −52 dB on a 2300 Hz tone, well below SSTV's noise floor.
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add src/resample.rs
-git commit -m "refactor(resample): 256-phase polyphase tap bank + unit-gain normalization + needed_end fix (#87 D1/D2/D2b)
+git commit -m "refactor(resample): 256-phase polyphase tap bank + needed_end fix (#87 D2/D2b)
+
+Precomputes 256 × 64 Hann-windowed-sinc taps once in new() (~64 KB);
+process() hot path is now a quantized-phase lookup + 64-tap MAC, with
+no transcendentals per output sample. ~1.4 M sin()+cos() calls/sec
+removed from the SSTV decode pipeline. needed_end off-by-one folded
+into the rewrite. D1 (unit-gain normalization) was a phantom finding
+— raw taps already sum to ~1.0; see T1's regression-guard test.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
@@ -591,17 +591,21 @@ In `CHANGELOG.md`, under the `## [Unreleased]` header (which already has an `###
 - **Resampler polish** — `Resampler` now uses a true 256-phase polyphase
   tap bank (precomputed in `new()`, ~64 KB) instead of recomputing all 64
   Hann-windowed-sinc taps per output sample; eliminates ~1.4 M `sin()`
-  +`cos()` calls/sec from the hot path. Taps are normalized to unit DC
-  gain (audit D1) — `Resampler` no longer attenuates by ~6 dB. Off-by-one
-  in `needed_end` (was `ceil(phase + 64)` causing one extra sample of
-  buffering; now `floor(phase) + 64`) fixed. Group delay documented
-  (`(FIR_TAPS - 1) / 2 = 31.5` input-rate samples). `cutoff_hz` doc
-  corrected (Nyquist factor was wrong in the doc; the code was right).
-  Five new tests (`exact_rate_preserves_amplitude_and_no_attenuation`,
+  +`cos()` calls/sec from the hot path. Off-by-one in `needed_end` (was
+  `ceil(phase + 64)` causing one extra sample of buffering; now
+  `floor(phase) + 64`) fixed. Group delay documented (`(FIR_TAPS - 1) / 2
+  = 31.5` input-rate samples). `cutoff_hz` doc corrected (Nyquist factor
+  was wrong in the doc; the code was right). Five new tests
+  (`exact_rate_preserves_amplitude_and_no_attenuation`,
   `upsampling_8khz_to_11025`, `max_input_rate_192khz`,
   `tiny_chunks_emit_nothing_then_catch_up`, `empty_input_returns_empty`).
-  Quantization noise at 256 phases is ≈ −52 dB phase noise on a 2300 Hz
-  tone — well below SSTV's noise floor. (#87; audit D1/D2/D2b/F6.)
+  Audit D1 ("~6 dB attenuation from un-normalized taps") was a phantom
+  finding — empirically the raw Hann-windowed-sinc taps already sum to
+  ~1.0 at typical `fc` (the audit appears to have confused the Hann
+  window's mean with the windowed-sinc's DC gain); the amplitude test
+  stays as a regression guard. Quantization noise at 256 phases is ≈ −52
+  dB phase noise on a 2300 Hz tone — well below SSTV's noise floor.
+  (#87; audit D2/D2b/F6, D1 closed-as-phantom.)
 
 - **Extracted `crate::test_tone`** — [existing #86 bullet stays as-is below]
 ```
@@ -632,7 +636,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ## Self-review notes (for the implementer / reviewers)
 
 - **Spec coverage:**
-  - D1 (unit-gain normalization) → T2 Steps 3-5 (struct field + new() build loop with per-row sum-normalization).
+  - D1 (unit-gain normalization) → **phantom finding** — closed via T1's `exact_rate_…` test passing on raw taps (no code change needed; test stays as regression guard). Documented in plan/spec/CHANGELOG.
   - D2 (polyphase bank + transcendentals out of hot path) → T2 Steps 1-6 (NUM_PHASES const + struct field + new() build + process() lookup hot path + module-level doc).
   - D2b cutoff_hz doc → T3 Step 1.
   - D2b group delay → T3 Step 2.
@@ -641,7 +645,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
   - F6 (5 new tests) → T1.
   - CHANGELOG → T4.
 
-- **TDD: T1 deliberately lands the suite red.** The `exact_rate_preserves_amplitude_and_no_attenuation` test fails on pre-#87 code (the ~6 dB attenuation pushes the output-peak/input-peak ratio to ~0.5, failing the ±5 % assertion at ratio ≈ 1.0). T2's unit-gain normalization turns it green. The other four F6 tests are net-new coverage that should pass even on pre-T2 code; if any fail there, STOP and report (the spec assumed they wouldn't).
+- **D1 is a phantom finding.** T1's `exact_rate_preserves_amplitude_and_no_attenuation` test passes on current code with ratio ~1.0, not the ~0.5 the audit predicted. The Hann-windowed-sinc form `2·fc · sin(2π·fc·n)/(π·n)` already has unity passband DC gain — the audit appears to have conflated the Hann window's mean (= 0.5 by definition) with the Hann-*windowed-sinc*'s DC gain. The amplitude test stays as a regression guard (cheap insurance against any future rate-change/tap-count/window swap that breaks unit gain).
 
 - **Quantization noise at 256 phases ≈ −52 dB.** The audit and spec describe this in detail. Empirically the load-bearing check is `tests/roundtrip.rs` 11/11 — every supported mode decodes a synthetic image through the resampler; any quantization-noise issue would show up there as a pixel-diff regression.
 
