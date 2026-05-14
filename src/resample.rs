@@ -36,6 +36,13 @@ const NUM_PHASES: usize = 256;
 
 /// Polyphase FIR resampler. Stateful — holds a tail buffer to avoid
 /// glitches across `process` calls.
+///
+/// **Group delay:** the 64-tap symmetric FIR has linear-phase group delay
+/// of `(FIR_TAPS - 1) / 2 = 31.5` input-rate samples (≈ 715 µs at 44.1 kHz,
+/// ≈ 2.86 ms at 11.025 kHz). Output is shifted right by this amount
+/// relative to input. SSTV's `find_sync` re-anchors the rate against sync
+/// pulses, so this is invisible inside the decoder pipeline; standalone
+/// consumers should compensate if they need sample-accurate alignment.
 pub struct Resampler {
     input_rate: u32,
     /// `input_rate / WORKING_SAMPLE_RATE_HZ`, expressed as a stride.
@@ -55,7 +62,10 @@ pub struct Resampler {
 }
 
 /// Cutoff frequency (Hz) for the resampler, derived from the input rate.
-/// Min of (`input_rate/2`, `working_rate/2`) × 0.45, hard-capped at 4500 Hz.
+/// `min(input_rate, WORKING_SAMPLE_RATE_HZ) × 0.45`, hard-capped at 4500 Hz —
+/// i.e. ~0.9 × Nyquist of the lower of the two rates. The cap keeps the
+/// passband from extending past SSTV's 2300 Hz video band at typical input
+/// rates (44.1k → 4961 Hz uncapped → 4500 capped).
 fn cutoff_hz(input_rate: u32) -> f64 {
     (f64::from(input_rate.min(WORKING_SAMPLE_RATE_HZ)) * 0.45).min(4500.0)
 }
