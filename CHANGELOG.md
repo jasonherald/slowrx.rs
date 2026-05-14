@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- **Extracted `crate::test_tone`** — the continuous-phase FM tone generator
+  (`SYNC_HZ` / `PORCH_HZ` / `SEPTR_HZ` / `BLACK_HZ` / `WHITE_HZ` consts,
+  `lum_to_freq`, the `ToneWriter` struct with cumulative-target `fill_to` and
+  per-tone-duration `fill_secs` methods) — shared by `pd_test_encoder` /
+  `robot_test_encoder` / `scottie_test_encoder` / `vis::tests` (four prior
+  copies; audit B9). Tightened the three test-encoder modules to `pub(crate)
+  mod` so `slowrx::pd_test_encoder::*` / `robot_test_encoder::*` /
+  `scottie_test_encoder::*` are no longer reachable externally; `__test_support`
+  switched from `pub use` re-exports to thin `pub fn` wrappers (the sole
+  consumer-facing path for the synthetic encoders — audit B10). Plus the
+  scottie double-doc-comment fix (E2), pointed smoke tests for `encode_pd` /
+  `encode_robot` (F11), and `unreachable!`/`assert!` cleanup in
+  `robot_test_encoder` (C17). Pure refactor: identical behavior; the
+  `slowrx::__test_support::mode_*::encode_*` paths are stable for existing
+  consumers (`tests/roundtrip.rs` unchanged). (#86; audit B9/B10/E2/F11/C17.)
+
 - **Extracted `crate::demod` and `crate::dsp` from `mode_pd.rs` / `snr.rs` /
   `vis.rs`.** `crate::demod` now owns the per-channel demod machinery
   (`ChannelDemod` — renamed from `PdDemod`, `decode_one_channel_into`,
