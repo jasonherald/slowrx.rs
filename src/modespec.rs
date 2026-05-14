@@ -146,7 +146,7 @@ impl ModeSpec {
 
 /// Look up the [`ModeSpec`] for a given 7-bit VIS code. Returns `None`
 /// if the code is reserved, undefined, or maps to a mode not yet
-/// implemented in this release.
+/// implemented in this release. Derived from `ALL_SPECS`.
 ///
 /// VIS codes are taken from Dave Jones (KB4YZ), 1998: "List of SSTV
 /// Modes with VIS Codes".
@@ -162,20 +162,7 @@ impl ModeSpec {
 /// `UnknownVis` event). An unknown code is never an `Error`.
 #[must_use]
 pub fn lookup(vis_code: u8) -> Option<ModeSpec> {
-    match vis_code {
-        0x04 => Some(ROBOT24),
-        0x08 => Some(ROBOT36),
-        0x0C => Some(ROBOT72),
-        0x28 => Some(MARTIN2),
-        0x2C => Some(MARTIN1),
-        0x38 => Some(SCOTTIE2),
-        0x3C => Some(SCOTTIE1),
-        0x4C => Some(SCOTTIE_DX),
-        0x5F => Some(PD120),
-        0x60 => Some(PD180),
-        0x61 => Some(PD240),
-        _ => None,
-    }
+    ALL_SPECS.iter().find(|s| s.vis_code == vis_code).copied()
 }
 
 /// Look up the [`ModeSpec`] for a known [`SstvMode`].
@@ -407,6 +394,19 @@ const MARTIN2: ModeSpec = ModeSpec {
     channel_layout: ChannelLayout::RgbSequential,
     sync_position: SyncPosition::LineStart,
 };
+
+/// All implemented mode specs. Single source of truth — [`lookup`] is
+/// derived from this; [`for_mode`] keeps its exhaustive match so
+/// adding a `SstvMode` variant without a `const ModeSpec` (and a
+/// matching arm in `for_mode`) is a compile error, by design.
+///
+/// The F8 round-trip test (`all_specs_roundtrip`) verifies every
+/// entry's `(mode, vis_code, short_name, name)` quadruple is unique
+/// and that `lookup` and `for_mode` agree with the table.
+pub(crate) const ALL_SPECS: [ModeSpec; 11] = [
+    PD120, PD180, PD240, ROBOT24, ROBOT36, ROBOT72, SCOTTIE1, SCOTTIE2, SCOTTIE_DX, MARTIN1,
+    MARTIN2,
+];
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::float_cmp)]
@@ -674,6 +674,63 @@ mod tests {
                 spec.skip_correction_seconds() < 0.0,
                 "{mode:?} Scottie correction should be negative"
             );
+        }
+    }
+
+    /// F8 (#91). Every entry in `ALL_SPECS` round-trips cleanly
+    /// through `lookup` (VIS code → spec) and `for_mode` (mode →
+    /// spec); the table has exactly 11 unique modes, 11 unique VIS
+    /// codes, 11 unique `short_names`; every `name` and `short_name`
+    /// is non-empty.
+    ///
+    /// Subsumes the per-mode `vis_code_resolves` tests as a
+    /// structural invariant. The individual per-mode tests stay as
+    /// fast-failing regression guards with descriptive names.
+    #[test]
+    fn all_specs_roundtrip() {
+        use std::collections::HashSet;
+
+        let modes: HashSet<_> = ALL_SPECS.iter().map(|s| s.mode).collect();
+        assert_eq!(
+            modes.len(),
+            ALL_SPECS.len(),
+            "ALL_SPECS has duplicate modes"
+        );
+
+        let vis: HashSet<_> = ALL_SPECS.iter().map(|s| s.vis_code).collect();
+        assert_eq!(
+            vis.len(),
+            ALL_SPECS.len(),
+            "ALL_SPECS has duplicate VIS codes"
+        );
+
+        let short_names: HashSet<_> = ALL_SPECS.iter().map(|s| s.short_name).collect();
+        assert_eq!(
+            short_names.len(),
+            ALL_SPECS.len(),
+            "ALL_SPECS has duplicate short_names"
+        );
+
+        for spec in ALL_SPECS.iter().copied() {
+            assert_eq!(
+                lookup(spec.vis_code),
+                Some(spec),
+                "lookup({:#04x}) did not return ALL_SPECS entry for {:?}",
+                spec.vis_code,
+                spec.mode
+            );
+            assert_eq!(
+                for_mode(spec.mode),
+                spec,
+                "for_mode({:?}) did not match ALL_SPECS entry",
+                spec.mode
+            );
+            assert!(
+                !spec.short_name.is_empty(),
+                "{:?}: short_name empty",
+                spec.mode
+            );
+            assert!(!spec.name.is_empty(), "{:?}: name empty", spec.mode);
         }
     }
 }
