@@ -54,9 +54,10 @@ pub(crate) fn encode_robot(mode: SstvMode, ycrcb: &[[u8; 3]]) -> Vec<f32> {
         SstvMode::Robot24 | SstvMode::Robot36 => {
             encode_r36_or_r24(&mut tone, &mut t, advance, &spec, ycrcb);
         }
-        // SstvMode is `#[non_exhaustive]` so the wildcard arm is structurally
-        // required even though the three Robot variants above are the only
-        // mode values this fn is meant to handle. (audit C17)
+        // `SstvMode` has variants beyond the three Robot ones (PD, Scottie,
+        // Martin) so the wildcard arm is structurally required by the
+        // exhaustiveness check — `encode_robot` is only meant to handle the
+        // three Robot variants matched above. (audit C17)
         _ => unreachable!("encode_robot called with non-Robot mode {mode:?}"),
     }
 

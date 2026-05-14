@@ -157,13 +157,11 @@ pub(crate) fn encode_scottie(mode: SstvMode, rgb: &[[u8; 3]]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_tone::{BLACK_HZ, WHITE_HZ};
 
-    #[test]
-    fn lum_to_freq_endpoints() {
-        assert!((lum_to_freq(0) - BLACK_HZ).abs() < 1e-9);
-        assert!((lum_to_freq(255) - WHITE_HZ).abs() < 1e-9);
-    }
+    // Note: `lum_to_freq` endpoint coverage lives in
+    // `crate::test_tone::tests::lum_to_freq_endpoints_match_black_and_white`
+    // (its canonical home post-#86). Testing it from a consumer is
+    // misleading about ownership.
 
     #[test]
     fn scottie1_encode_total_length() {
