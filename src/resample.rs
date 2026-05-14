@@ -25,13 +25,17 @@ pub const MAX_INPUT_SAMPLE_RATE_HZ: u32 = 192_000;
 /// 64 is the sweet spot at our quality target.
 const FIR_TAPS: usize = 64;
 
-/// Number of polyphase positions. Each fractional output sample's `frac`
-/// is quantized to one of `NUM_PHASES` precomputed tap rows. 256 gives a
-/// max sub-sample position error of `1 / (2·NUM_PHASES) = 1/512` sample,
-/// which at our 11025 Hz output rate corresponds to ≈ 177 ns time error
-/// — phase noise on a 2300 Hz tone (SSTV's highest video frequency) of
-/// `≈ −52 dB`, well below the audible threshold and SSTV's noise floor.
-/// Memory cost: `NUM_PHASES × FIR_TAPS × 4 B` = 64 KB per `Resampler`.
+/// Number of polyphase positions. Each fractional output sample's
+/// `frac` is quantized to one of `NUM_PHASES` precomputed tap rows via
+/// round-to-nearest with a clamp at the top edge (so the bucket for
+/// `frac` very close to 1.0 is one-sided rather than wrapping). 256
+/// gives a max sub-sample position error of `1 / (2·NUM_PHASES) = 1/512`
+/// sample across the interior, rising to `1/NUM_PHASES = 1/256` at the
+/// top bucket (`frac > (NUM_PHASES − 0.5)/NUM_PHASES`); at 11025 Hz this
+/// is ≈ 177 ns typical / 354 ns worst-case time error. RMS phase noise
+/// on a 2300 Hz tone (SSTV's highest video frequency) is ≈ −52 dB, well
+/// below the audible threshold and SSTV's noise floor. Memory cost:
+/// `NUM_PHASES × FIR_TAPS × 4 B` = 64 KB per `Resampler`.
 const NUM_PHASES: usize = 256;
 
 /// Polyphase FIR resampler. Stateful — holds a tail buffer to avoid

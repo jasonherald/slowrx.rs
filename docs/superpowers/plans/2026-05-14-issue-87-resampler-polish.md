@@ -430,7 +430,7 @@ Replace the entire fn body with:
                 break;
             }
             let frac = self.phase.fract();
-            let phase_idx = ((frac * NUM_PHASES as f64) as usize).min(NUM_PHASES - 1);
+            let phase_idx = ((frac * NUM_PHASES as f64).round() as usize).min(NUM_PHASES - 1);
             let taps = &self.taps[phase_idx];
             let start = self.phase.floor() as isize;
 
