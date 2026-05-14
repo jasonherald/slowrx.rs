@@ -33,7 +33,7 @@
 **Task order:** T1 → T2 → T3 → T4 → T5. Each task leaves a working state (crate compiles, full `cargo test --release` passes).
 
 **Verification after every commit** (the rule for this PR — wide blast radius):
-```
+```bash
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features --locked --release
@@ -232,7 +232,7 @@ Then locate the inline `pub(crate) fn get_bin(...)` definition (with its big bin
 Run: `grep -rn "crate::get_bin\b" src/`
 Expected hits (update each to `crate::dsp::get_bin`):
 
-```
+```text
 src/mode_pd.rs
 src/vis.rs
 src/snr.rs
@@ -878,7 +878,7 @@ In `src/mode_scottie.rs::decode_line` (around lines 110-135):
 - [ ] **Step 7: Sanity grep**
 
 Run:
-```
+```bash
 grep -rn "chan_bounds_abs\|time_offset_seconds\|crate::mode_pd::decode_one_channel_into\|crate::mode_pd::PdDemod\|crate::mode_pd::ycbcr_to_rgb\|crate::mode_pd::FFT_LEN\|crate::mode_pd::pixel_freq\|crate::mode_pd::freq_to_luminance\|crate::snr::HannBank\|crate::snr::HANN_LENS\|crate::snr::window_idx_for_snr\|fn build_hann_window\|fn build_sync_hann\b" src/ tests/ examples/
 ```
 
@@ -945,7 +945,7 @@ If either doc is missing, sparse, or stale (e.g. mentions `todo!()`-placeholder 
 - [ ] **Step 3: Final sanity grep (post-T4 cleanup verification)**
 
 Run:
-```
+```bash
 grep -rn "PdDemod\|mode_pd::ycbcr_to_rgb\|mode_pd::FFT_LEN\|mode_pd::decode_one_channel_into\|mode_pd::pixel_freq\|mode_pd::freq_to_luminance\|crate::snr::HannBank\|crate::snr::HANN_LENS\|crate::snr::window_idx_for_snr\|chan_bounds_abs\|time_offset_seconds\|fn build_hann_window\|fn goertzel_power\b" src/ tests/ examples/
 ```
 

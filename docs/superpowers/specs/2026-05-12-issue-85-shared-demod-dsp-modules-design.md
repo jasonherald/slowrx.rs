@@ -208,7 +208,7 @@ where the caller's local name reads better, the rename is just at the callee.
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `RUSTDOCFLAGS=-D warnings cargo doc --no-deps --all-features`
 - Sanity grep — after the refactor, this should print **nothing**:
-  ```
+  ```bash
   grep -rn "PdDemod\|mode_pd::ycbcr_to_rgb\|mode_pd::FFT_LEN\|mode_pd::decode_one_channel_into\|mode_pd::pixel_freq\|mode_pd::freq_to_luminance\|crate::snr::HannBank\|crate::snr::HANN_LENS\|crate::snr::window_idx_for_snr_with_hysteresis\|chan_bounds_abs\|time_offset_seconds\|fn build_hann_window\|fn goertzel_power" src/ tests/ examples/
   ```
 
