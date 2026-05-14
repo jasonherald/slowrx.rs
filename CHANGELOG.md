@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Internal
+
+- **Extracted `crate::demod` and `crate::dsp` from `mode_pd.rs` / `snr.rs` /
+  `vis.rs`.** `crate::demod` now owns the per-channel demod machinery
+  (`ChannelDemod` — renamed from `PdDemod`, `decode_one_channel_into`,
+  `pixel_freq`, `freq_to_luminance`, `ycbcr_to_rgb` [`#[doc(hidden)]`],
+  `FFT_LEN`, `SNR_REESTIMATE_STRIDE`, `HannBank`, `HANN_LENS`,
+  `window_idx_for_snr{_with_hysteresis}`); `crate::dsp` consolidates the
+  generic Hann-window builder (4 prior copies), `power(Complex<f32>)→f64`,
+  `get_bin`, and `goertzel_power`. `decode_one_channel_into`'s 11-arg
+  signature collapses to 5 via new `ChannelDecodeCtx`/`DemodState` structs;
+  the dead `chan_bounds_abs` parameter (and the three caller
+  `array::from_fn` blocks that fed it) is gone; `time_offset_seconds`
+  renamed to `radio_frame_offset_seconds`. Pure refactor: identical
+  behavior, no public-API change. (#85; audit B1/B3/B5/B8/B16/C6/C20.)
+
 ## [0.5.2] - 2026-05-11
 
 The first two items off the post-V2.4 code-review audit backlog (epic #97):

@@ -100,11 +100,11 @@ impl SyncTracker {
         let fft = planner.plan_fft_forward(SYNC_FFT_LEN);
         let scratch_len = fft.get_inplace_scratch_len();
 
-        // Use slowrx-equivalent truncation via `crate::get_bin` (not `.round()`).
-        // See `crate::get_bin` for rationale.  sync_target_bin for 1200 Hz
+        // Use slowrx-equivalent truncation via `crate::dsp::get_bin` (not `.round()`).
+        // See `crate::dsp::get_bin` for rationale.  sync_target_bin for 1200 Hz
         // is 27 (slowrx-correct) not 28 (what `.round()` would give).
         let bin_for =
-            |hz: f64| -> usize { crate::get_bin(hz, SYNC_FFT_LEN, WORKING_SAMPLE_RATE_HZ) };
+            |hz: f64| -> usize { crate::dsp::get_bin(hz, SYNC_FFT_LEN, WORKING_SAMPLE_RATE_HZ) };
 
         Self {
             fft,
@@ -143,19 +143,13 @@ impl SyncTracker {
         self.fft
             .process_with_scratch(&mut self.fft_buf, &mut self.scratch[..]);
 
-        let power = |c: Complex<f32>| -> f64 {
-            let r = f64::from(c.re);
-            let i = f64::from(c.im);
-            r * r + i * i
-        };
-
         // Praw = average power per bin across video band (video.c:282-288).
         let mut p_raw = 0.0_f64;
         let lo = self.video_lo_bin.max(1);
         let hi = self.video_hi_bin.min(SYNC_FFT_LEN / 2 - 1);
         if hi >= lo {
             for k in lo..=hi {
-                p_raw += power(self.fft_buf[k]);
+                p_raw += crate::dsp::power(self.fft_buf[k]);
             }
             p_raw /= (hi - lo).max(1) as f64;
         }
@@ -167,7 +161,7 @@ impl SyncTracker {
         for offset in -1_i32..=1 {
             let k = (bin as i32 + offset) as usize;
             let weight = 1.0 - 0.5 * f64::from(offset.abs());
-            p_sync += power(self.fft_buf[k]) * weight;
+            p_sync += crate::dsp::power(self.fft_buf[k]) * weight;
         }
         p_sync /= 2.0;
 
@@ -177,14 +171,8 @@ impl SyncTracker {
 }
 
 /// Build the Hann window used per sync probe.
-#[allow(clippy::cast_precision_loss)]
 fn build_sync_hann() -> Vec<f32> {
-    (0..SYNC_FFT_WINDOW_SAMPLES)
-        .map(|i| {
-            let m = (SYNC_FFT_WINDOW_SAMPLES - 1) as f32;
-            0.5 * (1.0 - (2.0 * std::f32::consts::PI * (i as f32) / m).cos())
-        })
-        .collect()
+    crate::dsp::build_hann(SYNC_FFT_WINDOW_SAMPLES)
 }
 
 /// Result of [`find_sync`]: slant-corrected rate + line-zero `Skip`.
