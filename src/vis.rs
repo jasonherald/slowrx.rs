@@ -509,18 +509,9 @@ pub mod tests {
     pub fn synth_vis_with_offset(code: u8, pre_silence_secs: f64, freq_offset_hz: f64) -> Vec<f32> {
         assert!(code < 0x80, "VIS codes are 7 bits");
         let sr = f64::from(WORKING_SAMPLE_RATE_HZ);
-        let mut out: Vec<f32> = vec![0.0; (pre_silence_secs * sr).round() as usize];
-        let mut phase = 0.0_f64;
-        let mut emit = |freq: f64, secs: f64, out: &mut Vec<f32>| {
-            let dphi = 2.0 * PI * freq / sr;
-            for _ in 0..(secs * sr).round() as usize {
-                out.push(phase.sin() as f32);
-                phase += dphi;
-                if phase > 2.0 * PI {
-                    phase -= 2.0 * PI;
-                }
-            }
-        };
+        let mut tone = crate::test_tone::ToneWriter::with_pre_silence_samples(
+            (pre_silence_secs * sr).round() as usize,
+        );
         let leader = LEADER_HZ + freq_offset_hz;
         let break_f = leader + BREAK_HZ_OFFSET;
         let bit_freq = |bit: u8| -> f64 {
@@ -531,13 +522,13 @@ pub mod tests {
                     BIT_ZERO_OFFSET
                 }
         };
-        emit(leader, 0.300, &mut out);
-        emit(break_f, 0.030, &mut out);
+        tone.fill_secs(leader, 0.300);
+        tone.fill_secs(break_f, 0.030);
         let mut parity = 0u8;
         for b in 0..7 {
             let bit = (code >> b) & 1;
             parity ^= bit;
-            emit(bit_freq(bit), 0.030, &mut out);
+            tone.fill_secs(bit_freq(bit), 0.030);
         }
         // R12BW (`R12BW_VIS_CODE`) inverts the parity bit per slowrx `vis.c:116`.
         // The detector's `match_vis_pattern` does the same inversion when
@@ -548,9 +539,9 @@ pub mod tests {
         } else {
             parity
         };
-        emit(bit_freq(parity_bit), 0.030, &mut out);
-        emit(break_f, 0.030, &mut out);
-        out
+        tone.fill_secs(bit_freq(parity_bit), 0.030);
+        tone.fill_secs(break_f, 0.030);
+        tone.into_vec()
     }
 
     /// Convenience wrapper: zero-offset VIS burst.
@@ -666,19 +657,7 @@ pub mod tests {
         // Hand-emit a 0x06 burst with the standard (uninverted) parity
         // bit. The detector should now reject it (post-fix), proving the
         // inversion is doing real work and not a no-op.
-        let sr = f64::from(WORKING_SAMPLE_RATE_HZ);
-        let mut out: Vec<f32> = vec![0.0; 0];
-        let mut phase = 0.0_f64;
-        let mut emit = |freq: f64, secs: f64, out: &mut Vec<f32>| {
-            let dphi = 2.0 * PI * freq / sr;
-            for _ in 0..(secs * sr).round() as usize {
-                out.push(phase.sin() as f32);
-                phase += dphi;
-                if phase > 2.0 * PI {
-                    phase -= 2.0 * PI;
-                }
-            }
-        };
+        let mut tone = crate::test_tone::ToneWriter::new();
         let break_f = LEADER_HZ + BREAK_HZ_OFFSET;
         let bit_freq = |bit: u8| {
             LEADER_HZ
@@ -688,17 +667,18 @@ pub mod tests {
                     BIT_ZERO_OFFSET
                 }
         };
-        emit(LEADER_HZ, 0.300, &mut out);
-        emit(break_f, 0.030, &mut out);
+        tone.fill_secs(LEADER_HZ, 0.300);
+        tone.fill_secs(break_f, 0.030);
         let mut parity = 0u8;
         for b in 0..7 {
             let bit = (R12BW_VIS_CODE >> b) & 1;
             parity ^= bit;
-            emit(bit_freq(bit), 0.030, &mut out);
+            tone.fill_secs(bit_freq(bit), 0.030);
         }
         // Standard (non-R12BW-inverted) parity. Detector should reject.
-        emit(bit_freq(parity), 0.030, &mut out);
-        emit(break_f, 0.030, &mut out);
+        tone.fill_secs(bit_freq(parity), 0.030);
+        tone.fill_secs(break_f, 0.030);
+        let mut out = tone.into_vec();
         out.extend(std::iter::repeat_n(0.0_f32, 256));
         assert!(
             run(&out).is_none(),
