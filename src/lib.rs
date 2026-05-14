@@ -54,6 +54,9 @@ pub(crate) mod sync;
 pub mod vis;
 
 #[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_tone;
+
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod pd_test_encoder;
 

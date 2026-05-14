@@ -30,31 +30,7 @@
 
 use crate::modespec::SstvMode;
 use crate::resample::WORKING_SAMPLE_RATE_HZ;
-use std::f64::consts::PI;
-
-const SYNC_HZ: f64 = 1200.0;
-const PORCH_HZ: f64 = 1500.0;
-const SEPTR_HZ: f64 = 1500.0;
-const BLACK_HZ: f64 = 1500.0;
-const WHITE_HZ: f64 = 2300.0;
-
-fn lum_to_freq(lum: u8) -> f64 {
-    BLACK_HZ + (WHITE_HZ - BLACK_HZ) * f64::from(lum) / 255.0
-}
-
-/// Emit samples up to absolute sample index `target_n`, advancing phase.
-/// Cumulative-target pattern (matches `robot_test_encoder::fill_to`) so
-/// per-tone rounding doesn't compound across the line.
-fn fill_to(out: &mut Vec<f32>, freq_hz: f64, target_n: usize, phase: &mut f64) {
-    let dphi = 2.0 * PI * freq_hz / f64::from(WORKING_SAMPLE_RATE_HZ);
-    while out.len() < target_n {
-        out.push(phase.sin() as f32);
-        *phase += dphi;
-        if *phase > 2.0 * PI {
-            *phase -= 2.0 * PI;
-        }
-    }
-}
+use crate::test_tone::{lum_to_freq, ToneWriter, PORCH_HZ, SEPTR_HZ, SYNC_HZ};
 
 /// Encode an image as Scottie 1 / 2 / DX audio. `rgb` is row-major,
 /// `line_pixels × image_lines` `[R, G, B]` triples (320×256 for all
@@ -99,8 +75,7 @@ pub fn encode_scottie(mode: SstvMode, rgb: &[[u8; 3]]) -> Vec<f32> {
     assert_eq!(rgb.len() as u32, w * h);
 
     let sr = f64::from(WORKING_SAMPLE_RATE_HZ);
-    let mut out: Vec<f32> = Vec::new();
-    let mut phase = 0.0_f64;
+    let mut tone = ToneWriter::new();
 
     let mut t = 0.0_f64;
     let advance = |t: &mut f64, secs: f64| -> usize {
@@ -112,68 +87,33 @@ pub fn encode_scottie(mode: SstvMode, rgb: &[[u8; 3]]) -> Vec<f32> {
         match spec.sync_position {
             crate::modespec::SyncPosition::Scottie => {
                 // Septr 1.
-                fill_to(
-                    &mut out,
-                    SEPTR_HZ,
-                    advance(&mut t, spec.septr_seconds),
-                    &mut phase,
-                );
+                tone.fill_to(SEPTR_HZ, advance(&mut t, spec.septr_seconds));
 
                 // G channel.
                 for x in 0..w {
                     let g = rgb[(y * w + x) as usize][1];
-                    fill_to(
-                        &mut out,
-                        lum_to_freq(g),
-                        advance(&mut t, spec.pixel_seconds),
-                        &mut phase,
-                    );
+                    tone.fill_to(lum_to_freq(g), advance(&mut t, spec.pixel_seconds));
                 }
 
                 // Septr 2.
-                fill_to(
-                    &mut out,
-                    SEPTR_HZ,
-                    advance(&mut t, spec.septr_seconds),
-                    &mut phase,
-                );
+                tone.fill_to(SEPTR_HZ, advance(&mut t, spec.septr_seconds));
 
                 // B channel.
                 for x in 0..w {
                     let b = rgb[(y * w + x) as usize][2];
-                    fill_to(
-                        &mut out,
-                        lum_to_freq(b),
-                        advance(&mut t, spec.pixel_seconds),
-                        &mut phase,
-                    );
+                    tone.fill_to(lum_to_freq(b), advance(&mut t, spec.pixel_seconds));
                 }
 
                 // Sync (mid-line, between B and R).
-                fill_to(
-                    &mut out,
-                    SYNC_HZ,
-                    advance(&mut t, spec.sync_seconds),
-                    &mut phase,
-                );
+                tone.fill_to(SYNC_HZ, advance(&mut t, spec.sync_seconds));
 
                 // Porch.
-                fill_to(
-                    &mut out,
-                    PORCH_HZ,
-                    advance(&mut t, spec.porch_seconds),
-                    &mut phase,
-                );
+                tone.fill_to(PORCH_HZ, advance(&mut t, spec.porch_seconds));
 
                 // R channel.
                 for x in 0..w {
                     let r = rgb[(y * w + x) as usize][0];
-                    fill_to(
-                        &mut out,
-                        lum_to_freq(r),
-                        advance(&mut t, spec.pixel_seconds),
-                        &mut phase,
-                    );
+                    tone.fill_to(lum_to_freq(r), advance(&mut t, spec.pixel_seconds));
                 }
             }
             crate::modespec::SyncPosition::LineStart => {
@@ -181,68 +121,33 @@ pub fn encode_scottie(mode: SstvMode, rgb: &[[u8; 3]]) -> Vec<f32> {
                 // G/septr/B/septr/R.
 
                 // Sync.
-                fill_to(
-                    &mut out,
-                    SYNC_HZ,
-                    advance(&mut t, spec.sync_seconds),
-                    &mut phase,
-                );
+                tone.fill_to(SYNC_HZ, advance(&mut t, spec.sync_seconds));
 
                 // Porch.
-                fill_to(
-                    &mut out,
-                    PORCH_HZ,
-                    advance(&mut t, spec.porch_seconds),
-                    &mut phase,
-                );
+                tone.fill_to(PORCH_HZ, advance(&mut t, spec.porch_seconds));
 
                 // G channel.
                 for x in 0..w {
                     let g = rgb[(y * w + x) as usize][1];
-                    fill_to(
-                        &mut out,
-                        lum_to_freq(g),
-                        advance(&mut t, spec.pixel_seconds),
-                        &mut phase,
-                    );
+                    tone.fill_to(lum_to_freq(g), advance(&mut t, spec.pixel_seconds));
                 }
 
                 // Septr 1.
-                fill_to(
-                    &mut out,
-                    SEPTR_HZ,
-                    advance(&mut t, spec.septr_seconds),
-                    &mut phase,
-                );
+                tone.fill_to(SEPTR_HZ, advance(&mut t, spec.septr_seconds));
 
                 // B channel.
                 for x in 0..w {
                     let b = rgb[(y * w + x) as usize][2];
-                    fill_to(
-                        &mut out,
-                        lum_to_freq(b),
-                        advance(&mut t, spec.pixel_seconds),
-                        &mut phase,
-                    );
+                    tone.fill_to(lum_to_freq(b), advance(&mut t, spec.pixel_seconds));
                 }
 
                 // Septr 2.
-                fill_to(
-                    &mut out,
-                    SEPTR_HZ,
-                    advance(&mut t, spec.septr_seconds),
-                    &mut phase,
-                );
+                tone.fill_to(SEPTR_HZ, advance(&mut t, spec.septr_seconds));
 
                 // R channel.
                 for x in 0..w {
                     let r = rgb[(y * w + x) as usize][0];
-                    fill_to(
-                        &mut out,
-                        lum_to_freq(r),
-                        advance(&mut t, spec.pixel_seconds),
-                        &mut phase,
-                    );
+                    tone.fill_to(lum_to_freq(r), advance(&mut t, spec.pixel_seconds));
                 }
             }
         }
@@ -252,16 +157,17 @@ pub fn encode_scottie(mode: SstvMode, rgb: &[[u8; 3]]) -> Vec<f32> {
         let line_end_target = f64::from(y + 1) * spec.line_seconds;
         let pad_secs = line_end_target - t;
         if pad_secs > 0.0 {
-            fill_to(&mut out, PORCH_HZ, advance(&mut t, pad_secs), &mut phase);
+            tone.fill_to(PORCH_HZ, advance(&mut t, pad_secs));
         }
     }
 
-    out
+    tone.into_vec()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_tone::{BLACK_HZ, WHITE_HZ};
 
     #[test]
     fn lum_to_freq_endpoints() {
