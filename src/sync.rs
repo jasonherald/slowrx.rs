@@ -509,20 +509,24 @@ mod tests {
     fn synth_has_sync_slanted(
         spec: ModeSpec,
         true_rate_hz: f64,
-        capture_rate_hz: f64,
+        // Documents the intended `find_sync(track, capture_rate, spec)`
+        // call site; not used in synthesis (pulses are placed at
+        // true-rate cadence — find_sync interprets the buffer at
+        // capture_rate_hz, so the y-linear position difference between
+        // expected and actual indices is the slant). Underscored to
+        // suppress the unused-arg warning; keep the parameter as
+        // self-documenting API.
+        _capture_rate_hz: f64,
     ) -> Vec<bool> {
-        // Total length sized for the captured rate.
-        let total = (f64::from(spec.image_lines) * spec.line_seconds * capture_rate_hz
+        let total = (f64::from(spec.image_lines) * spec.line_seconds * true_rate_hz
             / (SYNC_PROBE_STRIDE as f64)) as usize
             + 16;
         let mut track = vec![false; total];
         for y in 0..spec.image_lines {
-            // Sync pulse y starts at `y * line_seconds_true` (true cadence),
-            // but the probe-index is computed at `capture_rate`.
-            let line_start_t = f64::from(y) * spec.line_seconds * (true_rate_hz / capture_rate_hz);
-            let line_end_t = line_start_t + spec.sync_seconds;
-            let i_start = (line_start_t * capture_rate_hz / (SYNC_PROBE_STRIDE as f64)) as usize;
-            let i_end = (line_end_t * capture_rate_hz / (SYNC_PROBE_STRIDE as f64)) as usize;
+            let i_start = (f64::from(y) * spec.line_seconds * true_rate_hz
+                / (SYNC_PROBE_STRIDE as f64)) as usize;
+            let i_end =
+                i_start + (spec.sync_seconds * true_rate_hz / (SYNC_PROBE_STRIDE as f64)) as usize;
             for slot in track.iter_mut().take(i_end.min(total)).skip(i_start) {
                 *slot = true;
             }

@@ -722,7 +722,7 @@ Pure documentation. Two new sections after the existing #39 and #42 entries. No 
 Run: `grep -n "^## " /data/source/slowrx.rs/docs/intentional-deviations.md`
 
 Expected output:
-```
+```text
 ## VIS stop-bit boundary: precise vs. ±20 ms slop
 ## FindSync 90° slant deadband
 ```
@@ -884,7 +884,7 @@ In the same `tests` block, after the existing `find_sync_handles_empty_track` te
     fn find_sync_corrects_0p5pct_slant_at_pd120() {
         let spec = modespec::for_mode(crate::modespec::SstvMode::Pd120);
         let true_rate = f64::from(WORKING_SAMPLE_RATE_HZ);
-        let capture_rate = true_rate * 1.003;
+        let capture_rate = true_rate * 1.005;
         let track = synth_has_sync_slanted(spec, true_rate, capture_rate);
         let r = find_sync(&track, capture_rate, spec);
         let err_pct = (r.adjusted_rate_hz - true_rate).abs() / true_rate * 100.0;
