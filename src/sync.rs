@@ -597,11 +597,17 @@ mod tests {
         );
     }
 
-    /// F2 (#88). Hough slant correction path — 0.5% rate drift puts
-    /// the slant at ~89.5°, outside the 0.5° deadband, inside the
-    /// (89°, 91°) lock window. One retry should converge.
-    /// (0.3% drift falls within the Hough 0.5°-quantized deadband;
-    /// 0.5% is the minimum drift that reliably triggers correction.)
+    /// F2 (#88). Hough slant correction path — 0.5% capture-rate drift
+    /// produces a slant well outside the (89°, 91°) lock window
+    /// (`tan(90° − slant)/line_width ≈ 0.005` implies a Hough peak
+    /// near 63° or 117° depending on which symmetry the dominant
+    /// line in `sync_img` lands in). The retry loop must shrink the
+    /// rate error toward zero; we assert it ends up under half the
+    /// initial drift.
+    /// (0.3% drift falls *inside* the 0.5°-quantized Hough bins as
+    /// near-90°, hits the 0.5° deadband, and never triggers
+    /// correction; 0.5% is the minimum drift that reliably runs the
+    /// correction path.)
     #[test]
     fn find_sync_corrects_0p5pct_slant_at_pd120() {
         let spec = modespec::for_mode(crate::modespec::SstvMode::Pd120);
@@ -629,9 +635,10 @@ mod tests {
         );
     }
 
-    /// F2 (#88). Larger slant (1% drift) puts the angle at ~89°,
-    /// outside the lock window. Verify the retry loop actually
-    /// progresses — the final rate error must be strictly smaller
+    /// F2 (#88). Larger drift (1% capture-rate offset) produces a
+    /// Hough peak far outside the lock window — the retry loop must
+    /// do real work to converge. Verify the retry loop actually
+    /// progresses: the final rate error must be strictly smaller
     /// than the initial guess.
     #[test]
     fn find_sync_corrects_1pct_slant_via_retries() {

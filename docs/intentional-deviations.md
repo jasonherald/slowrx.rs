@@ -491,8 +491,9 @@ truncates toward zero. A `s_secs * rate` of `0.6` lands at `0`.
 Truncation in slowrx isn't a deliberate choice — it's the side effect
 of an implicit C cast idiom. Round-to-nearest minimizes the max
 sub-sample error (½ sample vs 1 sample). The difference is at most
-~91 µs at 11025 Hz — well below SSTV's per-pixel duration (~0.5 ms at
-PD120) and invisible in real-radio capture.
+1 sample at our 11025 Hz working rate (~91 µs) — well below SSTV's
+per-pixel duration (~0.5 ms at PD120) and invisible in real-radio
+capture.
 
 ### When to revisit
 
@@ -520,10 +521,11 @@ reached.
 
 ### Why we deviated
 
-Re-anchoring a near-locked input is harmful: if 3 retries narrowed
-the slant from 70° to 91.1° (one Hough bin outside the lock window),
-a reset to 44100 throws away the 19° of correction we made. Keeping
-the last estimate gives a better decode on borderline locks.
+Re-anchoring a near-locked input is harmful: a borderline lock that
+converged to ~91.1° (one 0.5° Hough bin outside the lock window)
+would be reset back to 44100 in slowrx, discarding all the
+correction the retry loop did. Keeping the last estimate gives a
+better decode on those borderline cases.
 
 ### When to revisit
 
