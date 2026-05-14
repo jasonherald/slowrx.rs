@@ -57,16 +57,13 @@ pub mod vis;
 pub(crate) mod test_tone;
 
 #[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
-pub mod pd_test_encoder;
+pub(crate) mod pd_test_encoder;
 
 #[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
-pub mod robot_test_encoder;
+pub(crate) mod robot_test_encoder;
 
 #[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
-pub mod scottie_test_encoder;
+pub(crate) mod scottie_test_encoder;
 
 pub use crate::decoder::{SstvDecoder, SstvEvent};
 pub use crate::error::{Error, Result};
@@ -87,12 +84,34 @@ pub mod __test_support {
     }
     pub mod mode_pd {
         pub use crate::demod::ycbcr_to_rgb;
-        pub use crate::pd_test_encoder::encode_pd;
+
+        /// Thin wrapper around the now-`pub(crate)` `crate::pd_test_encoder::encode_pd`.
+        /// `__test_support` is the sole consumer-facing path for the synthetic
+        /// PD encoder (#86 B10).
+        #[doc(hidden)]
+        #[must_use]
+        pub fn encode_pd(mode: crate::modespec::SstvMode, ycrcb: &[[u8; 3]]) -> Vec<f32> {
+            crate::pd_test_encoder::encode_pd(mode, ycrcb)
+        }
     }
     pub mod mode_robot {
-        pub use crate::robot_test_encoder::encode_robot;
+        /// Thin wrapper around the now-`pub(crate)` `crate::robot_test_encoder::encode_robot`.
+        /// `__test_support` is the sole consumer-facing path for the synthetic
+        /// Robot encoder (#86 B10).
+        #[doc(hidden)]
+        #[must_use]
+        pub fn encode_robot(mode: crate::modespec::SstvMode, ycrcb: &[[u8; 3]]) -> Vec<f32> {
+            crate::robot_test_encoder::encode_robot(mode, ycrcb)
+        }
     }
     pub mod mode_scottie {
-        pub use crate::scottie_test_encoder::encode_scottie;
+        /// Thin wrapper around the now-`pub(crate)` `crate::scottie_test_encoder::encode_scottie`.
+        /// `__test_support` is the sole consumer-facing path for the synthetic
+        /// Scottie/Martin encoder (#86 B10).
+        #[doc(hidden)]
+        #[must_use]
+        pub fn encode_scottie(mode: crate::modespec::SstvMode, rgb: &[[u8; 3]]) -> Vec<f32> {
+            crate::scottie_test_encoder::encode_scottie(mode, rgb)
+        }
     }
 }

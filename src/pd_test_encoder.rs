@@ -21,9 +21,8 @@ use crate::test_tone::{lum_to_freq, ToneWriter, PORCH_HZ, SYNC_HZ};
 /// of rows share averaged chroma, matching how the decoder will recover
 /// them.
 #[must_use]
-#[doc(hidden)]
 #[allow(dead_code)]
-pub fn encode_pd(mode: SstvMode, ycrcb: &[[u8; 3]]) -> Vec<f32> {
+pub(crate) fn encode_pd(mode: SstvMode, ycrcb: &[[u8; 3]]) -> Vec<f32> {
     assert!(matches!(
         mode,
         SstvMode::Pd120 | SstvMode::Pd180 | SstvMode::Pd240

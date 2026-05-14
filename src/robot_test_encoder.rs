@@ -33,9 +33,8 @@ use crate::test_tone::{lum_to_freq, ToneWriter, PORCH_HZ, SEPTR_HZ, SYNC_HZ};
 /// the neighbor row, so the source ycrcb buffer must have adjacent rows
 /// share chroma (see file-level doc).
 #[must_use]
-#[doc(hidden)]
 #[allow(dead_code)]
-pub fn encode_robot(mode: SstvMode, ycrcb: &[[u8; 3]]) -> Vec<f32> {
+pub(crate) fn encode_robot(mode: SstvMode, ycrcb: &[[u8; 3]]) -> Vec<f32> {
     assert!(matches!(
         mode,
         SstvMode::Robot24 | SstvMode::Robot36 | SstvMode::Robot72

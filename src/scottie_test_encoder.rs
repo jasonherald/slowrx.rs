@@ -18,7 +18,7 @@
 //!   [R pixels 1500-2300 Hz]
 //! ```
 //!
-//! Total per line = LineTime exactly (defensive pad fills the
+//! Total per line = `LineTime` exactly (defensive pad fills the
 //! boundary if float arithmetic rounds short).
 
 #![allow(
@@ -32,23 +32,13 @@ use crate::modespec::SstvMode;
 use crate::resample::WORKING_SAMPLE_RATE_HZ;
 use crate::test_tone::{lum_to_freq, ToneWriter, PORCH_HZ, SEPTR_HZ, SYNC_HZ};
 
-/// Encode an image as Scottie 1 / 2 / DX audio. `rgb` is row-major,
-/// `line_pixels × image_lines` `[R, G, B]` triples (320×256 for all
-/// three Scottie modes). Returns f32 PCM at [`WORKING_SAMPLE_RATE_HZ`]
-/// (11_025 Hz).
-///
-/// Per radio line, emits in this order:
-///   1. Septr 1 at `SEPTR_HZ`
-///   2. G channel at `pixel_seconds` per pixel
-///   3. Septr 2 at `SEPTR_HZ`
-///   4. B channel at `pixel_seconds` per pixel
-///   5. Sync at `SYNC_HZ` (mid-line, between B and R)
-///   6. Porch at `PORCH_HZ`
-///   7. R channel at `pixel_seconds` per pixel
-#[must_use]
 /// Encode an RGB image as continuous-phase FM audio for either
-/// Scottie (S1/S2/DX) or Martin (M1/M2). The per-line tone emission
-/// order branches on `spec.sync_position`:
+/// Scottie (S1/S2/DX) or Martin (M1/M2). `rgb` is row-major,
+/// `line_pixels × image_lines` `[R, G, B]` triples (320×256 for all
+/// Scottie modes). Returns f32 PCM at [`WORKING_SAMPLE_RATE_HZ`]
+/// (`11_025` Hz).
+///
+/// The per-line tone emission order branches on `spec.sync_position`:
 ///
 /// - [`crate::modespec::SyncPosition::Scottie`] —
 ///   `[septr][G][septr][B][SYNC][porch][R]` (sync mid-line).
@@ -58,9 +48,9 @@ use crate::test_tone::{lum_to_freq, ToneWriter, PORCH_HZ, SEPTR_HZ, SYNC_HZ};
 ///
 /// Panics if `mode` is not one of the five supported variants or if
 /// `rgb.len() != line_pixels * image_lines`.
-#[doc(hidden)]
+#[must_use]
 #[allow(dead_code, clippy::too_many_lines)]
-pub fn encode_scottie(mode: SstvMode, rgb: &[[u8; 3]]) -> Vec<f32> {
+pub(crate) fn encode_scottie(mode: SstvMode, rgb: &[[u8; 3]]) -> Vec<f32> {
     assert!(matches!(
         mode,
         SstvMode::Scottie1
