@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- **Resampler polish** — `Resampler` now uses a true 256-phase polyphase
+  tap bank (precomputed in `new()`, ~64 KB) instead of recomputing all 64
+  Hann-windowed-sinc taps per output sample; eliminates ~1.4 M `sin()`
+  +`cos()` calls/sec from the hot path. Off-by-one in `needed_end` (was
+  `ceil(phase + 64)` causing one extra sample of buffering; now
+  `floor(phase) + 64`) fixed. Group delay documented (`(FIR_TAPS - 1) / 2
+  = 31.5` input-rate samples). `cutoff_hz` doc corrected (the Nyquist
+  factor was wrong in the doc; the code was right). Five new tests
+  (`exact_rate_preserves_amplitude_and_no_attenuation`,
+  `upsampling_8khz_to_11025`, `max_input_rate_192khz`,
+  `tiny_chunks_emit_nothing_then_catch_up`, `empty_input_returns_empty`).
+  Audit D1 ("~6 dB attenuation from un-normalized taps") was a phantom
+  finding — empirically the raw Hann-windowed-sinc taps already sum to
+  ~1.0 at typical `fc` (the audit appears to have confused the Hann
+  window's mean with the windowed-sinc's DC gain); the amplitude test
+  stays as a regression guard. Quantization noise at 256 phases is ≈ −52
+  dB phase noise on a 2300 Hz tone — well below SSTV's noise floor.
+  (#87; audit D2/D2b/F6, D1 closed-as-phantom.)
+
 - **Extracted `crate::test_tone`** — the continuous-phase FM tone generator
   (`SYNC_HZ` / `PORCH_HZ` / `SEPTR_HZ` / `BLACK_HZ` / `WHITE_HZ` consts,
   `lum_to_freq`, the `ToneWriter` struct with cumulative-target `fill_to` and
