@@ -16,29 +16,27 @@
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SstvMode {
-    /// PD-120 (640×496, ~120s per image)
+    /// PD-120. VIS `0x5F`. See [`for_mode`] for full timing.
     Pd120,
-    /// PD-180 (640×496, ~180s per image)
+    /// PD-180. VIS `0x60`.
     Pd180,
-    /// PD-240 (640×496, ~240s per image)
+    /// PD-240. VIS `0x61`.
     Pd240,
-    /// Robot 24 (320×240, ~24s per image)
+    /// Robot 24 (conventional name — decode buffer is ~36 s). VIS `0x04`.
     Robot24,
-    /// Robot 36 (320×240, ~36s per image)
+    /// Robot 36. VIS `0x08`.
     Robot36,
-    /// Robot 72 (320×240, ~72s per image)
+    /// Robot 72. VIS `0x0C`.
     Robot72,
-    /// Scottie 1 — VIS `0x3C`, 320×256 GBR, 0.4320 ms/pixel.
+    /// Scottie 1. VIS `0x3C`.
     Scottie1,
-    /// Scottie 2 — VIS `0x38`, 320×256 GBR, 0.2752 ms/pixel.
+    /// Scottie 2. VIS `0x38`.
     Scottie2,
-    /// Scottie DX — VIS `0x4C`, 320×256 GBR, 1.08053 ms/pixel.
-    /// slowrx applies a +1 Hann-window-index bump in the per-pixel
-    /// demod when this mode is active (see `mode_scottie::decode_line`).
+    /// Scottie DX. VIS `0x4C`.
     ScottieDx,
-    /// Martin 1 — VIS `0x2C`, 320×256 GBR, 0.4576 ms/pixel.
+    /// Martin 1. VIS `0x2C`.
     Martin1,
-    /// Martin 2 — VIS `0x28`, 320×256 GBR, 0.2288 ms/pixel.
+    /// Martin 2. VIS `0x28`.
     Martin2,
 }
 
@@ -165,11 +163,12 @@ pub fn lookup(vis_code: u8) -> Option<ModeSpec> {
     ALL_SPECS.iter().find(|s| s.vis_code == vis_code).copied()
 }
 
-/// Look up the [`ModeSpec`] for a known [`SstvMode`].
+/// Look up the [`ModeSpec`] for an [`SstvMode`].
 ///
-/// Always returns `Some` for V1 modes. Reserved for symmetry with
-/// [`lookup`] when V2 modes whose decoders are not yet implemented
-/// land in the enum.
+/// Total over [`SstvMode`] — every implemented variant has a `const`
+/// entry. Adding a new variant without adding its `const ModeSpec`
+/// (and an arm here) is a compile error, by design. Pair with
+/// [`lookup`] when starting from a VIS code on the wire.
 #[must_use]
 pub fn for_mode(mode: SstvMode) -> ModeSpec {
     match mode {
