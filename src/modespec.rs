@@ -48,6 +48,15 @@ pub enum SstvMode {
 pub struct ModeSpec {
     /// The mode this entry describes.
     pub mode: SstvMode,
+    /// CLI/filename slug. Stable across releases (filenames like
+    /// `img-NNN-{short_name}.png` depend on this). lowercase, no
+    /// separators: "pd120", "robot24", "scottiedx", "scottie1",
+    /// "martin1", etc. (audit #91 B13)
+    pub short_name: &'static str,
+    /// Human-readable mode name. For log lines and any future
+    /// user-facing display. "PD-120", "Robot 24", "Scottie DX", etc.
+    /// (audit #91 B13)
+    pub name: &'static str,
     /// 7-bit VIS code identifying this mode on the wire.
     pub vis_code: u8,
     /// Visible image width in pixels.
@@ -197,6 +206,8 @@ pub fn for_mode(mode: SstvMode) -> ModeSpec {
 
 const PD120: ModeSpec = ModeSpec {
     mode: SstvMode::Pd120,
+    short_name: "pd120",
+    name: "PD-120",
     vis_code: 0x5F,
     line_pixels: 640,
     image_lines: 496,
@@ -211,6 +222,8 @@ const PD120: ModeSpec = ModeSpec {
 
 const PD180: ModeSpec = ModeSpec {
     mode: SstvMode::Pd180,
+    short_name: "pd180",
+    name: "PD-180",
     vis_code: 0x60,
     line_pixels: 640,
     image_lines: 496,
@@ -225,6 +238,8 @@ const PD180: ModeSpec = ModeSpec {
 
 const PD240: ModeSpec = ModeSpec {
     mode: SstvMode::Pd240,
+    short_name: "pd240",
+    name: "PD-240",
     vis_code: 0x61,
     line_pixels: 640,
     image_lines: 496,
@@ -241,6 +256,8 @@ const PD240: ModeSpec = ModeSpec {
 
 const ROBOT24: ModeSpec = ModeSpec {
     mode: SstvMode::Robot24,
+    short_name: "robot24",
+    name: "Robot 24",
     vis_code: 0x04,
     line_pixels: 320,
     image_lines: 240,
@@ -258,6 +275,8 @@ const ROBOT24: ModeSpec = ModeSpec {
 
 const ROBOT36: ModeSpec = ModeSpec {
     mode: SstvMode::Robot36,
+    short_name: "robot36",
+    name: "Robot 36",
     vis_code: 0x08,
     line_pixels: 320,
     image_lines: 240,
@@ -275,6 +294,8 @@ const ROBOT36: ModeSpec = ModeSpec {
 
 const ROBOT72: ModeSpec = ModeSpec {
     mode: SstvMode::Robot72,
+    short_name: "robot72",
+    name: "Robot 72",
     vis_code: 0x0C,
     line_pixels: 320,
     image_lines: 240,
@@ -292,6 +313,8 @@ const ROBOT72: ModeSpec = ModeSpec {
 
 const SCOTTIE1: ModeSpec = ModeSpec {
     mode: SstvMode::Scottie1,
+    short_name: "scottie1",
+    name: "Scottie 1",
     vis_code: 0x3C,
     line_pixels: 320,
     image_lines: 256,
@@ -309,6 +332,8 @@ const SCOTTIE1: ModeSpec = ModeSpec {
 
 const SCOTTIE2: ModeSpec = ModeSpec {
     mode: SstvMode::Scottie2,
+    short_name: "scottie2",
+    name: "Scottie 2",
     vis_code: 0x38,
     line_pixels: 320,
     image_lines: 256,
@@ -326,6 +351,8 @@ const SCOTTIE2: ModeSpec = ModeSpec {
 
 const SCOTTIE_DX: ModeSpec = ModeSpec {
     mode: SstvMode::ScottieDx,
+    short_name: "scottiedx",
+    name: "Scottie DX",
     vis_code: 0x4C,
     line_pixels: 320,
     image_lines: 256,
@@ -344,6 +371,8 @@ const SCOTTIE_DX: ModeSpec = ModeSpec {
 /// Martin 1. slowrx `modespec.c:39-50`.
 const MARTIN1: ModeSpec = ModeSpec {
     mode: SstvMode::Martin1,
+    short_name: "martin1",
+    name: "Martin 1",
     vis_code: 0x2C,
     line_pixels: 320,
     image_lines: 256,
@@ -362,6 +391,8 @@ const MARTIN1: ModeSpec = ModeSpec {
 /// Martin 2. slowrx `modespec.c:52-63`.
 const MARTIN2: ModeSpec = ModeSpec {
     mode: SstvMode::Martin2,
+    short_name: "martin2",
+    name: "Martin 2",
     vis_code: 0x28,
     line_pixels: 320,
     image_lines: 256,
