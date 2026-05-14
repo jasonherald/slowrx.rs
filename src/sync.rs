@@ -68,6 +68,21 @@ const X_ACC_BINS: usize = 700;
 const SYNC_IMG_Y_BINS: usize = 630;
 const LINES_D_BINS: usize = 600;
 
+/// Right-edge slip threshold for the falling-edge `xmax`: if `xmax`
+/// exceeds half the column-accumulator span, the detected pulse
+/// belongs to the next line's leading sync — wrap left by this
+/// amount. Matches slowrx `sync.c:117` (`if (xmax > 350) xmax -= 350;`).
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+const X_ACC_SLIP_THRESHOLD: i32 = (X_ACC_BINS / 2) as i32; // 350
+
+/// 8-tap falling-edge detection kernel: leading 4 ones, trailing 4
+/// negative ones. Convolved with the column-accumulator `x_acc`;
+/// the position of the maximum response is the falling edge of the
+/// dominant sync pulse. Matches slowrx `sync.c:108` (the inline
+/// literal `{1,1,1,1,-1,-1,-1,-1}`).
+const SYNC_EDGE_KERNEL: [i32; 8] = [1, 1, 1, 1, -1, -1, -1, -1];
+const SYNC_EDGE_KERNEL_LEN: usize = SYNC_EDGE_KERNEL.len();
+
 /// Convert degrees to radians. Matches slowrx `common.c::deg2rad`.
 fn deg2rad(deg: f64) -> f64 {
     deg * std::f64::consts::PI / 180.0
@@ -322,24 +337,23 @@ pub(crate) fn find_sync(has_sync: &[bool], initial_rate_hz: f64, spec: ModeSpec)
     // `convd == 0` would beat `i32::MIN` and place xmax at the last window
     // position, diverging from slowrx's "no update" on zero/negative convd
     // (round-2 audit Finding 6).
-    let kernel: [i32; 8] = [1, 1, 1, 1, -1, -1, -1, -1];
     let mut xmax: i32 = 0;
     let mut max_convd: i32 = 0;
-    for (x, window) in x_acc.windows(8).enumerate() {
+    for (x, window) in x_acc.windows(SYNC_EDGE_KERNEL_LEN).enumerate() {
         let convd: i32 = window
             .iter()
-            .zip(kernel.iter())
+            .zip(SYNC_EDGE_KERNEL.iter())
             .map(|(&v, &k)| (v as i32) * k)
             .sum();
         if convd > max_convd {
             max_convd = convd;
-            xmax = (x as i32) + 4;
+            xmax = (x as i32) + (SYNC_EDGE_KERNEL_LEN as i32) / 2;
         }
     }
 
     // sync.c:117 — pulse near the right edge slipped from previous left.
-    if xmax > 350 {
-        xmax -= 350;
+    if xmax > X_ACC_SLIP_THRESHOLD {
+        xmax -= X_ACC_SLIP_THRESHOLD;
     }
 
     // sync.c:120 — base offset to start of line 0's content. The xmax
