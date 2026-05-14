@@ -209,8 +209,8 @@ mod tests {
             out.len(),
             expected
         );
-        let p = crate::vis::goertzel_power(&out, 1500.0);
-        let p_off = crate::vis::goertzel_power(&out, 800.0);
+        let p = crate::dsp::goertzel_power(&out, 1500.0);
+        let p_off = crate::dsp::goertzel_power(&out, 800.0);
         assert!(p > 10.0 * p_off, "tone should survive: {p} vs {p_off}");
     }
 
@@ -228,9 +228,9 @@ mod tests {
             out.len()
         );
         // Goertzel power at 1900 Hz should be much greater than at 1700/2100 Hz.
-        let p_target = crate::vis::goertzel_power(&out, 1900.0);
-        let p_off1 = crate::vis::goertzel_power(&out, 1700.0);
-        let p_off2 = crate::vis::goertzel_power(&out, 2100.0);
+        let p_target = crate::dsp::goertzel_power(&out, 1900.0);
+        let p_off1 = crate::dsp::goertzel_power(&out, 1700.0);
+        let p_off2 = crate::dsp::goertzel_power(&out, 2100.0);
         assert!(
             p_target > 10.0 * p_off1.max(p_off2),
             "p1900={p_target} p1700={p_off1} p2100={p_off2}"
@@ -254,9 +254,9 @@ mod tests {
         let mut r = Resampler::new(48_000).expect("48k resampler");
         let in_audio = synth_tone_at(48_000, 1900.0, 0.5);
         let out = r.process(&in_audio);
-        let p_target = crate::vis::goertzel_power(&out, 1900.0);
-        let p_off1 = crate::vis::goertzel_power(&out, 1700.0);
-        let p_off2 = crate::vis::goertzel_power(&out, 2100.0);
+        let p_target = crate::dsp::goertzel_power(&out, 1900.0);
+        let p_off1 = crate::dsp::goertzel_power(&out, 1700.0);
+        let p_off2 = crate::dsp::goertzel_power(&out, 2100.0);
         // Tighter than the integer-ratio 10× threshold — non-integer
         // ratios with broken polyphase would NOT meet this.
         assert!(

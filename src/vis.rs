@@ -93,7 +93,7 @@ impl VisDetector {
         let scratch_len = fft.get_inplace_scratch_len();
         Self {
             fft,
-            hann: build_hann_window(WINDOW_SAMPLES),
+            hann: crate::dsp::build_hann(WINDOW_SAMPLES),
             fft_buf: vec![Complex { re: 0.0, im: 0.0 }; FFT_LEN],
             scratch: vec![Complex { re: 0.0, im: 0.0 }; scratch_len.max(FFT_LEN)],
             audio_buffer: Vec::with_capacity(WINDOW_SAMPLES * 4),
@@ -267,19 +267,6 @@ impl VisDetector {
     }
 }
 
-/// Build a length-`n` symmetric Hann window. Matches slowrx vis.c line 30:
-/// `Hann[i] = 0.5 * (1 - cos(2π i / (n-1)))`.
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
-fn build_hann_window(n: usize) -> Vec<f32> {
-    let m = (n.saturating_sub(1).max(1)) as f64;
-    (0..n)
-        .map(|i| {
-            let v = 0.5 * (1.0 - (2.0 * std::f64::consts::PI * (i as f64) / m).cos());
-            v as f32
-        })
-        .collect()
-}
-
 /// Find the dominant peak in 500..3300 Hz and refine via Gaussian-log
 /// peak interpolation (slowrx vis.c lines 54-70). Returns NaN if the
 /// peak is at the boundary or any of the three sample bins (peak-1,
@@ -292,24 +279,19 @@ fn build_hann_window(n: usize) -> Vec<f32> {
 )]
 fn estimate_peak_freq(spectrum: &[Complex<f32>]) -> f64 {
     let fft_len = spectrum.len();
-    // Use slowrx-equivalent truncation (not `.round()`) via `crate::get_bin`.
-    // See `crate::get_bin` for rationale.
+    // Use slowrx-equivalent truncation (not `.round()`) via `crate::dsp::get_bin`.
+    // See `crate::dsp::get_bin` for rationale.
     #[allow(clippy::cast_possible_truncation)]
-    let bin_for = |hz: f64| -> usize { crate::get_bin(hz, fft_len, WORKING_SAMPLE_RATE_HZ) };
+    let bin_for = |hz: f64| -> usize { crate::dsp::get_bin(hz, fft_len, WORKING_SAMPLE_RATE_HZ) };
     let lo = bin_for(SEARCH_LO_HZ);
     let hi = bin_for(SEARCH_HI_HZ);
     if lo == 0 || hi >= fft_len.saturating_sub(1) || lo >= hi {
         return f64::NAN;
     }
-    let power = |c: Complex<f32>| -> f64 {
-        let r = f64::from(c.re);
-        let i = f64::from(c.im);
-        r * r + i * i
-    };
     let mut max_bin = lo;
-    let mut max_p = power(spectrum[lo]);
+    let mut max_p = crate::dsp::power(spectrum[lo]);
     for (k, &c) in spectrum.iter().enumerate().take(hi).skip(lo + 1) {
-        let p = power(c);
+        let p = crate::dsp::power(c);
         if p > max_p {
             max_p = p;
             max_bin = k;
@@ -318,9 +300,9 @@ fn estimate_peak_freq(spectrum: &[Complex<f32>]) -> f64 {
     if max_bin <= lo || max_bin >= hi {
         return f64::NAN;
     }
-    let p_prev = power(spectrum[max_bin - 1]);
+    let p_prev = crate::dsp::power(spectrum[max_bin - 1]);
     let p_curr = max_p;
-    let p_next = power(spectrum[max_bin + 1]);
+    let p_next = crate::dsp::power(spectrum[max_bin + 1]);
     if p_prev <= 0.0 || p_curr <= 0.0 || p_next <= 0.0 {
         return f64::NAN;
     }
@@ -434,26 +416,6 @@ fn match_vis_pattern(
 #[inline]
 fn within(value: f64, target: f64, tol: f64) -> bool {
     (value - target).abs() < tol
-}
-
-/// Goertzel power on `samples` at `target_hz` (bin power, ~amplitude²).
-/// Used by `decoder::estimate_freq` and the resample-quality tests.
-#[allow(clippy::cast_precision_loss)]
-pub(crate) fn goertzel_power(samples: &[f32], target_hz: f64) -> f64 {
-    let n = samples.len() as f64;
-    if n == 0.0 {
-        return 0.0;
-    }
-    let k = (0.5 + n * target_hz / f64::from(WORKING_SAMPLE_RATE_HZ)).floor();
-    let coeff = 2.0 * (2.0 * std::f64::consts::PI * k / n).cos();
-    let mut s_prev = 0.0_f64;
-    let mut s_prev2 = 0.0_f64;
-    for &sample in samples {
-        let s = f64::from(sample) + coeff * s_prev - s_prev2;
-        s_prev2 = s_prev;
-        s_prev = s;
-    }
-    s_prev2.mul_add(s_prev2, s_prev.mul_add(s_prev, -coeff * s_prev * s_prev2))
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -609,28 +571,6 @@ pub mod tests {
         let mut audio = synth_vis_with_offset(code, pre_silence_secs, freq_offset_hz);
         audio.extend(std::iter::repeat_n(0.0_f32, 256));
         audio
-    }
-
-    #[test]
-    fn empty_input_returns_zero_power() {
-        assert_eq!(goertzel_power(&[], 1900.0), 0.0);
-    }
-
-    #[test]
-    fn goertzel_handcomputed_quarter_cycle() {
-        let samples = [1.0_f32, 0.0, -1.0, 0.0];
-        let target = f64::from(WORKING_SAMPLE_RATE_HZ) / 4.0;
-        let p = goertzel_power(&samples, target);
-        assert!((p - 4.0).abs() < 1e-9, "expected 4.0, got {p}");
-    }
-
-    #[test]
-    fn hann_window_endpoints_are_zero() {
-        let h = build_hann_window(WINDOW_SAMPLES);
-        assert!(h[0].abs() < 1e-6);
-        assert!(h[h.len() - 1].abs() < 1e-6);
-        let mid = h.len() / 2;
-        assert!((h[mid] - 1.0).abs() < 1e-2, "middle ≈ 1, got {}", h[mid]);
     }
 
     #[test]

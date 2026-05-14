@@ -42,25 +42,6 @@ pub(crate) const FFT_LEN: usize = 1024;
 /// rationale. Translated from `video.c:54`.
 pub(crate) const HANN_LENS: [usize; 7] = [12, 16, 24, 32, 64, 128, 256];
 
-/// Build a Hann window of length `len`. Used for both the per-pixel
-/// demod's [`HannBank`] entries (lengths from [`HANN_LENS`]) and the
-/// [`SnrEstimator`]'s [`FFT_LEN`]-sample `hann_long`.
-#[allow(clippy::cast_precision_loss)]
-fn build_hann(len: usize) -> Vec<f32> {
-    if len == 0 {
-        return Vec::new();
-    }
-    if len == 1 {
-        return vec![0.0_f32];
-    }
-    (0..len)
-        .map(|i| {
-            let m = (len - 1) as f32;
-            0.5 * (1.0 - (2.0 * std::f32::consts::PI * (i as f32) / m).cos())
-        })
-        .collect()
-}
-
 /// Bank of seven Hann windows, indexed by SNR-derived window selector.
 /// Construct once per decoder; the inner `Vec<f32>`s have lengths matching
 /// [`HANN_LENS`].
@@ -72,13 +53,13 @@ impl HannBank {
     pub fn new() -> Self {
         Self {
             windows: [
-                build_hann(HANN_LENS[0]),
-                build_hann(HANN_LENS[1]),
-                build_hann(HANN_LENS[2]),
-                build_hann(HANN_LENS[3]),
-                build_hann(HANN_LENS[4]),
-                build_hann(HANN_LENS[5]),
-                build_hann(HANN_LENS[6]),
+                crate::dsp::build_hann(HANN_LENS[0]),
+                crate::dsp::build_hann(HANN_LENS[1]),
+                crate::dsp::build_hann(HANN_LENS[2]),
+                crate::dsp::build_hann(HANN_LENS[3]),
+                crate::dsp::build_hann(HANN_LENS[4]),
+                crate::dsp::build_hann(HANN_LENS[5]),
+                crate::dsp::build_hann(HANN_LENS[6]),
             ],
         }
     }
@@ -236,7 +217,7 @@ impl SnrEstimator {
         let scratch_len = fft.get_inplace_scratch_len();
         Self {
             fft,
-            hann_long: build_hann(FFT_LEN),
+            hann_long: crate::dsp::build_hann(FFT_LEN),
             fft_buf: vec![Complex { re: 0.0, im: 0.0 }; FFT_LEN],
             scratch: vec![Complex { re: 0.0, im: 0.0 }; scratch_len.max(FFT_LEN)],
         }
@@ -272,20 +253,14 @@ impl SnrEstimator {
         self.fft
             .process_with_scratch(&mut self.fft_buf, &mut self.scratch[..]);
 
-        // Bin helper — uses slowrx-equivalent truncation via `crate::get_bin`.
+        // Bin helper — uses slowrx-equivalent truncation via `crate::dsp::get_bin`.
         // **Do NOT change to `.round()`**: that shifts 5 of the 8 production
         // frequencies by ±1 bin, changing `VideoPlusNoiseBins`, `NoiseOnlyBins`,
         // and `ReceiverBins` by 1–4 % vs. slowrx's values (see round-2 audit
         // Finding 2/3 for the full bandwidth-correction impact).
         let bin_for = |hz: f64| -> usize {
-            crate::get_bin(hz, FFT_LEN, crate::resample::WORKING_SAMPLE_RATE_HZ)
+            crate::dsp::get_bin(hz, FFT_LEN, crate::resample::WORKING_SAMPLE_RATE_HZ)
                 .min(FFT_LEN / 2 - 1)
-        };
-
-        let power = |c: Complex<f32>| -> f64 {
-            let r = f64::from(c.re);
-            let i = f64::from(c.im);
-            r * r + i * i
         };
 
         // Integrate power over the video band (1500-2300 Hz, hedr-shifted).
@@ -293,7 +268,7 @@ impl SnrEstimator {
         let video_hi = bin_for(2300.0 + hedr_shift_hz);
         let mut p_video_plus_noise = 0.0_f64;
         for n in video_lo..=video_hi {
-            p_video_plus_noise += power(self.fft_buf[n]);
+            p_video_plus_noise += crate::dsp::power(self.fft_buf[n]);
         }
 
         // Integrate noise band: 400-800 Hz ∪ 2700-3400 Hz (hedr-shifted).
@@ -303,10 +278,10 @@ impl SnrEstimator {
         let n_hi_b = bin_for(3400.0 + hedr_shift_hz);
         let mut p_noise_only = 0.0_f64;
         for n in n_lo_a..=n_hi_a {
-            p_noise_only += power(self.fft_buf[n]);
+            p_noise_only += crate::dsp::power(self.fft_buf[n]);
         }
         for n in n_lo_b..=n_hi_b {
-            p_noise_only += power(self.fft_buf[n]);
+            p_noise_only += crate::dsp::power(self.fft_buf[n]);
         }
 
         // Bandwidth corrections — `video.c:329-334` (computed against an
@@ -495,13 +470,6 @@ mod tests {
         let _ = HannBank::default();
     }
 
-    #[test]
-    fn build_hann_zero_and_one_length_safe() {
-        // Defensive: degenerate inputs do not panic.
-        assert!(build_hann(0).is_empty());
-        assert_eq!(build_hann(1), vec![0.0]);
-    }
-
     /// Verify the SNR-estimator bandwidth correction's bin counts at our
     /// finer-than-slowrx-C frequency resolution. With `FFT_LEN=1024` at
     /// `WORKING_SAMPLE_RATE_HZ=11_025` we get ~10.77 Hz/bin (4× finer
@@ -528,7 +496,7 @@ mod tests {
     #[test]
     fn snr_bandwidth_correction_bins_at_finer_resolution() {
         let get_bin =
-            |hz: f64| crate::get_bin(hz, FFT_LEN, crate::resample::WORKING_SAMPLE_RATE_HZ);
+            |hz: f64| crate::dsp::get_bin(hz, FFT_LEN, crate::resample::WORKING_SAMPLE_RATE_HZ);
 
         let video_lo = get_bin(1500.0);
         let video_hi = get_bin(2300.0);
@@ -571,7 +539,7 @@ mod tests {
     #[test]
     fn sync_target_bin_for_1200hz_is_27() {
         // At SYNC_FFT_LEN=256, SR=11025: 1200 * 256 / 11025 = 27.89... → trunc = 27.
-        let bin = crate::get_bin(
+        let bin = crate::dsp::get_bin(
             1200.0,
             crate::sync::SYNC_FFT_LEN,
             crate::resample::WORKING_SAMPLE_RATE_HZ,

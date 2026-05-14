@@ -152,26 +152,20 @@ impl PdDemod {
             .process_with_scratch(&mut self.fft_buf, &mut self.scratch[..]);
 
         // Search peak in bins corresponding to (1500+HedrShift)..(2300+HedrShift) Hz.
-        // Use slowrx-equivalent truncation (not `.round()`) via `crate::get_bin`.
-        // See `crate::get_bin` for rationale.
+        // Use slowrx-equivalent truncation (not `.round()`) via `crate::dsp::get_bin`.
+        // See `crate::dsp::get_bin` for rationale.
         let bin_for = |hz: f64| -> usize {
-            crate::get_bin(hz, FFT_LEN, crate::resample::WORKING_SAMPLE_RATE_HZ)
+            crate::dsp::get_bin(hz, FFT_LEN, crate::resample::WORKING_SAMPLE_RATE_HZ)
         };
         let lo = bin_for(1500.0 + hedr_shift_hz).saturating_sub(1).max(1);
         let hi = bin_for(2300.0 + hedr_shift_hz)
             .saturating_add(1)
             .min(FFT_LEN / 2 - 1);
 
-        let power = |c: Complex<f32>| -> f64 {
-            let r = f64::from(c.re);
-            let i = f64::from(c.im);
-            r * r + i * i
-        };
-
         let mut max_bin = lo;
-        let mut max_p = power(self.fft_buf[lo]);
+        let mut max_p = crate::dsp::power(self.fft_buf[lo]);
         for (k, &c) in self.fft_buf.iter().enumerate().take(hi + 1).skip(lo + 1) {
-            let p = power(c);
+            let p = crate::dsp::power(c);
             if p > max_p {
                 max_p = p;
                 max_bin = k;
@@ -202,9 +196,9 @@ impl PdDemod {
         }
 
         // Freq_bin = MaxBin + log(P[k+1]/P[k-1]) / (2 * log(P[k]^2 / (P[k+1] * P[k-1])))
-        let p_prev = power(self.fft_buf[max_bin - 1]);
+        let p_prev = crate::dsp::power(self.fft_buf[max_bin - 1]);
         let p_curr = max_p;
-        let p_next = power(self.fft_buf[max_bin + 1]);
+        let p_next = crate::dsp::power(self.fft_buf[max_bin + 1]);
 
         // If any neighbor power is non-positive, skip interpolation
         // (log of zero blows up). slowrx falls back to a clipped centre.

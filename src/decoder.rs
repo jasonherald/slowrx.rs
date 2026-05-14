@@ -613,7 +613,7 @@ pub(crate) fn estimate_freq(window: &[f32]) -> f64 {
     let mut powers = [0.0_f64; N_BINS];
     for (i, p) in powers.iter_mut().enumerate() {
         let f = FIRST_HZ + (i as f64) * STEP_HZ;
-        *p = crate::vis::goertzel_power(window, f);
+        *p = crate::dsp::goertzel_power(window, f);
     }
     let (mut max_i, mut max_p) = (0_usize, powers[0]);
     for (i, &p) in powers.iter().enumerate().skip(1) {
