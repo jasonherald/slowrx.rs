@@ -12,7 +12,7 @@
 //! Translated from slowrx's `video.c` (Oona Räisänen, ISC License).
 //! Per-mode chroma layout: video.c lines 60-101, 178-209, 421-425.
 //! YUV→RGB matrix: video.c lines 446-451 (shared with PD; we re-use
-//! `mode_pd::ycbcr_to_rgb`). See `NOTICE.md` for full attribution.
+//! [`crate::demod::ycbcr_to_rgb`]). See `NOTICE.md` for full attribution.
 
 use crate::modespec::{ModeSpec, SstvMode};
 

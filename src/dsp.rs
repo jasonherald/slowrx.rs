@@ -10,7 +10,7 @@
 //! - [`goertzel_power`] — single-bin DFT magnitude² (moved from `vis.rs`).
 //!
 //! Nothing here is SSTV-specific; per-channel demod machinery lives in
-//! `crate::mode_pd` and related modules.
+//! [`crate::demod`].
 
 use rustfft::num_complex::Complex;
 
