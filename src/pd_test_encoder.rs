@@ -75,3 +75,55 @@ pub(crate) fn encode_pd(mode: SstvMode, ycrcb: &[[u8; 3]]) -> Vec<f32> {
     }
     tone.into_vec()
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap
+)]
+mod tests {
+    use super::*;
+    use crate::modespec::{for_mode, SstvMode};
+
+    /// A regression in channel order surfaces here as a pointed failure
+    /// instead of a fuzzy roundtrip pixel-diff.
+    #[test]
+    fn encode_pd120_first_tone_is_sync_hz() {
+        let spec = for_mode(SstvMode::Pd120);
+        let img = vec![[128_u8, 128, 128]; (spec.line_pixels * spec.image_lines) as usize];
+        let audio = encode_pd(SstvMode::Pd120, &img);
+        let sync_samples =
+            (spec.sync_seconds * f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ)) as usize;
+        assert!(audio.len() >= sync_samples, "audio too short");
+        let p_sync = crate::dsp::goertzel_power(&audio[..sync_samples], crate::test_tone::SYNC_HZ);
+        let p_porch =
+            crate::dsp::goertzel_power(&audio[..sync_samples], crate::test_tone::PORCH_HZ);
+        assert!(
+            p_sync > 10.0 * p_porch,
+            "PD line starts with SYNC tone (p_sync={p_sync}, p_porch={p_porch})"
+        );
+    }
+
+    /// Catches structural drift — extra/missing septr, wrong channel count —
+    /// without round-tripping.
+    #[test]
+    fn encode_pd120_length_matches_radio_frames() {
+        let spec = for_mode(SstvMode::Pd120);
+        let img = vec![[0_u8; 3]; (spec.line_pixels * spec.image_lines) as usize];
+        let audio = encode_pd(SstvMode::Pd120, &img);
+        // PD packs 2 image rows / radio frame.
+        let radio_frames = f64::from(spec.image_lines) / 2.0;
+        let expected = (radio_frames
+            * spec.line_seconds
+            * f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ)) as usize;
+        let diff = (audio.len() as i64 - expected as i64).abs();
+        assert!(
+            diff < 64,
+            "PD120 audio len {} ≉ {expected} (diff {})",
+            audio.len(),
+            diff
+        );
+    }
+}

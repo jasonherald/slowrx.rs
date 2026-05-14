@@ -166,3 +166,55 @@ fn encode_r36_or_r24(
         }
     }
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap
+)]
+mod tests {
+    use super::*;
+    use crate::modespec::{for_mode, SstvMode};
+
+    /// A regression in Robot channel order surfaces here as a pointed
+    /// failure instead of a fuzzy roundtrip pixel-diff. Tests Robot72
+    /// (simplest of the three Robot variants — 3 channels, no chroma
+    /// alternation).
+    #[test]
+    fn encode_robot72_first_tone_is_sync_hz() {
+        let spec = for_mode(SstvMode::Robot72);
+        let img = vec![[128_u8, 128, 128]; (spec.line_pixels * spec.image_lines) as usize];
+        let audio = encode_robot(SstvMode::Robot72, &img);
+        let sync_samples =
+            (spec.sync_seconds * f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ)) as usize;
+        assert!(audio.len() >= sync_samples, "audio too short");
+        let p_sync = crate::dsp::goertzel_power(&audio[..sync_samples], crate::test_tone::SYNC_HZ);
+        let p_porch =
+            crate::dsp::goertzel_power(&audio[..sync_samples], crate::test_tone::PORCH_HZ);
+        assert!(
+            p_sync > 10.0 * p_porch,
+            "Robot72 line starts with SYNC tone (p_sync={p_sync}, p_porch={p_porch})"
+        );
+    }
+
+    #[test]
+    fn encode_robot72_length_matches_radio_lines() {
+        let spec = for_mode(SstvMode::Robot72);
+        let img = vec![[0_u8; 3]; (spec.line_pixels * spec.image_lines) as usize];
+        let audio = encode_robot(SstvMode::Robot72, &img);
+        // Robot: 1 image row per radio line.
+        let radio_lines = f64::from(spec.image_lines);
+        let expected = (radio_lines
+            * spec.line_seconds
+            * f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ)) as usize;
+        let diff = (audio.len() as i64 - expected as i64).abs();
+        assert!(
+            diff < 64,
+            "Robot72 audio len {} ≉ {expected} (diff {})",
+            audio.len(),
+            diff
+        );
+    }
+}
