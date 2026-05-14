@@ -37,6 +37,7 @@
 
 #![warn(missing_docs)]
 
+pub(crate) mod demod;
 pub(crate) mod dsp;
 
 pub mod decoder;

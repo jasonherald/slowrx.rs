@@ -84,7 +84,7 @@ pub(crate) const FFT_LEN: usize = crate::snr::FFT_LEN;
 /// [`PdDemod::pixel_freq`] calls.
 pub(crate) struct PdDemod {
     fft: std::sync::Arc<dyn rustfft::Fft<f32>>,
-    hann_bank: crate::snr::HannBank,
+    hann_bank: crate::demod::HannBank,
     fft_buf: Vec<Complex<f32>>,
     scratch: Vec<Complex<f32>>,
 }
@@ -96,7 +96,7 @@ impl PdDemod {
         let scratch_len = fft.get_inplace_scratch_len();
         Self {
             fft,
-            hann_bank: crate::snr::HannBank::new(),
+            hann_bank: crate::demod::HannBank::new(),
             fft_buf: vec![Complex { re: 0.0, im: 0.0 }; FFT_LEN],
             scratch: vec![Complex { re: 0.0, im: 0.0 }; scratch_len.max(FFT_LEN)],
         }
@@ -104,7 +104,7 @@ impl PdDemod {
 
     /// Estimate the dominant tone frequency in a Hann-windowed FFT
     /// centered near `center_sample`. `win_idx` selects the Hann length
-    /// from [`crate::snr::HANN_LENS`]; the FFT length stays fixed at
+    /// from [`crate::demod::HANN_LENS`]; the FFT length stays fixed at
     /// [`FFT_LEN`] (= 1024), with leading/trailing zero-pad. Out-of-bounds
     /// `audio` reads as silence. `hedr_shift_hz` shifts the peak-search
     /// range from `[1500, 2300]` Hz to `[1500 + hedr, 2300 + hedr]` Hz to
@@ -125,7 +125,7 @@ impl PdDemod {
         hedr_shift_hz: f64,
         win_idx: usize,
     ) -> f64 {
-        let win_idx = win_idx.min(crate::snr::HANN_LENS.len() - 1);
+        let win_idx = win_idx.min(crate::demod::HANN_LENS.len() - 1);
         let hann = self.hann_bank.get(win_idx);
         let win_len = hann.len();
 
@@ -256,7 +256,7 @@ pub(crate) const SNR_REESTIMATE_STRIDE: i64 = 64;
 ///   length is SNR-adaptive (slowrx `video.c:354-367`) plus a 1 dB
 ///   hysteresis band at each threshold to prevent flip-flop on real-
 ///   radio SNR fluctuations near boundary values. See
-///   [`crate::snr::window_idx_for_snr_with_hysteresis`] and the
+///   [`crate::demod::window_idx_for_snr_with_hysteresis`] and the
 ///   `SNR hysteresis on adaptive Hann window selection` entry in
 ///   `docs/intentional-deviations.md`.
 /// - **#32 lifted via #45**: [`decode_one_channel_into`] reads
@@ -375,7 +375,7 @@ pub(crate) fn decode_pd_line_pair(
 /// every [`SNR_REESTIMATE_STRIDE`] samples and feeds the SNR-adaptive
 /// Hann window selector with 1 dB hysteresis (see
 /// [`decode_pd_line_pair`]'s `#44 lifted with hysteresis (0.3.2)` note
-/// and [`crate::snr::window_idx_for_snr_with_hysteresis`]).
+/// and [`crate::demod::window_idx_for_snr_with_hysteresis`]).
 ///
 /// `chan_bounds_abs` is `(start_abs, end_abs)` of the channel in the
 /// audio stream. It is accepted for API compatibility but currently
@@ -439,7 +439,7 @@ pub(crate) fn decode_one_channel_into(
     let mut current_freq = 1500.0_f64 + hedr_shift_hz;
 
     // Per-channel local state for SNR-adaptive Hann selection. The
-    // initial value is the last index of `crate::snr::HANN_LENS` —
+    // initial value is the last index of `crate::demod::HANN_LENS` —
     // i.e. the longest, most-noise-rejecting window — which is the
     // conservative cold-start default. The hysteresis selector
     // ratchets one band per FFT toward `window_idx_for_snr(snr_db)`,
@@ -448,7 +448,7 @@ pub(crate) fn decode_one_channel_into(
     // convergence is 6 → 5 → 4 across the first two FFTs. Once
     // `snr_db` updates from `SNR_REESTIMATE_STRIDE` the selector
     // tracks the actual SNR with the same one-band-per-call ratchet.
-    let mut prev_win_idx = crate::snr::HANN_LENS.len() - 1;
+    let mut prev_win_idx = crate::demod::HANN_LENS.len() - 1;
 
     // Read absolute audio with no channel-boundary mask. slowrx FFTs
     // across channel boundaries (`video.c::GetVideo`); the peak search in
@@ -490,9 +490,10 @@ pub(crate) fn decode_one_channel_into(
             // (#71). The hysteresis variant requires SNR to move past the
             // threshold by ≥ 0.5 dB in the direction of the new index before
             // accepting a change. See
-            // `crate::snr::window_idx_for_snr_with_hysteresis` and the
+            // `crate::demod::window_idx_for_snr_with_hysteresis` and the
             // 0.3.2 entry in `docs/intentional-deviations.md`.
-            let mut win_idx = crate::snr::window_idx_for_snr_with_hysteresis(snr_db, prev_win_idx);
+            let mut win_idx =
+                crate::demod::window_idx_for_snr_with_hysteresis(snr_db, prev_win_idx);
             prev_win_idx = win_idx;
             // slowrx C video.c:367 — Scottie DX bumps WinIdx up by one when not
             // already at saturation, giving SDX's 1.08 ms/pixel a longer
@@ -500,7 +501,7 @@ pub(crate) fn decode_one_channel_into(
             // `prev_win_idx` continues tracking the un-bumped SNR-derived index
             // (the bump shouldn't compound across pixels).
             if spec.mode == crate::modespec::SstvMode::ScottieDx
-                && win_idx < crate::snr::HANN_LENS.len() - 1
+                && win_idx < crate::demod::HANN_LENS.len() - 1
             {
                 win_idx += 1;
             }

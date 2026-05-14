@@ -15,8 +15,8 @@
 use rustfft::num_complex::Complex;
 
 /// Build a Hann window of length `len`. Used for both the per-pixel demod's
-/// [`HannBank`](crate::snr::HannBank) entries (lengths from
-/// [`HANN_LENS`](crate::snr::HANN_LENS)) and the
+/// [`HannBank`](crate::demod::HannBank) entries (lengths from
+/// [`HANN_LENS`](crate::demod::HANN_LENS)) and the
 /// [`SnrEstimator`](crate::snr::SnrEstimator)'s
 /// [`FFT_LEN`](crate::snr::FFT_LEN)-sample `hann_long`.
 #[allow(clippy::cast_precision_loss)]
