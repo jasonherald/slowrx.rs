@@ -60,15 +60,6 @@ impl ToneWriter {
         }
     }
 
-    /// Construct with capacity pre-reserved (no samples emitted).
-    #[allow(dead_code)]
-    pub fn with_capacity(cap: usize) -> Self {
-        Self {
-            out: Vec::with_capacity(cap),
-            phase: 0.0,
-        }
-    }
-
     /// Emit samples up to absolute output index `target_n` (exclusive) at
     /// `freq_hz`. Cumulative-target form — call repeatedly with increasing
     /// `target_n` across a multi-channel line; per-pixel rounding error
@@ -98,8 +89,11 @@ impl ToneWriter {
         self.fill_to(freq_hz, target);
     }
 
-    #[must_use]
+    /// `#[allow(dead_code)]`: used only by `test_tone::tests`, so the
+    /// lib-target build sees no caller. Kept for symmetry with `into_vec` —
+    /// caller may want a partial-state probe without consuming the writer.
     #[allow(dead_code)]
+    #[must_use]
     pub fn len(&self) -> usize {
         self.out.len()
     }
