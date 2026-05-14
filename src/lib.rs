@@ -83,7 +83,7 @@ pub mod __test_support {
         pub use crate::vis::tests::synth_vis;
     }
     pub mod mode_pd {
-        pub use crate::mode_pd::ycbcr_to_rgb;
+        pub use crate::demod::ycbcr_to_rgb;
         pub use crate::pd_test_encoder::encode_pd;
     }
     pub mod mode_robot {

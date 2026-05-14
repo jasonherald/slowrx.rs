@@ -32,9 +32,7 @@
 
 use rustfft::{num_complex::Complex, FftPlanner};
 
-/// FFT length used for both per-pixel demod and SNR estimation. Must
-/// match [`crate::mode_pd::FFT_LEN`].
-pub(crate) const FFT_LEN: usize = 1024;
+use crate::demod::FFT_LEN;
 
 /// Per-decoder SNR estimator. Owns its own FFT plan + scratch buffer
 /// (separate from the per-pixel demod's plan so concurrent calls never

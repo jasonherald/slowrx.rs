@@ -178,12 +178,12 @@ const IS_KNOWN_VIS: fn(u8) -> bool = |c| crate::modespec::lookup(c).is_some();
 pub struct SstvDecoder {
     resampler: Resampler,
     vis: crate::vis::VisDetector,
-    pd_demod: crate::mode_pd::PdDemod,
-    /// SNR estimator. Owns its own FFT plan (separate from `pd_demod`)
+    channel_demod: crate::demod::ChannelDemod,
+    /// SNR estimator. Owns its own FFT plan (separate from `channel_demod`)
     /// so the per-pixel demod's scratch buffer is never aliased. SNR
     /// is re-estimated periodically inside
     /// [`crate::mode_pd::decode_pd_line_pair`] (every
-    /// [`crate::mode_pd::SNR_REESTIMATE_STRIDE`] samples).
+    /// [`crate::demod::SNR_REESTIMATE_STRIDE`] samples).
     snr_est: crate::snr::SnrEstimator,
     state: State,
     samples_processed: u64,
@@ -231,7 +231,7 @@ impl SstvDecoder {
         Ok(Self {
             resampler: Resampler::new(input_sample_rate_hz)?,
             vis: crate::vis::VisDetector::new(IS_KNOWN_VIS),
-            pd_demod: crate::mode_pd::PdDemod::new(),
+            channel_demod: crate::demod::ChannelDemod::new(),
             snr_est: crate::snr::SnrEstimator::new(),
             state: State::AwaitingVis,
             samples_processed: 0,
@@ -383,7 +383,7 @@ impl SstvDecoder {
                     // Buffer is full → run FindSync once, then per-pair decode.
                     Self::run_findsync_and_decode(
                         d,
-                        &mut self.pd_demod,
+                        &mut self.channel_demod,
                         &mut self.snr_est,
                         &mut out,
                     );
@@ -460,7 +460,7 @@ impl SstvDecoder {
     )]
     fn run_findsync_and_decode(
         d: &mut DecodingState,
-        pd_demod: &mut crate::mode_pd::PdDemod,
+        channel_demod: &mut crate::demod::ChannelDemod,
         snr_est: &mut crate::snr::SnrEstimator,
         out: &mut Vec<SstvEvent>,
     ) {
@@ -490,7 +490,7 @@ impl SstvDecoder {
                         pair_seconds,
                         rate,
                         &mut d.image,
-                        pd_demod,
+                        channel_demod,
                         snr_est,
                         d.hedr_shift_hz,
                     );
@@ -527,7 +527,7 @@ impl SstvDecoder {
                         rate,
                         &mut d.image,
                         d.chroma_planes.as_mut(),
-                        pd_demod,
+                        channel_demod,
                         snr_est,
                         d.hedr_shift_hz,
                     );
@@ -554,7 +554,7 @@ impl SstvDecoder {
                         line_seconds_offset,
                         rate,
                         &mut d.image,
-                        pd_demod,
+                        channel_demod,
                         snr_est,
                         d.hedr_shift_hz,
                     );
@@ -586,7 +586,7 @@ impl SstvDecoder {
         self.working_samples_emitted = 0;
         self.vis = crate::vis::VisDetector::new(IS_KNOWN_VIS);
         self.resampler.reset_state();
-        self.pd_demod = crate::mode_pd::PdDemod::new();
+        self.channel_demod = crate::demod::ChannelDemod::new();
         self.snr_est = crate::snr::SnrEstimator::new();
     }
 
@@ -872,7 +872,7 @@ mod tests {
         // We're now in Decoding state.
         d.reset();
         // After reset, the decoder is back in AwaitingVis with FIR resampler
-        // and PdDemod state cleared. The next process call with quiet audio
+        // and ChannelDemod state cleared. The next process call with quiet audio
         // yields no events.
         let events = d.process(&[0.0_f32; 100]);
         assert!(

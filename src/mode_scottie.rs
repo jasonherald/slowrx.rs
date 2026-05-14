@@ -67,7 +67,7 @@ pub(crate) fn decode_line(
     line_seconds_offset: f64,
     rate_hz: f64,
     image: &mut crate::image::SstvImage,
-    demod: &mut crate::mode_pd::PdDemod,
+    demod: &mut crate::demod::ChannelDemod,
     snr_est: &mut crate::snr::SnrEstimator,
     hedr_shift_hz: f64,
 ) {

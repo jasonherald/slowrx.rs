@@ -35,7 +35,7 @@ pub(crate) fn decode_line(
     rate_hz: f64,
     image: &mut crate::image::SstvImage,
     chroma_planes: Option<&mut [Vec<u8>; 2]>,
-    demod: &mut crate::mode_pd::PdDemod,
+    demod: &mut crate::demod::ChannelDemod,
     snr_est: &mut crate::snr::SnrEstimator,
     hedr_shift_hz: f64,
 ) {
@@ -110,7 +110,7 @@ fn decode_r72_line(
     line_seconds_offset: f64,
     rate_hz: f64,
     image: &mut crate::image::SstvImage,
-    demod: &mut crate::mode_pd::PdDemod,
+    demod: &mut crate::demod::ChannelDemod,
     snr_est: &mut crate::snr::SnrEstimator,
     hedr_shift_hz: f64,
 ) {
@@ -165,7 +165,7 @@ fn decode_r72_line(
     }
 
     for x in 0..width_us {
-        let rgb = crate::mode_pd::ycbcr_to_rgb(y[x], cr[x], cb[x]);
+        let rgb = crate::demod::ycbcr_to_rgb(y[x], cr[x], cb[x]);
         image.put_pixel(x as u32, line_index, rgb);
     }
 }
@@ -220,7 +220,7 @@ fn decode_r36_or_r24_line(
     rate_hz: f64,
     image: &mut crate::image::SstvImage,
     chroma_planes: &mut [Vec<u8>; 2],
-    demod: &mut crate::mode_pd::PdDemod,
+    demod: &mut crate::demod::ChannelDemod,
     snr_est: &mut crate::snr::SnrEstimator,
     hedr_shift_hz: f64,
 ) {
@@ -318,7 +318,7 @@ fn decode_r36_or_r24_line(
         let y = y_buf[x];
         let cr = chroma_planes[0][line_off + x];
         let cb = chroma_planes[1][line_off + x];
-        let rgb = crate::mode_pd::ycbcr_to_rgb(y, cr, cb);
+        let rgb = crate::demod::ycbcr_to_rgb(y, cr, cb);
         image.put_pixel(x as u32, line_index, rgb);
     }
 }

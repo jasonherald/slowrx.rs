@@ -18,7 +18,7 @@ use rustfft::num_complex::Complex;
 /// [`HannBank`](crate::demod::HannBank) entries (lengths from
 /// [`HANN_LENS`](crate::demod::HANN_LENS)) and the
 /// [`SnrEstimator`](crate::snr::SnrEstimator)'s
-/// [`FFT_LEN`](crate::snr::FFT_LEN)-sample `hann_long`.
+/// [`FFT_LEN`](crate::demod::FFT_LEN)-sample `hann_long`.
 #[allow(clippy::cast_precision_loss)]
 pub(crate) fn build_hann(len: usize) -> Vec<f32> {
     if len == 0 {
