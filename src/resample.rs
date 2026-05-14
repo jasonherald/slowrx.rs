@@ -57,15 +57,18 @@ pub struct Resampler {
     /// the corresponding fractional delay. Raw taps (no normalization
     /// pass) — the windowed-sinc form already sums to ~1.0 at typical
     /// `fc` (the audit's D1 claim of "~6 dB attenuation" was a phantom
-    /// finding, verified by the `exact_rate_…` test in T1).
+    /// finding, verified by the
+    /// `exact_rate_preserves_amplitude_and_no_attenuation` test).
     taps: Box<[[f32; FIR_TAPS]; NUM_PHASES]>,
 }
 
 /// Cutoff frequency (Hz) for the resampler, derived from the input rate.
-/// `min(input_rate, WORKING_SAMPLE_RATE_HZ) × 0.45`, hard-capped at 4500 Hz —
-/// i.e. ~0.9 × Nyquist of the lower of the two rates. The cap keeps the
-/// passband from extending past SSTV's 2300 Hz video band at typical input
-/// rates (44.1k → 4961 Hz uncapped → 4500 capped).
+/// `min(input_rate, WORKING_SAMPLE_RATE_HZ) × 0.45`, hard-capped at 4500
+/// Hz. The 0.45 factor leaves a small transition band below Nyquist of
+/// the lower rate; the 4500 Hz cap pins the absolute cutoff at typical
+/// input rates (44.1k / 48k → 4961 Hz uncapped → 4500 Hz capped), so the
+/// passband easily covers SSTV's 1500–2300 Hz video band with room for
+/// the 64-tap transition rolloff.
 fn cutoff_hz(input_rate: u32) -> f64 {
     (f64::from(input_rate.min(WORKING_SAMPLE_RATE_HZ)) * 0.45).min(4500.0)
 }
@@ -164,7 +167,7 @@ impl Resampler {
                 break;
             }
             let frac = self.phase.fract();
-            let phase_idx = ((frac * NUM_PHASES as f64) as usize).min(NUM_PHASES - 1);
+            let phase_idx = ((frac * NUM_PHASES as f64).round() as usize).min(NUM_PHASES - 1);
             let taps = &self.taps[phase_idx];
             let start = self.phase.floor() as isize;
 
@@ -187,8 +190,13 @@ impl Resampler {
             self.tail = buf[drop..].to_vec();
             self.phase -= drop as f64;
         } else {
-            // Unreachable under MAX_INPUT_SAMPLE_RATE_HZ — defensive against a
-            // future cap relaxation. (#87 D2b acknowledgment.)
+            // Reached only when `buf.len() == 0` (empty input on a fresh
+            // resampler, or after a prior call drained the tail) —
+            // `phase` stays ∈ [0, 1) post-loop, so `drop = floor(phase) = 0`
+            // and `drop < buf.len()` is `0 < 0 = false`. For any non-empty
+            // `buf` under `MAX_INPUT_SAMPLE_RATE_HZ`, this branch is
+            // unreachable. Exercised by the `empty_input_returns_empty`
+            // test.
             self.tail.clear();
             self.phase -= buf.len() as f64;
         }
