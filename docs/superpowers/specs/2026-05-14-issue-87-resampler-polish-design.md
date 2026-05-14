@@ -88,7 +88,7 @@ loop {
 
 No transcendentals in the hot path; 64 MACs per output sample. The `center` / `half` locals from the old code go away.
 
-**Quantization noise** at 256 phases: max sub-sample position error = 1/512 sample ≈ 177 ns at 11.025 kHz. For a 2300 Hz tone, phase-noise contribution ≈ −52 dB — well below SSTV's noise floor on real radio. No lerp between adjacent phases for the first cut; the F6 amplitude test will catch anything bigger.
+**Quantization noise** at 256 phases (round-to-nearest with top-bucket clamp): max sub-sample position error is `1/(2·NUM_PHASES) = 1/512` sample across the interior (≈ 177 ns at 11.025 kHz), rising to `1/NUM_PHASES = 1/256` (≈ 354 ns) at the top edge where the clamp makes the bucket one-sided. For a 2300 Hz tone, RMS phase-noise contribution ≈ −52 dB — well below SSTV's noise floor on real radio. No lerp between adjacent phases for the first cut; the F6 amplitude test will catch anything bigger.
 
 **Module-level doc** updates the opening paragraph from "Hand-rolled 64-tap Hann-windowed-sinc polyphase FIR" to **"Hand-rolled 64-tap Hann-windowed-sinc polyphase FIR with 256 phase positions"** — "polyphase" is now honestly described (the per-output-sample tap recomputation is gone).
 
