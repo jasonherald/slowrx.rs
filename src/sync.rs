@@ -356,27 +356,10 @@ pub(crate) fn find_sync(has_sync: &[bool], initial_rate_hz: f64, spec: ModeSpec)
         xmax -= X_ACC_SLIP_THRESHOLD;
     }
 
-    // sync.c:120 — base offset to start of line 0's content. The xmax
-    // detection lands at the falling edge of the sync pulse, so the
-    // raw `s_secs` is `(sync_pos_in_line + sync_secs) - sync_secs =
-    // sync_pos_in_line` for any mode. PD/Robot/Martin sync at line
-    // start: s_secs ≈ 0 (slightly negative → zero-pad). Scottie sync
-    // is mid-line, so `xmax` lands ~2/3 down the line. The
-    // `xmax > 350` slip check (sync.c:117) wraps it back to the left
-    // half of the line.
-    let s_secs_raw =
-        (f64::from(xmax) / (X_ACC_BINS as f64)) * spec.line_seconds - spec.sync_seconds;
-    // sync.c:123-125 — Scottie modes don't start lines with sync.
-    // The slip-wrapped xmax doesn't correspond to a line-start anchor,
-    // so apply slowrx C's mode-specific correction to bring `s_secs`
-    // back to ~0 (line 0's content start).
-    let s_secs = match spec.sync_position {
-        crate::modespec::SyncPosition::LineStart => s_secs_raw,
-        crate::modespec::SyncPosition::Scottie => {
-            let chan_len = f64::from(spec.line_pixels) * spec.pixel_seconds;
-            s_secs_raw - chan_len / 2.0 + 2.0 * spec.porch_seconds
-        }
-    };
+    // sync.c:120-125 — convert xmax to skip seconds. The Scottie
+    // mid-line correction lives on ModeSpec; see
+    // `ModeSpec::skip_correction_seconds`.
+    let s_secs = skip_seconds_for(xmax, spec);
     let skip_samples = (s_secs * rate).round() as i64;
 
     SyncResult {
@@ -384,6 +367,18 @@ pub(crate) fn find_sync(has_sync: &[bool], initial_rate_hz: f64, spec: ModeSpec)
         skip_samples,
         slant_deg: slant_deg_detected,
     }
+}
+
+/// Convert a falling-edge `xmax` (post-slip-wrap) to skip seconds,
+/// applying the mode's sync-position offset. Pure arithmetic — no
+/// global state. The raw `s_secs` is computed assuming the falling
+/// edge lands at `(xmax / X_ACC_BINS) × line_seconds` and the sync
+/// pulse runs `sync_seconds` long; `ModeSpec::skip_correction_seconds()`
+/// then hoists the result for mid-line-sync modes (Scottie).
+#[allow(clippy::cast_precision_loss)]
+fn skip_seconds_for(xmax: i32, spec: ModeSpec) -> f64 {
+    let raw = (f64::from(xmax) / (X_ACC_BINS as f64)) * spec.line_seconds - spec.sync_seconds;
+    raw + spec.skip_correction_seconds()
 }
 
 #[cfg(test)]
