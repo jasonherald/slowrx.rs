@@ -1,10 +1,16 @@
 //! Internal rational resampler: caller's audio rate → 11025 Hz working rate.
 //!
-//! Hand-rolled 64-tap Hann-windowed-sinc polyphase FIR. We picked this over
-//! `rubato` for zero extra deps and a small file. Quality target is "audible
-//! loss < 0.1 dB across SSTV-relevant frequencies (1500-2300 Hz)" — easily
-//! met at typical input rates (44.1k, 48k). Translated in spirit from
-//! slowrx's implicit resampling inside `pcm.c`'s 44.1 kHz read loop.
+//! Hand-rolled 64-tap Hann-windowed-sinc polyphase FIR with 256 phase
+//! positions. Tap rows are precomputed once in
+//! [`Resampler::new`] (~64 KB); the hot path in [`Resampler::process`] is
+//! a quantized-phase lookup + 64-tap multiply-accumulate — no
+//! transcendentals per output sample.
+//!
+//! We picked this over `rubato` for zero extra deps and a small file.
+//! Quality target is "audible loss < 0.1 dB across SSTV-relevant
+//! frequencies (1500-2300 Hz)" — easily met at typical input rates
+//! (44.1k, 48k). Translated in spirit from slowrx's implicit resampling
+//! inside `pcm.c`'s 44.1 kHz read loop.
 
 use crate::error::{Error, Result};
 
@@ -19,6 +25,15 @@ pub const MAX_INPUT_SAMPLE_RATE_HZ: u32 = 192_000;
 /// 64 is the sweet spot at our quality target.
 const FIR_TAPS: usize = 64;
 
+/// Number of polyphase positions. Each fractional output sample's `frac`
+/// is quantized to one of `NUM_PHASES` precomputed tap rows. 256 gives a
+/// max sub-sample position error of `1 / (2·NUM_PHASES) = 1/512` sample,
+/// which at our 11025 Hz output rate corresponds to ≈ 177 ns time error
+/// — phase noise on a 2300 Hz tone (SSTV's highest video frequency) of
+/// `≈ −52 dB`, well below the audible threshold and SSTV's noise floor.
+/// Memory cost: `NUM_PHASES × FIR_TAPS × 4 B` = 64 KB per `Resampler`.
+const NUM_PHASES: usize = 256;
+
 /// Polyphase FIR resampler. Stateful — holds a tail buffer to avoid
 /// glitches across `process` calls.
 pub struct Resampler {
@@ -29,8 +44,14 @@ pub struct Resampler {
     phase: f64,
     /// Carry-over input samples from the previous call.
     tail: Vec<f32>,
-    /// Cutoff frequency normalized to input rate (taps spaced at `1/input_rate`).
-    cutoff_norm: f64,
+    /// 256-phase polyphase tap bank, indexed by `frac` quantized to
+    /// 1/256 sub-sample. Built once in [`Resampler::new`] (~64 KB, static
+    /// for the resampler's lifetime). Each row is a Hann-windowed sinc at
+    /// the corresponding fractional delay. Raw taps (no normalization
+    /// pass) — the windowed-sinc form already sums to ~1.0 at typical
+    /// `fc` (the audit's D1 claim of "~6 dB attenuation" was a phantom
+    /// finding, verified by the `exact_rate_…` test in T1).
+    taps: Box<[[f32; FIR_TAPS]; NUM_PHASES]>,
 }
 
 /// Cutoff frequency (Hz) for the resampler, derived from the input rate.
@@ -39,7 +60,11 @@ fn cutoff_hz(input_rate: u32) -> f64 {
     (f64::from(input_rate.min(WORKING_SAMPLE_RATE_HZ)) * 0.45).min(4500.0)
 }
 
-/// Compute one FIR tap value for a given tap index and fractional phase.
+/// Compute one Hann-windowed sinc FIR tap value for a given tap index
+/// and fractional phase. Called once per `(phase, tap)` pair from
+/// [`Resampler::new`] to populate the polyphase tap bank — never called
+/// from the hot path.
+///
 /// `tap_index` is in 0..`FIR_TAPS`. `frac` is in [0, 1) — the sub-sample
 /// offset of the output sample's center from the integer input grid.
 /// `fc` is the cutoff normalized to input rate (`cutoff_hz / input_rate`).
@@ -47,6 +72,11 @@ fn cutoff_hz(input_rate: u32) -> f64 {
 /// Sinc shifts with `frac`; Hann window stays anchored to the tap grid.
 /// This is the standard windowed-sinc fractional-delay formulation —
 /// see e.g. Smith, "Digital Audio Resampling Home Page" (CCRMA, 2002).
+///
+/// The taps already sum to ~1.0 at typical `fc` (the audit's D1 claim of
+/// "~6 dB attenuation" was a phantom finding — see the
+/// `exact_rate_preserves_amplitude_and_no_attenuation` test for the
+/// regression guard).
 #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 fn fir_tap(tap_index: usize, frac: f64, fc: f64) -> f32 {
     let m = FIR_TAPS as f64;
@@ -67,16 +97,34 @@ impl Resampler {
     /// # Errors
     /// Returns [`Error::InvalidSampleRate`] if `input_rate` is 0 or
     /// > [`MAX_INPUT_SAMPLE_RATE_HZ`].
+    #[allow(clippy::cast_precision_loss, clippy::large_stack_arrays)]
     pub fn new(input_rate: u32) -> Result<Self> {
         if input_rate == 0 || input_rate > MAX_INPUT_SAMPLE_RATE_HZ {
             return Err(Error::InvalidSampleRate { got: input_rate });
         }
+        let cutoff_norm = cutoff_hz(input_rate) / f64::from(input_rate);
+
+        // Build the 256-phase polyphase tap bank — one 64-tap row per
+        // quantized fractional phase. Computed once here, looked up in
+        // the hot path (no transcendentals per output sample). No
+        // normalization pass: raw Hann-windowed-sinc taps already sum
+        // to ~1.0 at typical `fc` (audit #87 D1 — phantom finding,
+        // verified by `exact_rate_preserves_amplitude_and_no_attenuation`).
+        let mut taps: Box<[[f32; FIR_TAPS]; NUM_PHASES]> =
+            Box::new([[0.0_f32; FIR_TAPS]; NUM_PHASES]);
+        for phase_idx in 0..NUM_PHASES {
+            let frac = (phase_idx as f64) / (NUM_PHASES as f64);
+            for k in 0..FIR_TAPS {
+                taps[phase_idx][k] = fir_tap(k, frac, cutoff_norm);
+            }
+        }
+
         Ok(Self {
             input_rate,
             stride: f64::from(input_rate) / f64::from(WORKING_SAMPLE_RATE_HZ),
             phase: 0.0,
             tail: Vec::new(),
-            cutoff_norm: cutoff_hz(input_rate) / f64::from(input_rate),
+            taps,
         })
     }
 
@@ -86,7 +134,8 @@ impl Resampler {
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        clippy::cast_possible_wrap
+        clippy::cast_possible_wrap,
+        clippy::needless_range_loop
     )]
     pub fn process(&mut self, input: &[f32]) -> Vec<f32> {
         // Concatenate carry-over with the new chunk.
@@ -94,25 +143,28 @@ impl Resampler {
         buf.extend_from_slice(input);
 
         let mut out = Vec::new();
-        let half = (FIR_TAPS as f64) / 2.0;
         loop {
-            let center = self.phase + half;
-            let needed_end = (center + half).ceil() as usize;
+            // D2b off-by-one fix (#87): the kernel reads indices
+            // `floor(phase)..floor(phase) + FIR_TAPS`, so it needs
+            // `floor(phase) + FIR_TAPS` samples in `buf`. Pre-#87 this
+            // was `(phase + FIR_TAPS).ceil()`, which over-reserved by one
+            // sample for fractional `phase`.
+            let needed_end = (self.phase.floor() as usize) + FIR_TAPS;
             if needed_end > buf.len() {
                 break;
             }
             let frac = self.phase.fract();
+            let phase_idx = ((frac * NUM_PHASES as f64) as usize).min(NUM_PHASES - 1);
+            let taps = &self.taps[phase_idx];
             let start = self.phase.floor() as isize;
 
-            // Convolve, computing each tap on-the-fly with the fractional
-            // phase shift. This makes the resampler a true fractional-delay
-            // FIR rather than the quantized integer-delay version.
+            // Convolve using the precomputed taps at this quantized phase.
+            // No transcendentals in the hot path.
             let mut acc: f32 = 0.0;
             for k in 0..FIR_TAPS {
-                let tap = fir_tap(k, frac, self.cutoff_norm);
                 let idx = start + k as isize;
                 if (0..buf.len() as isize).contains(&idx) {
-                    acc += tap * buf[idx as usize];
+                    acc += taps[k] * buf[idx as usize];
                 }
             }
             out.push(acc);
@@ -125,6 +177,8 @@ impl Resampler {
             self.tail = buf[drop..].to_vec();
             self.phase -= drop as f64;
         } else {
+            // Unreachable under MAX_INPUT_SAMPLE_RATE_HZ — defensive against a
+            // future cap relaxation. (#87 D2b acknowledgment.)
             self.tail.clear();
             self.phase -= buf.len() as f64;
         }
