@@ -18,7 +18,7 @@
 
 | File | Status | Role |
 |------|--------|------|
-| `src/test_tone.rs` | **new** (T1) | Generic continuous-phase FM tone generator: `SYNC_HZ` / `PORCH_HZ` / `SEPTR_HZ` / `BLACK_HZ` / `WHITE_HZ` consts, `lum_to_freq`, `ToneWriter` struct (with `new`/`with_pre_silence_samples`/`with_capacity`/`fill_to`/`fill_secs`/`len`/`into_vec`). Gated `cfg(any(test, feature = "test-support"))`. |
+| `src/test_tone.rs` | **new** (T1) | Generic continuous-phase FM tone generator: `SYNC_HZ` / `PORCH_HZ` / `SEPTR_HZ` / `BLACK_HZ` / `WHITE_HZ` consts, `lum_to_freq`, `ToneWriter` struct (with `new`/`with_pre_silence_samples`/`fill_to`/`fill_secs`/`len`/`into_vec`). Gated `cfg(any(test, feature = "test-support"))`. |
 | `src/pd_test_encoder.rs` | modify | Drop local consts + `lum_to_freq` + `fill_to`; import from `test_tone`. Use `ToneWriter`. `pub fn` → `pub(crate) fn` (T2). |
 | `src/robot_test_encoder.rs` | modify | Same as PD. |
 | `src/scottie_test_encoder.rs` | modify | Same as PD. Plus E2 (delete stale doc paragraph), `pub fn` → `pub(crate) fn` (T2). |
@@ -108,14 +108,6 @@ impl ToneWriter {
     pub fn with_pre_silence_samples(n: usize) -> Self {
         Self {
             out: vec![0.0; n],
-            phase: 0.0,
-        }
-    }
-
-    /// Construct with capacity pre-reserved (no samples emitted).
-    pub fn with_capacity(cap: usize) -> Self {
-        Self {
-            out: Vec::with_capacity(cap),
             phase: 0.0,
         }
     }
@@ -256,8 +248,8 @@ use crate::test_tone::{lum_to_freq, ToneWriter, PORCH_HZ, SYNC_HZ};
 
 (c) In `encode_pd`, the body currently allocates an output Vec and a phase scalar, then calls `fill_to(&mut out, freq, target_n, &mut phase)` many times, returning `out` at the end. Apply this textual substitution throughout the fn:
 
-- `let mut out: Vec<f32> = Vec::with_capacity(...);` → `let mut tone = ToneWriter::with_capacity(...);`
-  (or `Vec::new()` → `ToneWriter::new()` if no capacity hint is used. Check the actual current init.)
+- `let mut out: Vec<f32> = Vec::new();` → `let mut tone = ToneWriter::new();`
+  (or `vec![0.0; n]` → `ToneWriter::with_pre_silence_samples(n)` if the encoder pre-pads with silence.)
 - `let mut phase = 0.0_f64;` → delete (it lives on `ToneWriter` now).
 - Each `fill_to(&mut out, freq, target_n, &mut phase);` → `tone.fill_to(freq, target_n);`.
 - Final `out` (the return expression) → `tone.into_vec()`.

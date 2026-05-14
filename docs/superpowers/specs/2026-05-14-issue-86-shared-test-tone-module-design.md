@@ -48,7 +48,6 @@ pub(crate) struct ToneWriter {
 impl ToneWriter {
     pub fn new() -> Self;
     pub fn with_pre_silence_samples(n: usize) -> Self;
-    pub fn with_capacity(cap: usize) -> Self;
 
     /// Emit samples up to absolute output index `target_n` (exclusive) at
     /// `freq_hz`. Cumulative-target — call repeatedly with increasing
@@ -169,7 +168,7 @@ The three wrapper signatures match the underlying fns exactly (verify against th
 The encoder body pattern changes from:
 
 ```rust
-let mut out: Vec<f32> = Vec::with_capacity(estimated_total_samples);
+let mut out: Vec<f32> = Vec::new();
 let mut phase = 0.0_f64;
 // ... many fill_to(&mut out, freq, target_n, &mut phase) calls ...
 out
@@ -178,7 +177,7 @@ out
 to:
 
 ```rust
-let mut tone = ToneWriter::with_capacity(estimated_total_samples);
+let mut tone = ToneWriter::new();
 // ... many tone.fill_to(freq, target_n) calls ...
 tone.into_vec()
 ```
