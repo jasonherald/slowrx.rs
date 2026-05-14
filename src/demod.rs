@@ -424,7 +424,7 @@ pub(crate) struct ChannelDecodeCtx<'a> {
 /// estimator. Lifetime-only borrow; neither field is owned here.
 pub(crate) struct DemodState<'a> {
     pub demod: &'a mut ChannelDemod,
-    pub snr: &'a mut crate::snr::SnrEstimator,
+    pub snr_est: &'a mut crate::snr::SnrEstimator,
 }
 
 /// Decode one image-line *channel* (`Y_odd`, `Cr`, `Cb`, `Y_even` for PD;
@@ -466,9 +466,10 @@ pub(crate) fn decode_one_channel_into(
 ) {
     // SAFETY of the f64→i64 / f64→usize casts below: every `.round() as i64`
     // / `as usize` in this fn computes a sample-buffer index. Out-of-range
-    // values either saturate to i64::MAX/MIN (turning into out-of-bounds
-    // reads that the `audio.get(...)` / explicit `.max(0).min(audio.len())`
-    // logic resolves to 0.0 = silence) or are clamped before indexing.
+    // values either saturate to `i64::MAX` / `i64::MIN` (then fail the
+    // `abs_idx >= 0 && (abs_idx as usize) < ctx.audio.len()` guard inside
+    // the `read_audio` closure below — resolving to 0.0 = silence) or are
+    // bounded by an in-line `< stored_lum.len()` check before indexing.
     // Nothing panics on an unexpected f64; the worst case is a black pixel.
     // (#85 C20.)
 
@@ -547,7 +548,7 @@ pub(crate) fn decode_one_channel_into(
         if mod_round(s, SNR_REESTIMATE_STRIDE) == 0 {
             // SNR estimator reads the absolute audio (across channels);
             // we want the SNR of the entire signal, not just this channel.
-            snr_db = state.snr.estimate(ctx.audio, s, ctx.hedr_shift_hz);
+            snr_db = state.snr_est.estimate(ctx.audio, s, ctx.hedr_shift_hz);
         }
 
         if mod_round(s, PIXEL_FFT_STRIDE) == 0 {

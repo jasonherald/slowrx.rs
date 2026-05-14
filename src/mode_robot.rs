@@ -150,10 +150,7 @@ fn decode_r72_line(
             chan_starts_sec[chan_idx],
             line_seconds_offset,
             &ctx,
-            &mut crate::demod::DemodState {
-                demod,
-                snr: snr_est,
-            },
+            &mut crate::demod::DemodState { demod, snr_est },
         );
     }
 
@@ -252,10 +249,7 @@ fn decode_r36_or_r24_line(
         chan_start_y,
         line_seconds_offset,
         &ctx_y,
-        &mut crate::demod::DemodState {
-            demod,
-            snr: snr_est,
-        },
+        &mut crate::demod::DemodState { demod, snr_est },
     );
 
     // Chroma channel — use spec's native pixel_seconds.
@@ -272,10 +266,7 @@ fn decode_r36_or_r24_line(
         chan_start_chroma,
         line_seconds_offset,
         &ctx_chroma,
-        &mut crate::demod::DemodState {
-            demod,
-            snr: snr_est,
-        },
+        &mut crate::demod::DemodState { demod, snr_est },
     );
 
     // Determine which chroma plane this line wrote into.

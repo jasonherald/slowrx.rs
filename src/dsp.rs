@@ -1,8 +1,8 @@
 //! Generic DSP primitives used across the decoder.
 //!
 //! - [`build_hann`] — the canonical zero/one-safe Hann-window builder
-//!   (the four pre-#85 copies in `vis.rs` / `sync.rs` / `snr.rs` /
-//!   `mode_pd.rs` collapse here, with the safe `n <= 1` handling).
+//!   (the three pre-#85 copies in `vis.rs` / `sync.rs` / `snr.rs` collapse
+//!   here, with the safe `n <= 1` handling).
 //! - [`power`] — `|c|²` as `f64`, the replacement for three inline-closure
 //!   copies.
 //! - [`get_bin`] — frequency → FFT bin index with slowrx C-truncation

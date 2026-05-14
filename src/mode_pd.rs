@@ -107,10 +107,7 @@ pub(crate) fn decode_pd_line_pair(
             chan_starts_sec[chan_idx],
             pair_seconds,
             &ctx,
-            &mut crate::demod::DemodState {
-                demod,
-                snr: snr_est,
-            },
+            &mut crate::demod::DemodState { demod, snr_est },
         );
     }
 

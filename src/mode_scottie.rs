@@ -124,10 +124,7 @@ pub(crate) fn decode_line(
             chan_starts_sec[chan_idx],
             line_seconds_offset,
             &ctx,
-            &mut crate::demod::DemodState {
-                demod,
-                snr: snr_est,
-            },
+            &mut crate::demod::DemodState { demod, snr_est },
         );
     }
 
