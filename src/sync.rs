@@ -603,7 +603,7 @@ mod tests {
     /// (0.3% drift falls within the Hough 0.5°-quantized deadband;
     /// 0.5% is the minimum drift that reliably triggers correction.)
     #[test]
-    fn find_sync_corrects_0p3pct_slant_at_pd120() {
+    fn find_sync_corrects_0p5pct_slant_at_pd120() {
         let spec = modespec::for_mode(crate::modespec::SstvMode::Pd120);
         let true_rate = f64::from(WORKING_SAMPLE_RATE_HZ);
         let capture_rate = true_rate * 1.005;
