@@ -69,10 +69,9 @@ impl Default for HannBank {
 ///
 /// slowrx also bumps the index up by one for Scottie DX (`Mode == SDX`)
 /// when `WinIdx < 6`. The Scottie family decoder applies that bump
-/// post-hoc inside [`crate::mode_pd::decode_one_channel_into`]
-/// (matching slowrx C `video.c:367` exactly), so this bare selector
-/// — and the [`window_idx_for_snr_with_hysteresis`] variant — stay
-/// mode-agnostic.
+/// post-hoc inside [`decode_one_channel_into`] (matching slowrx C
+/// `video.c:367` exactly), so this bare selector — and the
+/// [`window_idx_for_snr_with_hysteresis`] variant — stay mode-agnostic.
 #[must_use]
 pub(crate) fn window_idx_for_snr(snr_db: f64) -> usize {
     if snr_db >= 20.0 {
@@ -398,6 +397,209 @@ impl Default for ChannelDemod {
 /// re-estimates. slowrx re-estimates every 256 samples at `44_100` Hz
 /// (`video.c:343`); scaled to `11_025` Hz that's 64.
 pub(crate) const SNR_REESTIMATE_STRIDE: i64 = 64;
+
+/// Distance, in working-rate samples, between successive per-pixel
+/// FFTs inside [`decode_one_channel_into`]. slowrx takes an FFT every
+/// 6 samples at `44_100` Hz (`video.c:350` — `if (SampleNum % 6 == 0)`).
+/// At our 4×-lower `11_025` Hz working rate that scales to ~1.5
+/// samples; we use stride=1 (FFT every working-rate sample) so the
+/// pixel-time readout of `stored_lum` is always exactly at-or-very-near
+/// the pixel center, with no stride-induced positional error. The
+/// cost difference vs slowrx's stride=6 is negligible on offline-batch
+/// decoding at `11_025` Hz.
+const PIXEL_FFT_STRIDE: i64 = 1;
+
+/// Per-channel-decode-call invariants — these don't change between channels
+/// of the same image. Bundled to cut [`decode_one_channel_into`]'s signature
+/// from 11 args down to 5 (#85 B3).
+pub(crate) struct ChannelDecodeCtx<'a> {
+    pub audio: &'a [f32],
+    pub skip_samples: i64,
+    pub rate_hz: f64,
+    pub hedr_shift_hz: f64,
+    pub spec: crate::modespec::ModeSpec,
+}
+
+/// Per-call mutable state: the channel demod's FFT + Hann bank, plus the SNR
+/// estimator. Lifetime-only borrow; neither field is owned here.
+pub(crate) struct DemodState<'a> {
+    pub demod: &'a mut ChannelDemod,
+    pub snr: &'a mut crate::snr::SnrEstimator,
+}
+
+/// Decode one image-line *channel* (`Y_odd`, `Cr`, `Cb`, `Y_even` for PD;
+/// `Y`/`Cr`/`Cb` for Robot; `G`/`B`/`R` for Scottie/Martin) into `out`,
+/// producing one luminance byte per output pixel.
+///
+/// Implements slowrx's per-pixel demod inner loop (`video.c:259-410`)
+/// for a single channel: an FFT every [`PIXEL_FFT_STRIDE`] samples
+/// produces the most-recent `Freq`, which fills `StoredLum` at every
+/// sample. Pixel times read out of `StoredLum`. SNR is re-estimated
+/// every [`SNR_REESTIMATE_STRIDE`] samples and feeds the SNR-adaptive
+/// Hann window selector with 1 dB hysteresis (see
+/// [`crate::mode_pd::decode_pd_line_pair`]'s
+/// `#44 lifted with hysteresis (0.3.2)` note and
+/// [`window_idx_for_snr_with_hysteresis`]).
+///
+/// `chan_start_sec` is the channel's start time relative to the radio
+/// frame; `radio_frame_offset_seconds` is the time-base offset of the
+/// radio frame being decoded — PD passes `pair_index * line_seconds`,
+/// Robot/Scottie/Martin pass `line_index * line_seconds`. The helper
+/// itself is mode-agnostic — it only sees an additive seconds offset
+/// folded inside the single `round()`. `ctx` carries the audio slice
+/// plus the per-image invariants (`skip_samples`, `rate_hz`,
+/// `hedr_shift_hz`, `spec`); `state` carries the mutable per-call FFT
+/// context and SNR estimator. See [`ChannelDecodeCtx`] and
+/// [`DemodState`].
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap
+)]
+pub(crate) fn decode_one_channel_into(
+    out: &mut [u8],
+    chan_start_sec: f64,
+    radio_frame_offset_seconds: f64,
+    ctx: &ChannelDecodeCtx<'_>,
+    state: &mut DemodState<'_>,
+) {
+    // SAFETY of the f64→i64 / f64→usize casts below: every `.round() as i64`
+    // / `as usize` in this fn computes a sample-buffer index. Out-of-range
+    // values either saturate to i64::MAX/MIN (turning into out-of-bounds
+    // reads that the `audio.get(...)` / explicit `.max(0).min(audio.len())`
+    // logic resolves to 0.0 = silence) or are clamped before indexing.
+    // Nothing panics on an unexpected f64; the worst case is a black pixel.
+    // (#85 C20.)
+
+    let pixel_secs = ctx.spec.pixel_seconds;
+    let width = ctx.spec.line_pixels as usize;
+
+    // Pixel sample times (slowrx video.c:140-142) — absolute audio indices.
+    // SINGLE `round()` over `(radio_frame_offset_seconds + chan_start_sec +
+    // (x + 0.5) * pixel_secs) * rate`; matches slowrx exactly.
+    //
+    // `radio_frame_offset_seconds` is the time-base offset of the radio
+    // frame the caller is decoding: PD passes `pair_index * line_seconds`;
+    // Robot passes `line_index * line_seconds`. The helper itself is
+    // mode-agnostic — it only sees an additive seconds offset folded
+    // inside the single `round()`.
+    let mut pixel_times: Vec<i64> = Vec::with_capacity(width);
+    for x in 0..width {
+        let secs_in_frame = chan_start_sec + pixel_secs * (x as f64 + 0.5);
+        let abs = ctx.skip_samples
+            + ((radio_frame_offset_seconds + secs_in_frame) * ctx.rate_hz).round() as i64;
+        pixel_times.push(abs);
+    }
+
+    let first_time = pixel_times[0];
+    let last_time = pixel_times[width - 1];
+    let half_fft = (FFT_LEN as i64) / 2;
+    let sweep_start = first_time - half_fft;
+    let sweep_end = last_time + half_fft + 1;
+
+    let sweep_len = (sweep_end - sweep_start).max(0) as usize;
+    let mut stored_lum = vec![0_u8; sweep_len];
+
+    // SNR is sticky across the sweep; slowrx initializes with `SNR = 0`
+    // (`video.c:36`) so the first `WinIdx` lookup uses index 4 (slowrx C's
+    // 256-sample Hann window; equivalently `HANN_LENS[4] = 64` samples
+    // in slowrx.rs at our 11_025 Hz working rate, applied inside a
+    // [`FFT_LEN`] = 1024 FFT with the rest zero-padded).
+    let mut snr_db = 0.0_f64;
+    let mut current_freq = 1500.0_f64 + ctx.hedr_shift_hz;
+
+    // Per-channel local state for SNR-adaptive Hann selection. The
+    // initial value is the last index of [`HANN_LENS`] — i.e. the
+    // longest, most-noise-rejecting window — which is the conservative
+    // cold-start default. The hysteresis selector ratchets one band
+    // per FFT toward `window_idx_for_snr(snr_db)`, so with
+    // `snr_db = 0.0` (baseline idx 4 — matching slowrx's
+    // pure-threshold value at SNR=0.0: ≥ -5 → 4) the cold-start
+    // convergence is 6 → 5 → 4 across the first two FFTs. Once
+    // `snr_db` updates from `SNR_REESTIMATE_STRIDE` the selector
+    // tracks the actual SNR with the same one-band-per-call ratchet.
+    let mut prev_win_idx = HANN_LENS.len() - 1;
+
+    // Read absolute audio with no channel-boundary mask. slowrx FFTs
+    // across channel boundaries (`video.c::GetVideo`); the peak search in
+    // 1500-2300 Hz still locks onto the dominant video tone even when
+    // adjacent channels' content leaks into the windowed FFT support.
+    // The previous channel-bounded mask (#45) hurt the leftmost/rightmost
+    // ~60 pixels of every channel on real radio — verified against
+    // Dec-2017 ARISS captures where the masked decode showed visible
+    // vertical banding at every channel edge.
+    let read_audio = |abs_idx: i64| -> f32 {
+        if abs_idx >= 0 && (abs_idx as usize) < ctx.audio.len() {
+            ctx.audio[abs_idx as usize]
+        } else {
+            0.0
+        }
+    };
+
+    // Pre-fill a scratch buffer the FFT can index linearly. Cheaper than
+    // copying `audio[…]` per sample inside the inner loop.
+    let scratch_audio: Vec<f32> = (sweep_start..sweep_end).map(read_audio).collect();
+
+    let mod_round = |s: i64, stride: i64| -> i64 { s.rem_euclid(stride) };
+
+    for s in sweep_start..sweep_end {
+        if mod_round(s, SNR_REESTIMATE_STRIDE) == 0 {
+            // SNR estimator reads the absolute audio (across channels);
+            // we want the SNR of the entire signal, not just this channel.
+            snr_db = state.snr.estimate(ctx.audio, s, ctx.hedr_shift_hz);
+        }
+
+        if mod_round(s, PIXEL_FFT_STRIDE) == 0 {
+            // SNR-adaptive Hann window length WITH 1 dB hysteresis band.
+            // The bare `window_idx_for_snr` function flip-flops at threshold
+            // boundaries when real-radio SNR fluctuates ~0.5 dB across the
+            // SNR re-estimation cadence (5.8 ms = ~21 R36-Y pixels) — that
+            // produced the vertical squiggle artifact in V2.2's Fram2 output
+            // (#71). The hysteresis variant requires SNR to move past the
+            // threshold by ≥ 0.5 dB in the direction of the new index before
+            // accepting a change. See
+            // [`window_idx_for_snr_with_hysteresis`] and the 0.3.2 entry in
+            // `docs/intentional-deviations.md`.
+            let mut win_idx = window_idx_for_snr_with_hysteresis(snr_db, prev_win_idx);
+            prev_win_idx = win_idx;
+            // slowrx C video.c:367 — Scottie DX bumps WinIdx up by one when not
+            // already at saturation, giving SDX's 1.08 ms/pixel a longer
+            // integration window. Applied AFTER the hysteresis selector so
+            // `prev_win_idx` continues tracking the un-bumped SNR-derived index
+            // (the bump shouldn't compound across pixels).
+            if ctx.spec.mode == crate::modespec::SstvMode::ScottieDx
+                && win_idx < HANN_LENS.len() - 1
+            {
+                win_idx += 1;
+            }
+            let center_in_scratch = s - sweep_start;
+            current_freq = state.demod.pixel_freq(
+                &scratch_audio,
+                center_in_scratch,
+                ctx.hedr_shift_hz,
+                win_idx,
+            );
+        }
+
+        let lum = freq_to_luminance(current_freq, ctx.hedr_shift_hz);
+        let idx = (s - sweep_start) as usize;
+        if idx < stored_lum.len() {
+            stored_lum[idx] = lum;
+        }
+    }
+
+    for x in 0..width {
+        let pixel_time = pixel_times[x];
+        let rel = pixel_time - sweep_start;
+        let lum = if rel >= 0 && (rel as usize) < stored_lum.len() {
+            stored_lum[rel as usize]
+        } else {
+            0
+        };
+        out[x] = lum;
+    }
+}
 
 #[cfg(test)]
 #[allow(

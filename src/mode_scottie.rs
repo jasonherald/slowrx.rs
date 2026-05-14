@@ -104,36 +104,30 @@ pub(crate) fn decode_line(
 
     let width_us = width as usize;
 
-    // Channel sample-range bounds, computed once per channel with a
-    // single `round()` per bound (matches slowrx `video.c:140-142` to
-    // avoid per-pixel rounding drift).
-    let chan_bounds_abs: [(i64, i64); 3] = std::array::from_fn(|i| {
-        let start_sec = chan_starts_sec[i];
-        let end_sec = start_sec + chan_len;
-        let start_abs = skip_samples + ((line_seconds_offset + start_sec) * rate_hz).round() as i64;
-        let end_abs = skip_samples + ((line_seconds_offset + end_sec) * rate_hz).round() as i64;
-        (start_abs, end_abs)
-    });
-
     // Decode each channel into its own buffer.
     let mut g = vec![0_u8; width_us];
     let mut b = vec![0_u8; width_us];
     let mut r = vec![0_u8; width_us];
 
+    let ctx = crate::demod::ChannelDecodeCtx {
+        audio,
+        skip_samples,
+        rate_hz,
+        hedr_shift_hz,
+        spec,
+    };
+
     let buffers: [&mut [u8]; 3] = [&mut g, &mut b, &mut r];
     for (chan_idx, buf) in buffers.into_iter().enumerate() {
-        crate::mode_pd::decode_one_channel_into(
+        crate::demod::decode_one_channel_into(
             buf,
             chan_starts_sec[chan_idx],
-            chan_bounds_abs[chan_idx],
-            spec,
-            audio,
-            skip_samples,
             line_seconds_offset,
-            rate_hz,
-            demod,
-            snr_est,
-            hedr_shift_hz,
+            &ctx,
+            &mut crate::demod::DemodState {
+                demod,
+                snr: snr_est,
+            },
         );
     }
 

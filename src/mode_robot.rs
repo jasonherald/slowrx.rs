@@ -91,10 +91,9 @@ pub(crate) fn decode_line(
 ///   `ChanStart[1]` = `ChanStart[0]` + `chan_len` + septr
 ///   `ChanStart[2]` = `ChanStart[1]` + `chan_len` + septr
 ///
-/// Reuses [`crate::mode_pd::decode_one_channel_into`] for per-channel
+/// Reuses [`crate::demod::decode_one_channel_into`] for per-channel
 /// FFT-based demod — that helper is mode-agnostic (reads
-/// `pixel_seconds` from `spec`, walks audio slice between channel
-/// bounds, fills a `&mut [u8]`).
+/// `pixel_seconds` from `spec`, walks audio slice, fills a `&mut [u8]`).
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
@@ -132,35 +131,29 @@ fn decode_r72_line(
 
     let width_us = width as usize;
 
-    // Channel sample-range bounds, computed once with a single
-    // `round()` per bound (matches slowrx video.c:140-142 to avoid
-    // per-pair rounding drift).
-    let chan_bounds_abs: [(i64, i64); 3] = std::array::from_fn(|i| {
-        let start_sec = chan_starts_sec[i];
-        let end_sec = start_sec + chan_len;
-        let start_abs = skip_samples + ((line_seconds_offset + start_sec) * rate_hz).round() as i64;
-        let end_abs = skip_samples + ((line_seconds_offset + end_sec) * rate_hz).round() as i64;
-        (start_abs, end_abs)
-    });
-
     let mut y = vec![0_u8; width_us];
     let mut cr = vec![0_u8; width_us];
     let mut cb = vec![0_u8; width_us];
 
+    let ctx = crate::demod::ChannelDecodeCtx {
+        audio,
+        skip_samples,
+        rate_hz,
+        hedr_shift_hz,
+        spec,
+    };
+
     let buffers: [&mut [u8]; 3] = [&mut y, &mut cr, &mut cb];
     for (chan_idx, buf) in buffers.into_iter().enumerate() {
-        crate::mode_pd::decode_one_channel_into(
+        crate::demod::decode_one_channel_into(
             buf,
             chan_starts_sec[chan_idx],
-            chan_bounds_abs[chan_idx],
-            spec,
-            audio,
-            skip_samples,
             line_seconds_offset,
-            rate_hz,
-            demod,
-            snr_est,
-            hedr_shift_hz,
+            &ctx,
+            &mut crate::demod::DemodState {
+                demod,
+                snr: snr_est,
+            },
         );
     }
 
@@ -230,28 +223,11 @@ fn decode_r36_or_r24_line(
     let septr_secs = spec.septr_seconds;
     let width = spec.line_pixels;
     let chan_len_y = f64::from(width) * pixel_secs * 2.0;
-    let chan_len_chroma = f64::from(width) * pixel_secs;
 
     let chan_start_y = sync_secs + porch_secs;
     let chan_start_chroma = chan_start_y + chan_len_y + septr_secs;
 
     let width_us = width as usize;
-
-    let y_bounds_abs = {
-        let start_abs =
-            skip_samples + ((line_seconds_offset + chan_start_y) * rate_hz).round() as i64;
-        let end_abs = skip_samples
-            + ((line_seconds_offset + chan_start_y + chan_len_y) * rate_hz).round() as i64;
-        (start_abs, end_abs)
-    };
-    let chroma_bounds_abs = {
-        let start_abs =
-            skip_samples + ((line_seconds_offset + chan_start_chroma) * rate_hz).round() as i64;
-        let end_abs = skip_samples
-            + ((line_seconds_offset + chan_start_chroma + chan_len_chroma) * rate_hz).round()
-                as i64;
-        (start_abs, end_abs)
-    };
 
     let mut y_buf = vec![0_u8; width_us];
     let mut chroma_buf = vec![0_u8; width_us];
@@ -263,33 +239,43 @@ fn decode_r36_or_r24_line(
     let mut spec_y = spec;
     spec_y.pixel_seconds = pixel_secs * 2.0;
 
-    crate::mode_pd::decode_one_channel_into(
-        &mut y_buf,
-        chan_start_y,
-        y_bounds_abs,
-        spec_y,
+    let ctx_y = crate::demod::ChannelDecodeCtx {
         audio,
         skip_samples,
-        line_seconds_offset,
         rate_hz,
-        demod,
-        snr_est,
         hedr_shift_hz,
+        spec: spec_y,
+    };
+
+    crate::demod::decode_one_channel_into(
+        &mut y_buf,
+        chan_start_y,
+        line_seconds_offset,
+        &ctx_y,
+        &mut crate::demod::DemodState {
+            demod,
+            snr: snr_est,
+        },
     );
 
     // Chroma channel — use spec's native pixel_seconds.
-    crate::mode_pd::decode_one_channel_into(
-        &mut chroma_buf,
-        chan_start_chroma,
-        chroma_bounds_abs,
-        spec,
+    let ctx_chroma = crate::demod::ChannelDecodeCtx {
         audio,
         skip_samples,
-        line_seconds_offset,
         rate_hz,
-        demod,
-        snr_est,
         hedr_shift_hz,
+        spec,
+    };
+
+    crate::demod::decode_one_channel_into(
+        &mut chroma_buf,
+        chan_start_chroma,
+        line_seconds_offset,
+        &ctx_chroma,
+        &mut crate::demod::DemodState {
+            demod,
+            snr: snr_est,
+        },
     );
 
     // Determine which chroma plane this line wrote into.
