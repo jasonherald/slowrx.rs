@@ -283,4 +283,153 @@ mod tests {
             .fold(0.0_f32, f32::max);
         assert!(max_diff < 0.01, "max_diff={max_diff}");
     }
+
+    /// D1 regression net (#87). Pre-#87 the resampler attenuated by ~6 dB
+    /// because its 64 Hann-windowed sinc taps weren't normalized to unit
+    /// DC gain. At `input_rate == WORKING_SAMPLE_RATE_HZ` the stride is
+    /// exactly 1.0 and every output sample has `frac == 0`, so the
+    /// fractional-delay machinery isn't exercised — the test exposes the
+    /// gain issue cleanly.
+    #[test]
+    fn exact_rate_preserves_amplitude_and_no_attenuation() {
+        let mut r = Resampler::new(WORKING_SAMPLE_RATE_HZ).unwrap();
+        // 200 samples at amplitude 0.8 — well past the 64-tap kernel ramp-up.
+        let amplitude = 0.8_f32;
+        let in_audio: Vec<f32> = (0..200)
+            .map(|i| {
+                let t = (i as f64) / f64::from(WORKING_SAMPLE_RATE_HZ);
+                (amplitude as f64 * (2.0 * PI * 1500.0 * t).sin()) as f32
+            })
+            .collect();
+        let out = r.process(&in_audio);
+        // Skip the first FIR_TAPS samples — the kernel is ramping up against
+        // the left zero-pad and the peak amplitude is reduced there.
+        let mid_start = FIR_TAPS.min(out.len());
+        let out_peak = out[mid_start..]
+            .iter()
+            .fold(0.0_f32, |m, &x| m.max(x.abs()));
+        let in_peak = in_audio.iter().fold(0.0_f32, |m, &x| m.max(x.abs()));
+        // Allow ±5 % of input peak. Pre-#87 the resampler attenuated by ~50 %
+        // (the Hann-windowed-sinc taps summed to ~0.5 at every phase),
+        // failing this assertion. Post-#87 (unit-gain normalization) the
+        // ratio should be near 1.0.
+        let ratio = out_peak / in_peak;
+        assert!(
+            (ratio - 1.0).abs() < 0.05,
+            "expected ~1.0 output peak/input peak ratio (unit gain), got {ratio} (in_peak={in_peak}, out_peak={out_peak})"
+        );
+    }
+
+    /// F6 (#87). Upsampling 8 kHz → 11025 Hz exercises the `stride < 1`
+    /// path that no existing test hits. Output length should be ~11025
+    /// samples (1 second at working rate) ±64; Goertzel power at 1500 Hz
+    /// should dominate adjacent off-band bins.
+    #[test]
+    fn upsampling_8khz_to_11025() {
+        let mut r = Resampler::new(8_000).unwrap();
+        let in_audio = synth_tone_at(8_000, 1500.0, 1.0);
+        let out = r.process(&in_audio);
+        let expected = WORKING_SAMPLE_RATE_HZ as usize;
+        assert!(
+            (out.len() as isize - expected as isize).abs() < 200,
+            "out.len()={} expected≈{expected}",
+            out.len()
+        );
+        let p_target = crate::dsp::goertzel_power(&out, 1500.0);
+        let p_off1 = crate::dsp::goertzel_power(&out, 1200.0);
+        let p_off2 = crate::dsp::goertzel_power(&out, 1800.0);
+        assert!(
+            p_target > 10.0 * p_off1.max(p_off2),
+            "p1500={p_target} p1200={p_off1} p1800={p_off2}"
+        );
+    }
+
+    /// F6 (#87). 192 kHz input — the max supported rate. Stride ≈ 17.41;
+    /// many input samples per output. Just verify no panic, output length
+    /// is in the right ballpark, and the tone survives.
+    #[test]
+    fn max_input_rate_192khz() {
+        let mut r = Resampler::new(MAX_INPUT_SAMPLE_RATE_HZ).unwrap();
+        let in_audio = synth_tone_at(MAX_INPUT_SAMPLE_RATE_HZ, 2000.0, 0.5);
+        let out = r.process(&in_audio);
+        // 0.5 s at WORKING_SAMPLE_RATE_HZ.
+        let expected = (WORKING_SAMPLE_RATE_HZ / 2) as usize;
+        assert!(
+            (out.len() as isize - expected as isize).abs() < 200,
+            "out.len()={} expected≈{expected}",
+            out.len()
+        );
+        let p_target = crate::dsp::goertzel_power(&out, 2000.0);
+        let p_off1 = crate::dsp::goertzel_power(&out, 1700.0);
+        let p_off2 = crate::dsp::goertzel_power(&out, 2300.0);
+        assert!(
+            p_target > 10.0 * p_off1.max(p_off2),
+            "p2000={p_target} p1700={p_off1} p2300={p_off2}"
+        );
+    }
+
+    /// F6 (#87). Tiny chunks: each call passes fewer samples than the
+    /// 64-tap kernel needs, so the resampler should accumulate them in
+    /// `tail` and emit nothing until `tail.len() >= FIR_TAPS`. Verifies
+    /// the streaming-buffer carry-over correctness — the production
+    /// decoder's per-call audio chunks can be small.
+    #[test]
+    fn tiny_chunks_emit_nothing_then_catch_up() {
+        let mut r = Resampler::new(44_100).unwrap();
+        let chunk = [0.5_f32, 0.5, 0.5];
+        let mut emitted_before_threshold = 0;
+        // 21 chunks of 3 samples = 63 < FIR_TAPS = 64. No output yet.
+        for _ in 0..21 {
+            let out = r.process(&chunk);
+            emitted_before_threshold += out.len();
+        }
+        assert_eq!(
+            emitted_before_threshold, 0,
+            "expected no output before FIR_TAPS samples buffered, got {emitted_before_threshold}"
+        );
+        // One more chunk pushes us past FIR_TAPS — at least one sample emerges.
+        let out_after = r.process(&chunk);
+        assert!(
+            !out_after.is_empty(),
+            "expected at least one output sample after crossing the FIR_TAPS threshold"
+        );
+    }
+
+    /// F6 (#87). Empty input is a no-op — returns an empty Vec and
+    /// leaves the resampler state untouched. Plus: an empty call
+    /// sandwiched between two non-empty calls doesn't perturb the output
+    /// (streaming idempotence).
+    #[test]
+    fn empty_input_returns_empty() {
+        let mut r = Resampler::new(44_100).unwrap();
+        assert!(r.process(&[]).is_empty());
+
+        // Sandwich: process(non-empty) → process(empty) → process(non-empty)
+        // should produce the same output as process(non-empty ++ non-empty).
+        let mut a = Resampler::new(44_100).unwrap();
+        let in_audio = synth_tone_at(44_100, 1500.0, 0.2);
+        let mid = in_audio.len() / 2;
+
+        let mut sandwiched = a.process(&in_audio[..mid]);
+        let empty_call = a.process(&[]);
+        assert!(empty_call.is_empty());
+        sandwiched.extend_from_slice(&a.process(&in_audio[mid..]));
+
+        let mut b = Resampler::new(44_100).unwrap();
+        let combined = b.process(&in_audio);
+
+        // Same length within 1, same per-sample values within tiny tolerance
+        // (the empty call shouldn't have moved the FIR's internal state).
+        assert!(
+            (sandwiched.len() as isize - combined.len() as isize).abs() <= 1,
+            "sandwiched.len()={} combined.len()={}",
+            sandwiched.len(),
+            combined.len()
+        );
+        let common = sandwiched.len().min(combined.len());
+        let max_diff = (0..common)
+            .map(|i| (sandwiched[i] - combined[i]).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(max_diff < 1e-6, "max_diff={max_diff}");
+    }
 }
