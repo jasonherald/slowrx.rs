@@ -624,7 +624,7 @@ cargo test --all-features --locked --release
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 ```
 
-All four must pass. Expected test counts: lib ~129 (124 pre-#87 + 5 new F6 tests); roundtrip 11/11; everything else unchanged. Doc clean.
+All four must pass. Expected test counts: lib 128 (123 pre-#87 + 5 new F6 tests); roundtrip 11/11; everything else unchanged. Doc clean.
 
 - [ ] **Step 3: Commit**
 
