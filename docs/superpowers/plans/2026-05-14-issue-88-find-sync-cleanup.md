@@ -199,8 +199,8 @@ Find the `#[cfg(test)] mod tests` block in `src/modespec.rs` (search for `^mod t
     fn skip_correction_seconds_zero_for_line_start_modes() {
         for mode in [
             SstvMode::Pd120,
-            SstvMode::Pd160,
             SstvMode::Pd180,
+            SstvMode::Pd240,
             SstvMode::Robot24,
             SstvMode::Robot36,
             SstvMode::Robot72,
@@ -218,9 +218,9 @@ Find the `#[cfg(test)] mod tests` block in `src/modespec.rs` (search for `^mod t
 
     #[test]
     fn skip_correction_seconds_scottie_formula() {
-        // ScottieS1: line_pixels = 320, pixel_seconds = 0.000_43, porch = 0.001_5
+        // Scottie1: line_pixels = 320, pixel_seconds = 0.000_43, porch = 0.001_5
         // expected = -(320 * 0.000_43)/2 + 2*0.001_5 = -0.0688 + 0.003 = -0.0658
-        for mode in [SstvMode::ScottieS1, SstvMode::ScottieS2, SstvMode::ScottieDx] {
+        for mode in [SstvMode::Scottie1, SstvMode::Scottie2, SstvMode::ScottieDx] {
             let spec = for_mode(mode);
             let expected = -f64::from(spec.line_pixels) * spec.pixel_seconds / 2.0
                 + 2.0 * spec.porch_seconds;
@@ -993,10 +993,10 @@ In `src/sync.rs::tests`, after the F2 tests added in T6, add:
     /// line-start pulses (the existing `synth_has_sync` helper)
     /// with a Scottie spec lands `xmax` near 0 (small), so `s_secs_raw
     /// ≈ 0` and the final skip should equal the correction itself
-    /// (negative, ~ -65 ms for ScottieS1 at 11025 Hz).
+    /// (negative, ~ -65 ms for Scottie1 at 11025 Hz).
     #[test]
     fn find_sync_scottie_applies_skip_correction() {
-        let spec = modespec::for_mode(crate::modespec::SstvMode::ScottieS1);
+        let spec = modespec::for_mode(crate::modespec::SstvMode::Scottie1);
         let rate = f64::from(WORKING_SAMPLE_RATE_HZ);
         let track = synth_has_sync(spec, rate);
         let r = find_sync(&track, rate, spec);
@@ -1028,7 +1028,7 @@ cargo test --all-features --locked --release --lib sync -- find_sync_scottie
 
 Expected: 1 passed (`find_sync_scottie_applies_skip_correction`).
 
-If the assertion fires with `(r.skip_samples - expected_skip).abs() ≥ tolerance`, debug by printing the actual `r.skip_samples` and `expected_skip` in the failure message (already there). The most likely cause is the xmax detection landing further from 0 than expected — try printing `r.slant_deg` and the raw xmax intermediate (transient debug; remove before commit). If the test fails systematically with a small but consistent offset (e.g., one bin = ~0.6 ms ≈ 7 samples for ScottieS1), the tolerance is too tight; bump to `(0.010 * rate) as i64` ≈ 110 samples.
+If the assertion fires with `(r.skip_samples - expected_skip).abs() ≥ tolerance`, debug by printing the actual `r.skip_samples` and `expected_skip` in the failure message (already there). The most likely cause is the xmax detection landing further from 0 than expected — try printing `r.slant_deg` and the raw xmax intermediate (transient debug; remove before commit). If the test fails systematically with a small but consistent offset (e.g., one bin = ~0.6 ms ≈ 7 samples for Scottie1), the tolerance is too tight; bump to `(0.010 * rate) as i64` ≈ 110 samples.
 
 - [ ] **Step 3: Run the full gate**
 
@@ -1050,7 +1050,7 @@ git commit -m "test(sync): F3 — Scottie skip correction test (#88)
 
 Verifies the SyncPosition::Scottie branch of
 ModeSpec::skip_correction_seconds() actually runs in find_sync: feed
-line-start sync pulses with a ScottieS1 spec, assert the resulting
+line-start sync pulses with a Scottie1 spec, assert the resulting
 skip_samples lands at the expected correction offset
 (-chan_len/2 + 2*porch ≈ -65 ms at 11025 Hz) within a 5 ms tolerance.
 Direct coverage of the Scottie arm in find_sync, which the audit

@@ -329,7 +329,7 @@ The audit's F3 asks for "a `find_sync` test for `SyncPosition::Scottie` (mid-lin
 ```rust
 #[test]
 fn find_sync_scottie_applies_skip_correction() {
-    let spec = modespec::for_mode(SstvMode::ScottieS1);
+    let spec = modespec::for_mode(SstvMode::Scottie1);
     let rate = f64::from(WORKING_SAMPLE_RATE_HZ);
     // Line-start pulses → raw `xmax`-derived s_secs ≈ 0 (small);
     // Scottie's skip_correction_seconds() subtracts `chan_len/2 -
