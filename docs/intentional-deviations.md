@@ -532,3 +532,208 @@ better decode on those borderline cases.
 If a regression surfaces where rate-correction overshoots and an
 explicit reset gives a better outcome. Has not happened in the
 Dec-2017 ARISS validation set.
+
+---
+
+# Faithful-to-slowrx artifacts (deliberate bit-parity)
+
+These behaviors are technically suboptimal in slowrx C but Rust
+reproduces them for bit-exact decode parity with reference output.
+Future audits should NOT "fix" these without an intentional
+parity-break.
+
+## `Praw /= (hi - lo).max(1)` off-by-one in `SyncTracker::has_sync_at`
+
+**Files:** `src/sync.rs::SyncTracker::has_sync_at` ↔ slowrx `video.c:282-288`.
+**Tracking issue:** (none — slowrx-faithful).
+
+### What slowrx does
+
+slowrx divides the video-band power sum by `(hi - lo)` for an
+inclusive `[lo, hi]` range — undercounting by 1.
+
+### What we do
+
+We match exactly (`Praw /= (hi - lo).max(1)`).
+
+### Why
+
+Bit-parity of the `p_sync > 2 × p_raw` sync-pulse decision boundary.
+
+### When to revisit
+
+If a non-parity decision is taken to optimize sync detection
+independently of slowrx C reference output.
+
+---
+
+## Row-0 `Cb` zero-init for R36/R24
+
+**Files:** `src/mode_robot.rs::decode_r36_or_r24_line`, `src/decoder.rs::SstvEvent::LineDecoded`
+docstring ↔ slowrx `video.c::GetVideo` `calloc`-then-write pattern (lines 421-425).
+**Tracking issue:** (none — slowrx-faithful).
+
+### What slowrx does
+
+slowrx allocates the image buffer via `calloc` (zero-init) and never
+writes row 0's `Cb` channel — the chroma-duplication writes are
+prev-row → current-row, so row 0's `Cb` slot has no source. The
+result is a transient color cast on the top row of every R36/R24
+decode.
+
+### What we do
+
+We reproduce the artifact: row 0's `Cb` plane stays at zero-init
+(the `chroma_planes[1]` `Vec<u8>` is initialized to zeros and never
+written for `line_index == 0`).
+
+### Why
+
+Slowrx-faithful bit-parity on the R36/R24 top row. The artifact is
+visible on the ARISS Fram2 capture set and matches slowrx's output
+exactly.
+
+### When to revisit
+
+If a "fix row 0 to use row 1's Cb" cosmetic improvement is
+acceptable as an intentional deviation.
+
+---
+
+## `xAcc[8]` window-bound truncation in `find_falling_edge`
+
+**Files:** `src/sync.rs::falling_edge_from_x_acc` ↔ slowrx `sync.c:108`.
+**Tracking issue:** [audit A6, closed in #88](https://github.com/jasonherald/slowrx.rs/issues/88).
+
+### What slowrx does
+
+slowrx's falling-edge convolution loop iterates `n` from 0 to
+`X_ACC_BINS - 8 = 692` exclusive, missing position `n=692` — a
+faithful off-by-one in the loop bound.
+
+### What we do
+
+We match slowrx via `.take(X_ACC_BINS - SYNC_EDGE_KERNEL_LEN)` (closed
+in #88's A6 fix — audit caught Rust's native `.windows(8)` was giving
+693 windows where slowrx C gives 692).
+
+### Why
+
+Bit-parity on the falling-edge `xmax` position.
+
+### When to revisit
+
+Non-parity improvements over slowrx are out of scope without an
+explicit deviation entry.
+
+---
+
+# Fidelity improvements over slowrx (UB / div-by-zero / clamp fixes)
+
+These are deliberate fixes for actual bugs in slowrx C — undefined
+behavior, divide-by-zero, missing clamps — that Rust avoids. The
+deviation is intentional; reverting would re-introduce the slowrx
+C bug.
+
+## `HedrBuf[-1]` wraparound read in VIS detector
+
+**Files:** `src/vis.rs` (wrapping `prev_idx` arithmetic in `process_hop`) ↔
+slowrx `vis.c:67`.
+**Tracking issue:** (none — slowrx UB, no upstream issue).
+
+### What slowrx does
+
+slowrx's VIS detector reads `HedrBuf[(HedrPtr - 1) % 45]` when only
+the first sample has been written (`HedrPtr == 1`). `(1 - 1) % 45 = 0`
+in C unsigned arithmetic — but the C spec allows the modulo result to
+wrap to `HedrBuf[44]` when `HedrPtr` is declared `int` and the value
+is `-1 % 45`. The slot last touched by a prior detection (or
+zero-initialised on first use) is returned — technically UB across
+compilation units.
+
+### What we do
+
+We use `prev_idx = (history_ptr + HISTORY_LEN - 1) % HISTORY_LEN`, which
+on the first hop (`history_ptr == 0`) evaluates to `44`. Because
+`history` is zero-initialised (`vec![0.0; HISTORY_LEN]`), this reads
+`history[44] = 0.0` — a clean, deterministic zero rather than C's
+garbage-or-prior-detection value.
+
+### Why
+
+Avoid the read-garbage UB. The behavior in slowrx isn't reproducible
+across runs (depends on previous detection state), so bit-parity
+isn't a goal here.
+
+### When to revisit
+
+If the read-garbage value ever proves to be load-bearing in a real
+slowrx reference output (extremely unlikely — slowrx's own retry
+loop should swamp any single-detection garbage).
+
+---
+
+## Gaussian-log interpolation div-by-zero guard
+
+**Files:** `src/demod.rs::ChannelDemod::pixel_freq` peak-interpolation site ↔
+slowrx `video.c:389-398`.
+**Tracking issue:** (none — slowrx NaN, no upstream issue).
+
+### What slowrx does
+
+slowrx's peak-bin refinement uses a Gaussian-log interpolation formula
+`(P[k+1]/P[k-1]).ln() / (2 × (P[k]² / (P[k+1]·P[k-1])).ln())`. When
+the three-bin centroid is flat (silence / DC bin) the denominator is
+zero and the result is NaN or Inf.
+
+### What we do
+
+We check two conditions before interpolating: (a) all three neighbor
+powers are positive (`p_prev > 0.0 && p_curr > 0.0 && p_next > 0.0`)
+to guard the logarithm, and (b) `denom.abs() > 1e-12` to guard the
+division. When either check fails, we return the integer peak bin
+(no sub-bin refinement).
+
+### Why
+
+Avoid NaN propagating through the per-pixel frequency-to-luminance
+mapping.
+
+### When to revisit
+
+If profiling shows the guards are a hot-path overhead (two fp compares
+per pixel; unlikely to matter).
+
+---
+
+## `-20 dB` SNR return paths
+
+**Files:** `src/snr.rs::SnrEstimator::estimate` ↔ slowrx `video.c:302-343`.
+**Tracking issue:** (none — slowrx-faithful behavior with a sensible-fallback improvement).
+
+### What slowrx does
+
+slowrx returns SNR = 0 when the FFT bin sums underflow or the band
+integration is empty (no signal in the video band).
+
+### What we do
+
+We return `-20.0` dB — the minimum meaningful value from slowrx's own
+floor (`video.c:340-341`) — so the hysteresis selector lands at the
+longest Hann window (`window_idx_for_snr(-20) == 6`). Both fallback
+paths (`noise_only_bins == 0` and `p_noise <= 0.0 || p_signal/p_noise < 0.01`)
+return `-20.0`.
+
+### Why
+
+On real-radio captures with intermittent dropouts (lost samples,
+multipath fades), slowrx's "treat zero-SNR as 0 dB high-confidence"
+behavior would lock the shortest Hann window (sharpest time resolution,
+no noise rejection) and the next pixel decode would be wildly off.
+`-20 dB` → longest Hann gives the cleanest fallback.
+
+### When to revisit
+
+If a slowrx reference WAV is decoded with reference output and the
+`-20` vs `0` choice produces a per-pixel difference. Currently
+verified equivalent in the ARISS Dec-2017 + Fram2 sets.
