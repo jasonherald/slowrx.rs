@@ -309,9 +309,7 @@ impl ChannelDemod {
         // `WinLength` windowed samples into the FIRST `WinLength` bins
         // of the FFT input; the magnitude spectrum is invariant to that
         // offset (just a phase rotation).
-        for c in &mut self.fft_buf {
-            *c = Complex { re: 0.0, im: 0.0 };
-        }
+        self.fft_buf.fill(Complex { re: 0.0, im: 0.0 });
         let half = (win_len as i64) / 2;
         for (i, (&w, dst)) in hann.iter().zip(self.fft_buf.iter_mut()).enumerate() {
             let idx = center_sample - half + i as i64;

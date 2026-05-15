@@ -161,7 +161,11 @@ impl Resampler {
         let mut buf = std::mem::take(&mut self.tail);
         buf.extend_from_slice(input);
 
-        let mut out = Vec::new();
+        // Output length is approximately buf.len() / stride ± 1 (phase
+        // carry-over). Pre-sizing saves a reallocation per process()
+        // call on every audio chunk. (Audit #92 D9.)
+        let expected_out = (buf.len() as f64 / self.stride).ceil() as usize;
+        let mut out = Vec::with_capacity(expected_out);
         loop {
             // D2b off-by-one fix (#87): the kernel reads indices
             // `floor(phase)..floor(phase) + FIR_TAPS`, so it needs
