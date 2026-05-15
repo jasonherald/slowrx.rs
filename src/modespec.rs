@@ -16,29 +16,27 @@
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SstvMode {
-    /// PD-120 (640×496, ~120s per image)
+    /// PD-120. VIS `0x5F`. See [`for_mode`] for full timing.
     Pd120,
-    /// PD-180 (640×496, ~180s per image)
+    /// PD-180. VIS `0x60`.
     Pd180,
-    /// PD-240 (640×496, ~240s per image)
+    /// PD-240. VIS `0x61`.
     Pd240,
-    /// Robot 24 (320×240, ~24s per image)
+    /// Robot 24 (conventional name — decode buffer is ~36 s). VIS `0x04`.
     Robot24,
-    /// Robot 36 (320×240, ~36s per image)
+    /// Robot 36. VIS `0x08`.
     Robot36,
-    /// Robot 72 (320×240, ~72s per image)
+    /// Robot 72. VIS `0x0C`.
     Robot72,
-    /// Scottie 1 — VIS `0x3C`, 320×256 GBR, 0.4320 ms/pixel.
+    /// Scottie 1. VIS `0x3C`.
     Scottie1,
-    /// Scottie 2 — VIS `0x38`, 320×256 GBR, 0.2752 ms/pixel.
+    /// Scottie 2. VIS `0x38`.
     Scottie2,
-    /// Scottie DX — VIS `0x4C`, 320×256 GBR, 1.08053 ms/pixel.
-    /// slowrx applies a +1 Hann-window-index bump in the per-pixel
-    /// demod when this mode is active (see `mode_scottie::decode_line`).
+    /// Scottie DX. VIS `0x4C`.
     ScottieDx,
-    /// Martin 1 — VIS `0x2C`, 320×256 GBR, 0.4576 ms/pixel.
+    /// Martin 1. VIS `0x2C`.
     Martin1,
-    /// Martin 2 — VIS `0x28`, 320×256 GBR, 0.2288 ms/pixel.
+    /// Martin 2. VIS `0x28`.
     Martin2,
 }
 
@@ -48,6 +46,15 @@ pub enum SstvMode {
 pub struct ModeSpec {
     /// The mode this entry describes.
     pub mode: SstvMode,
+    /// CLI/filename slug. Stable across releases (filenames like
+    /// `img-NNN-{short_name}.png` depend on this). lowercase, no
+    /// separators: "pd120", "robot24", "scottiedx", "scottie1",
+    /// "martin1", etc. (audit #91 B13)
+    pub short_name: &'static str,
+    /// Human-readable mode name. For log lines and any future
+    /// user-facing display. "PD-120", "Robot 24", "Scottie DX", etc.
+    /// (audit #91 B13)
+    pub name: &'static str,
     /// 7-bit VIS code identifying this mode on the wire.
     pub vis_code: u8,
     /// Visible image width in pixels.
@@ -137,7 +144,7 @@ impl ModeSpec {
 
 /// Look up the [`ModeSpec`] for a given 7-bit VIS code. Returns `None`
 /// if the code is reserved, undefined, or maps to a mode not yet
-/// implemented in this release.
+/// implemented in this release. Derived from `ALL_SPECS`.
 ///
 /// VIS codes are taken from Dave Jones (KB4YZ), 1998: "List of SSTV
 /// Modes with VIS Codes".
@@ -153,27 +160,15 @@ impl ModeSpec {
 /// `UnknownVis` event). An unknown code is never an `Error`.
 #[must_use]
 pub fn lookup(vis_code: u8) -> Option<ModeSpec> {
-    match vis_code {
-        0x04 => Some(ROBOT24),
-        0x08 => Some(ROBOT36),
-        0x0C => Some(ROBOT72),
-        0x28 => Some(MARTIN2),
-        0x2C => Some(MARTIN1),
-        0x38 => Some(SCOTTIE2),
-        0x3C => Some(SCOTTIE1),
-        0x4C => Some(SCOTTIE_DX),
-        0x5F => Some(PD120),
-        0x60 => Some(PD180),
-        0x61 => Some(PD240),
-        _ => None,
-    }
+    ALL_SPECS.iter().find(|s| s.vis_code == vis_code).copied()
 }
 
-/// Look up the [`ModeSpec`] for a known [`SstvMode`].
+/// Look up the [`ModeSpec`] for an [`SstvMode`].
 ///
-/// Always returns `Some` for V1 modes. Reserved for symmetry with
-/// [`lookup`] when V2 modes whose decoders are not yet implemented
-/// land in the enum.
+/// Total over [`SstvMode`] — every implemented variant has a `const`
+/// entry. Adding a new variant without adding its `const ModeSpec`
+/// (and an arm here) is a compile error, by design. Pair with
+/// [`lookup`] when starting from a VIS code on the wire.
 #[must_use]
 pub fn for_mode(mode: SstvMode) -> ModeSpec {
     match mode {
@@ -197,6 +192,8 @@ pub fn for_mode(mode: SstvMode) -> ModeSpec {
 
 const PD120: ModeSpec = ModeSpec {
     mode: SstvMode::Pd120,
+    short_name: "pd120",
+    name: "PD-120",
     vis_code: 0x5F,
     line_pixels: 640,
     image_lines: 496,
@@ -211,6 +208,8 @@ const PD120: ModeSpec = ModeSpec {
 
 const PD180: ModeSpec = ModeSpec {
     mode: SstvMode::Pd180,
+    short_name: "pd180",
+    name: "PD-180",
     vis_code: 0x60,
     line_pixels: 640,
     image_lines: 496,
@@ -225,6 +224,8 @@ const PD180: ModeSpec = ModeSpec {
 
 const PD240: ModeSpec = ModeSpec {
     mode: SstvMode::Pd240,
+    short_name: "pd240",
+    name: "PD-240",
     vis_code: 0x61,
     line_pixels: 640,
     image_lines: 496,
@@ -241,6 +242,8 @@ const PD240: ModeSpec = ModeSpec {
 
 const ROBOT24: ModeSpec = ModeSpec {
     mode: SstvMode::Robot24,
+    short_name: "robot24",
+    name: "Robot 24",
     vis_code: 0x04,
     line_pixels: 320,
     image_lines: 240,
@@ -258,6 +261,8 @@ const ROBOT24: ModeSpec = ModeSpec {
 
 const ROBOT36: ModeSpec = ModeSpec {
     mode: SstvMode::Robot36,
+    short_name: "robot36",
+    name: "Robot 36",
     vis_code: 0x08,
     line_pixels: 320,
     image_lines: 240,
@@ -275,6 +280,8 @@ const ROBOT36: ModeSpec = ModeSpec {
 
 const ROBOT72: ModeSpec = ModeSpec {
     mode: SstvMode::Robot72,
+    short_name: "robot72",
+    name: "Robot 72",
     vis_code: 0x0C,
     line_pixels: 320,
     image_lines: 240,
@@ -292,6 +299,8 @@ const ROBOT72: ModeSpec = ModeSpec {
 
 const SCOTTIE1: ModeSpec = ModeSpec {
     mode: SstvMode::Scottie1,
+    short_name: "scottie1",
+    name: "Scottie 1",
     vis_code: 0x3C,
     line_pixels: 320,
     image_lines: 256,
@@ -309,6 +318,8 @@ const SCOTTIE1: ModeSpec = ModeSpec {
 
 const SCOTTIE2: ModeSpec = ModeSpec {
     mode: SstvMode::Scottie2,
+    short_name: "scottie2",
+    name: "Scottie 2",
     vis_code: 0x38,
     line_pixels: 320,
     image_lines: 256,
@@ -326,6 +337,8 @@ const SCOTTIE2: ModeSpec = ModeSpec {
 
 const SCOTTIE_DX: ModeSpec = ModeSpec {
     mode: SstvMode::ScottieDx,
+    short_name: "scottiedx",
+    name: "Scottie DX",
     vis_code: 0x4C,
     line_pixels: 320,
     image_lines: 256,
@@ -344,6 +357,8 @@ const SCOTTIE_DX: ModeSpec = ModeSpec {
 /// Martin 1. slowrx `modespec.c:39-50`.
 const MARTIN1: ModeSpec = ModeSpec {
     mode: SstvMode::Martin1,
+    short_name: "martin1",
+    name: "Martin 1",
     vis_code: 0x2C,
     line_pixels: 320,
     image_lines: 256,
@@ -362,6 +377,8 @@ const MARTIN1: ModeSpec = ModeSpec {
 /// Martin 2. slowrx `modespec.c:52-63`.
 const MARTIN2: ModeSpec = ModeSpec {
     mode: SstvMode::Martin2,
+    short_name: "martin2",
+    name: "Martin 2",
     vis_code: 0x28,
     line_pixels: 320,
     image_lines: 256,
@@ -376,6 +393,19 @@ const MARTIN2: ModeSpec = ModeSpec {
     channel_layout: ChannelLayout::RgbSequential,
     sync_position: SyncPosition::LineStart,
 };
+
+/// All implemented mode specs. Single source of truth — [`lookup`] is
+/// derived from this; [`for_mode`] keeps its exhaustive match so
+/// adding a `SstvMode` variant without a `const ModeSpec` (and a
+/// matching arm in `for_mode`) is a compile error, by design.
+///
+/// The F8 round-trip test (`all_specs_roundtrip`) verifies every
+/// entry's `(mode, vis_code, short_name, name)` quadruple is unique
+/// and that `lookup` and `for_mode` agree with the table.
+pub(crate) const ALL_SPECS: [ModeSpec; 11] = [
+    PD120, PD180, PD240, ROBOT24, ROBOT36, ROBOT72, SCOTTIE1, SCOTTIE2, SCOTTIE_DX, MARTIN1,
+    MARTIN2,
+];
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::float_cmp)]
@@ -643,6 +673,70 @@ mod tests {
                 spec.skip_correction_seconds() < 0.0,
                 "{mode:?} Scottie correction should be negative"
             );
+        }
+    }
+
+    /// F8 (#91). Every entry in `ALL_SPECS` round-trips cleanly
+    /// through `lookup` (VIS code → spec) and `for_mode` (mode →
+    /// spec); the table has exactly 11 unique modes, 11 unique VIS
+    /// codes, 11 unique `short_names`; every `name` and `short_name`
+    /// is non-empty.
+    ///
+    /// Subsumes the per-mode `vis_code_resolves` tests as a
+    /// structural invariant. The individual per-mode tests stay as
+    /// fast-failing regression guards with descriptive names.
+    #[test]
+    fn all_specs_roundtrip() {
+        use std::collections::HashSet;
+
+        let modes: HashSet<_> = ALL_SPECS.iter().map(|s| s.mode).collect();
+        assert_eq!(
+            modes.len(),
+            ALL_SPECS.len(),
+            "ALL_SPECS has duplicate modes"
+        );
+
+        let vis: HashSet<_> = ALL_SPECS.iter().map(|s| s.vis_code).collect();
+        assert_eq!(
+            vis.len(),
+            ALL_SPECS.len(),
+            "ALL_SPECS has duplicate VIS codes"
+        );
+
+        let short_names: HashSet<_> = ALL_SPECS.iter().map(|s| s.short_name).collect();
+        assert_eq!(
+            short_names.len(),
+            ALL_SPECS.len(),
+            "ALL_SPECS has duplicate short_names"
+        );
+
+        let names: HashSet<_> = ALL_SPECS.iter().map(|s| s.name).collect();
+        assert_eq!(
+            names.len(),
+            ALL_SPECS.len(),
+            "ALL_SPECS has duplicate `name`s"
+        );
+
+        for spec in ALL_SPECS.iter().copied() {
+            assert_eq!(
+                lookup(spec.vis_code),
+                Some(spec),
+                "lookup({:#04x}) did not return ALL_SPECS entry for {:?}",
+                spec.vis_code,
+                spec.mode
+            );
+            assert_eq!(
+                for_mode(spec.mode),
+                spec,
+                "for_mode({:?}) did not match ALL_SPECS entry",
+                spec.mode
+            );
+            assert!(
+                !spec.short_name.is_empty(),
+                "{:?}: short_name empty",
+                spec.mode
+            );
+            assert!(!spec.name.is_empty(), "{:?}: name empty", spec.mode);
         }
     }
 }

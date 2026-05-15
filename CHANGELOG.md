@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- **`ModeSpec` as single source of truth** — adds two new fields
+  (`short_name: &'static str` like `"pd120"`/`"robot24"`/`"scottiedx"`,
+  and `name: &'static str` like `"PD-120"`/`"Scottie DX"`) to
+  `ModeSpec`. Introduces `ALL_SPECS: [ModeSpec; 11]` as the canonical
+  table; `lookup(vis_code)` is now a one-liner over it (audit B7).
+  CLI's hand-maintained `mode_tag` function (with its 4-incident
+  stale-tag history) is deleted — `slowrx_cli` now calls
+  `for_mode(m).short_name` directly (audit B13); the lockstep
+  `mode_tag_covers_all_known_variants` test goes away too. `for_mode`
+  doc rewritten to accurately describe its return type — it returns
+  `ModeSpec`, not `Option<ModeSpec>` (audit E1). `SstvMode` variant
+  docs normalized to terse one-liners; dimensional facts live on the
+  `const ModeSpec` blocks; the Scottie DX Hann-window-index bump
+  explanation moves from the variant doc into the existing comment
+  near the code at `src/demod.rs:567` (audit E11). New F8 round-trip
+  test (`all_specs_roundtrip`) verifies every table entry's
+  `(mode, vis_code, short_name, name)` quadruple is unique and that
+  `lookup` and `for_mode` agree with the table. Behavior-preserving:
+  existing CLI filenames are bit-for-bit identical (the `short_name`
+  values match the prior `mode_tag` output). (#91; audit B7/B13/E1/E11/F8.)
+
 - **`find_sync` cleanup** — decomposes the 160-line `find_sync` into
   three pure helpers (`hough_detect_slant`, `find_falling_edge` /
   `falling_edge_from_x_acc`, `skip_seconds_for`), drops the

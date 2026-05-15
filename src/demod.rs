@@ -569,6 +569,9 @@ pub(crate) fn decode_one_channel_into(
             // integration window. Applied AFTER the hysteresis selector so
             // `prev_win_idx` continues tracking the un-bumped SNR-derived index
             // (the bump shouldn't compound across pixels).
+            //
+            // (Audit #91 E11: the prior doc-comment on `SstvMode::ScottieDx`
+            // mentioned this bump; moved here to live next to the actual code.)
             if ctx.spec.mode == crate::modespec::SstvMode::ScottieDx
                 && win_idx < HANN_LENS.len() - 1
             {
