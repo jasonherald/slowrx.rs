@@ -96,7 +96,7 @@ This should be the simplest PR in the epic. The CI gate's `RUSTDOCFLAGS="-D warn
 
 1. **Alignment sweep.** For each file with `// slowrx ... \.c:\d+` comments:
    ```bash
-   grep -nE "//.*slowrx.*\.c:\d+" /data/source/slowrx.rs/src/<file>.rs
+   grep -nE "//.*slowrx.*\.c:\d+" src/<file>.rs
    ```
    For each match, open the referenced `original/slowrx/<file>.c` and verify the line range still describes the cited construct. Fix any off-by-N drift. The implementer logs each correction in the commit body (`<file>.rs:NN-MM: video.c:142 → video.c:145`).
 

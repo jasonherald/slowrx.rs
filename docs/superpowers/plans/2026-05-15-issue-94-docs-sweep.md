@@ -11,7 +11,7 @@
 **Reference docs:**
 - Spec: `docs/superpowers/specs/2026-05-15-issue-94-docs-sweep-design.md`
 - Audit: `docs/audits/2026-05-11-deep-code-review-audit.md` (IDs E3, E4, E5, E6, E8, E9, E10, E12, E13, B15)
-- Vendored slowrx snapshot: `original/slowrx/` (the reference for E10 line-ref verification)
+- Local slowrx reference clone: `original/slowrx/` (gitignored — see `clone-slowrx.sh`; the reference for E10 line-ref verification)
 
 ---
 
@@ -98,7 +98,7 @@ The `// slowrx … verified at audit #94` line is the E10 per-file disclaimer, l
 The new doc references `[`crate::vis`]`, `[`crate::sync::find_sync`]`, `[`crate::demod::decode_one_channel_into`]`. These should be valid — verify quickly:
 
 ```bash
-grep -n "pub mod vis\|pub mod sync\|pub mod demod" /data/source/slowrx.rs/src/lib.rs
+grep -n "pub mod vis\|pub mod sync\|pub mod demod" src/lib.rs
 ```
 
 Expected: all three modules are declared in `src/lib.rs` (likely as `pub(crate) mod vis;` etc., but rustdoc resolves intra-doc links across module visibility).
@@ -279,7 +279,7 @@ The caveat block goes immediately after the table closing line (`/// | 3400 Hz  
 The new caveat references `[`crate::sync::SYNC_FFT_LEN`]`. Verify it resolves:
 
 ```bash
-grep -n "pub(crate) const SYNC_FFT_LEN" /data/source/slowrx.rs/src/sync.rs
+grep -n "pub(crate) const SYNC_FFT_LEN" src/sync.rs
 ```
 
 Expected: `SYNC_FFT_LEN` is a `pub(crate) const` in `src/sync.rs` (~line 54). Rustdoc should resolve the intra-doc link.
@@ -329,7 +329,7 @@ The audit references `mode_pd.rs:330-343` for an inner comment about `chan_bound
 Run:
 
 ```bash
-grep -nE "chan_bounds_abs|zero-pad outside" /data/source/slowrx.rs/src/mode_pd.rs
+grep -nE "chan_bounds_abs|zero-pad outside" src/mode_pd.rs
 ```
 
 **If grep returns no matches** for `chan_bounds_abs`: the dead comment was already deleted with the parameter in #85. Mark E5 as "verified absent in current code" in the commit message. Skip this step's edits.
@@ -341,7 +341,7 @@ grep -nE "chan_bounds_abs|zero-pad outside" /data/source/slowrx.rs/src/mode_pd.r
 The audit references `mode_pd.rs:228-237`. Run:
 
 ```bash
-grep -nB2 -A5 "PIXEL_FFT_STRIDE" /data/source/slowrx.rs/src/mode_pd.rs
+grep -nB2 -A5 "PIXEL_FFT_STRIDE" src/mode_pd.rs
 ```
 
 Expected: a `const PIXEL_FFT_STRIDE: usize = 1;` or similar declaration, plus one or more sites where `something % PIXEL_FFT_STRIDE` is computed (which always equals 0 since `PIXEL_FFT_STRIDE = 1`).
@@ -365,7 +365,7 @@ If `PIXEL_FFT_STRIDE` has been removed in a prior PR (post-#85): the spec's refe
 Locate the `decode_pd_line_pair` function in `src/mode_pd.rs`:
 
 ```bash
-grep -nE "^pub.*fn decode_pd_line_pair" /data/source/slowrx.rs/src/mode_pd.rs
+grep -nE "^pub.*fn decode_pd_line_pair" src/mode_pd.rs
 ```
 
 The current rustdoc above the function has scattered `#32`/`#34`/`#40`/`#42` issue references mixed in with the "what this function does" framing. Read the entire rustdoc block (likely 30-50 lines) to understand its structure.
@@ -459,7 +459,7 @@ If the current text already handles this clearly (without the misleading "256 sa
 The audit references `snr.rs:257` with "zero-pad" — claims there's no pad step in the SNR FFT path. Verify:
 
 ```bash
-grep -nE "zero.?pad|zero-padded" /data/source/slowrx.rs/src/snr.rs
+grep -nE "zero.?pad|zero-padded" src/snr.rs
 ```
 
 For each `zero-pad` or `zero pad` mention in `src/snr.rs`, read 5 lines of context to determine whether it's:
@@ -475,7 +475,7 @@ The implementer notes in the commit message which (if any) were deleted.
 The audit references the hysteresis comment claiming it "converges to baseline." Actually converges to *within one band* of baseline. Locate:
 
 ```bash
-grep -nE "baseline|hysteresis.*converges|converges to.*selection" /data/source/slowrx.rs/src/snr.rs
+grep -nE "baseline|hysteresis.*converges|converges to.*selection" src/snr.rs
 ```
 
 Find the comment block about hysteresis convergence behavior (likely in the rustdoc of `window_idx_for_snr_with_hysteresis` or a nearby comment). The current text overstates the convergence guarantee.
@@ -502,7 +502,7 @@ Insert this paragraph immediately after the existing "Robot 24 / Robot 36: 2-cha
 The audit references the `chan_start_chroma` site. slowrx C carries 3 `ChanStart[]` entries (Y, Cr, Cb); Rust collapses Cr and Cb into a single `chan_start_chroma` because for R36/R24 the per-line parity determines which channel actually lives there. Locate:
 
 ```bash
-grep -nB2 -A4 "chan_start_chroma" /data/source/slowrx.rs/src/mode_robot.rs
+grep -nB2 -A4 "chan_start_chroma" src/mode_robot.rs
 ```
 
 Find the site where `chan_start_chroma` is computed (likely a local binding `let chan_start_chroma = ...`). Add an inline comment immediately above:
@@ -522,7 +522,7 @@ Find the site where `chan_start_chroma` is computed (likely a local binding `let
 The audit references the `HedrBuf[-1]` UB-fix comment. Flag explicitly as a deliberate fidelity improvement. Locate:
 
 ```bash
-grep -nB2 -A4 "HedrBuf\|HedrPtr.*-.*1" /data/source/slowrx.rs/src/vis.rs
+grep -nB2 -A4 "HedrBuf\|HedrPtr.*-.*1" src/vis.rs
 ```
 
 Find the site where the `HedrPtr == 1` edge case is handled (the audit references it around line 212-215; post-#89 the lines may have shifted). Read the existing comment and replace with:
@@ -544,7 +544,7 @@ The `intentional-deviations.md` cross-reference points at the new section added 
 Locate:
 
 ```bash
-grep -nB2 -A4 "1200 Hz.*bin.*27\|sync_target_bin.*27" /data/source/slowrx.rs/src/sync.rs
+grep -nB2 -A4 "1200 Hz.*bin.*27\|sync_target_bin.*27" src/sync.rs
 ```
 
 The current comment says "1200 Hz bin is 27 (slowrx-correct) not 28 (what `.round()` would give)." True at zero hedr_shift; the actual computed bin shifts with hedr_shift. Update:
@@ -562,7 +562,7 @@ The current comment says "1200 Hz bin is 27 (slowrx-correct) not 28 (what `.roun
 Locate:
 
 ```bash
-grep -nB2 -A4 "Praw /= (hi - lo)\|Praw /= (hi-lo)\|p_raw /=" /data/source/slowrx.rs/src/sync.rs
+grep -nB2 -A4 "Praw /= (hi - lo)\|Praw /= (hi-lo)\|p_raw /=" src/sync.rs
 ```
 
 Find the `Praw` / `p_raw` divisor site. Add a slowrx-faithful note:
@@ -632,7 +632,7 @@ The big mechanical task. Verify every `// slowrx <file>.c:NNN` line reference ag
 Run:
 
 ```bash
-grep -rnE "slowrx.*\.c:\d+" /data/source/slowrx.rs/src/ | grep -v "^/data/source/slowrx.rs/src/bin/" > /tmp/slowrx-refs-before.txt
+grep -rnE "slowrx.*\.c:\d+" src/ | grep -v "^src/bin/" > /tmp/slowrx-refs-before.txt
 wc -l /tmp/slowrx-refs-before.txt
 cat /tmp/slowrx-refs-before.txt
 ```
@@ -648,7 +648,7 @@ For each reference, open the cited `original/slowrx/<file>.c` and read the line 
 ```bash
 # Example for a single reference:
 # In src/decoder.rs:42 — `// slowrx video.c:140-142 computes pixel time as...`
-sed -n '138,145p' /data/source/slowrx.rs/original/slowrx/video.c
+sed -n '138,145p' original/slowrx/video.c
 # Verify the snippet at video.c:140-142 actually matches the cited construct.
 ```
 
@@ -688,7 +688,7 @@ If a file's module doc is short and the disclaimer would be the only "metadata" 
 - [ ] **Step 5: Inventory after fixes (sanity check)**
 
 ```bash
-grep -rnE "slowrx.*\.c:\d+" /data/source/slowrx.rs/src/ | grep -v "^/data/source/slowrx.rs/src/bin/" > /tmp/slowrx-refs-after.txt
+grep -rnE "slowrx.*\.c:\d+" src/ | grep -v "^src/bin/" > /tmp/slowrx-refs-after.txt
 diff /tmp/slowrx-refs-before.txt /tmp/slowrx-refs-after.txt
 ```
 
@@ -696,7 +696,7 @@ The diff shows the line-number changes. Should be a small set of edits (only the
 
 ```bash
 # Confirm the disclaimer landed in all 8 files:
-grep -lE "Inline.*slowrx.*verified at audit #94" /data/source/slowrx.rs/src/*.rs
+grep -lE "Inline.*slowrx.*verified at audit #94" src/*.rs
 ```
 
 Should list `decoder.rs`, `vis.rs`, `sync.rs`, `mode_pd.rs`, `mode_robot.rs`, `mode_scottie.rs`, `demod.rs`, `snr.rs` (8 files).
@@ -751,7 +751,7 @@ Two new top-level sections appended to `docs/intentional-deviations.md`.
 - [ ] **Step 1: Read the current `intentional-deviations.md` structure**
 
 ```bash
-grep -nE "^#|^##" /data/source/slowrx.rs/docs/intentional-deviations.md
+grep -nE "^#|^##" docs/intentional-deviations.md
 ```
 
 The current structure (post-#88) has 4 entries under no top-level grouping. The audit asks to add two new top-level sections; the existing entries stay where they are (separated by `---` horizontal rules per the established pattern).
