@@ -62,7 +62,10 @@ impl SnrEstimator {
             fft,
             hann_long: crate::dsp::build_hann(FFT_LEN),
             fft_buf: vec![Complex { re: 0.0, im: 0.0 }; FFT_LEN],
-            scratch: vec![Complex { re: 0.0, im: 0.0 }; scratch_len.max(FFT_LEN)],
+            // rustfft returns scratch_len = 0 for power-of-two sizes (radix-2/4
+            // paths use in-place buffers only). The prior .max(FFT_LEN) was
+            // dead-allocating ~8 KiB. (Audit #92 C8.)
+            scratch: vec![Complex { re: 0.0, im: 0.0 }; scratch_len],
         }
     }
 

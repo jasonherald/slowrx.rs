@@ -269,7 +269,10 @@ impl ChannelDemod {
             fft,
             hann_bank: HannBank::new(),
             fft_buf: vec![Complex { re: 0.0, im: 0.0 }; FFT_LEN],
-            scratch: vec![Complex { re: 0.0, im: 0.0 }; scratch_len.max(FFT_LEN)],
+            // rustfft returns scratch_len = 0 for power-of-two sizes
+            // (FFT_LEN=1024 is radix-2). The prior .max(FFT_LEN) was
+            // dead-allocating ~8 KiB. (Audit #92 C8.)
+            scratch: vec![Complex { re: 0.0, im: 0.0 }; scratch_len],
         }
     }
 

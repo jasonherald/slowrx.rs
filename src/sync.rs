@@ -126,7 +126,10 @@ impl SyncTracker {
             fft,
             hann: build_sync_hann(),
             fft_buf: vec![Complex { re: 0.0, im: 0.0 }; SYNC_FFT_LEN],
-            scratch: vec![Complex { re: 0.0, im: 0.0 }; scratch_len.max(SYNC_FFT_LEN)],
+            // rustfft returns scratch_len = 0 for power-of-two sizes
+            // (SYNC_FFT_LEN=256 is radix-2). The prior .max(SYNC_FFT_LEN) was
+            // dead-allocating ~2 KiB. (Audit #92 C8.)
+            scratch: vec![Complex { re: 0.0, im: 0.0 }; scratch_len],
             sync_target_bin: bin_for(1200.0 + hedr_shift_hz),
             video_lo_bin: bin_for(1500.0 + hedr_shift_hz),
             video_hi_bin: bin_for(2300.0 + hedr_shift_hz),
