@@ -105,6 +105,7 @@ pub(crate) struct SyncTracker {
 impl SyncTracker {
     /// Construct a tracker with the radio mistuning offset extracted at
     /// VIS time.
+    #[must_use]
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
@@ -125,7 +126,10 @@ impl SyncTracker {
             fft,
             hann: build_sync_hann(),
             fft_buf: vec![Complex { re: 0.0, im: 0.0 }; SYNC_FFT_LEN],
-            scratch: vec![Complex { re: 0.0, im: 0.0 }; scratch_len.max(SYNC_FFT_LEN)],
+            // rustfft returns scratch_len = 0 for power-of-two sizes
+            // (SYNC_FFT_LEN=256 is radix-2). The prior .max(SYNC_FFT_LEN) was
+            // dead-allocating ~2 KiB. (Audit #92 C8.)
+            scratch: vec![Complex { re: 0.0, im: 0.0 }; scratch_len],
             sync_target_bin: bin_for(1200.0 + hedr_shift_hz),
             video_lo_bin: bin_for(1500.0 + hedr_shift_hz),
             video_hi_bin: bin_for(2300.0 + hedr_shift_hz),
@@ -191,7 +195,7 @@ fn build_sync_hann() -> Vec<f32> {
 }
 
 /// Result of [`find_sync`]: slant-corrected rate + line-zero `Skip`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SyncResult {
     /// Adjusted working-rate sample rate (Hz).
     pub adjusted_rate_hz: f64,
@@ -216,6 +220,7 @@ pub(crate) struct SyncResult {
 /// `initial_rate_hz` is normally [`WORKING_SAMPLE_RATE_HZ`] but the
 /// function may adjust it. Translated from slowrx `sync.c::FindSync`
 /// (lines 18-133).
+#[must_use = "the SyncResult must be consumed; dropping it discards the slant + skip correction"]
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,

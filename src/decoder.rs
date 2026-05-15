@@ -14,7 +14,7 @@ use crate::resample::Resampler;
 use crate::sync::{find_sync, SyncTracker, SYNC_PROBE_STRIDE};
 
 /// One observable event emitted by [`SstvDecoder::process`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum SstvEvent {
     /// VIS header parsed and a known mode dispatched.
@@ -94,6 +94,23 @@ enum State {
     /// audio buffer and dwarfs the unit `AwaitingVis` variant; clippy
     /// warns about size disparity otherwise.
     Decoding(Box<DecodingState>),
+}
+
+impl std::fmt::Debug for State {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AwaitingVis => write!(f, "AwaitingVis"),
+            Self::Decoding(d) => f
+                .debug_struct("Decoding")
+                .field("mode", &d.mode)
+                .field("audio_samples", &d.audio.len())
+                .field("has_sync_probes", &d.has_sync.len())
+                .field("next_probe_sample", &d.next_probe_sample)
+                .field("target_audio_samples", &d.target_audio_samples)
+                .field("hedr_shift_hz", &d.hedr_shift_hz)
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 /// Two-pass decoding state.
@@ -594,6 +611,17 @@ impl SstvDecoder {
     #[must_use]
     pub fn samples_processed(&self) -> u64 {
         self.samples_processed
+    }
+}
+
+impl std::fmt::Debug for SstvDecoder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SstvDecoder")
+            .field("rate", &self.resampler.input_rate())
+            .field("state", &self.state)
+            .field("samples_processed", &self.samples_processed)
+            .field("working_samples_emitted", &self.working_samples_emitted)
+            .finish_non_exhaustive()
     }
 }
 

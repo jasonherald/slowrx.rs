@@ -47,6 +47,7 @@ const NUM_PHASES: usize = 256;
 /// relative to input. SSTV's `find_sync` re-anchors the rate against sync
 /// pulses, so this is invisible inside the decoder pipeline; standalone
 /// consumers should compensate if they need sample-accurate alignment.
+#[derive(Debug)]
 pub struct Resampler {
     input_rate: u32,
     /// `input_rate / WORKING_SAMPLE_RATE_HZ`, expressed as a stride.
@@ -114,6 +115,7 @@ impl Resampler {
     /// # Errors
     /// Returns [`Error::InvalidSampleRate`] if `input_rate` is 0 or
     /// > [`MAX_INPUT_SAMPLE_RATE_HZ`].
+    #[must_use = "Resampler::new returns a Result; dropping it silently bypasses rate validation"]
     #[allow(clippy::cast_precision_loss, clippy::large_stack_arrays)]
     pub fn new(input_rate: u32) -> Result<Self> {
         if input_rate == 0 || input_rate > MAX_INPUT_SAMPLE_RATE_HZ {
@@ -146,7 +148,7 @@ impl Resampler {
     }
 
     /// Resample a chunk of input audio into working-rate output.
-    #[must_use]
+    #[must_use = "the resampled audio Vec must be consumed; dropping it discards the decoder input"]
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
@@ -159,7 +161,11 @@ impl Resampler {
         let mut buf = std::mem::take(&mut self.tail);
         buf.extend_from_slice(input);
 
-        let mut out = Vec::new();
+        // Output length is approximately buf.len() / stride ± 1 (phase
+        // carry-over). Pre-sizing saves a reallocation per process()
+        // call on every audio chunk. (Audit #92 D9.)
+        let expected_out = (buf.len() as f64 / self.stride).ceil() as usize;
+        let mut out = Vec::with_capacity(expected_out);
         loop {
             // D2b off-by-one fix (#87): the kernel reads indices
             // `floor(phase)..floor(phase) + FIR_TAPS`, so it needs

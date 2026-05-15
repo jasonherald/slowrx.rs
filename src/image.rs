@@ -10,7 +10,7 @@ use crate::modespec::SstvMode;
 /// Pixels are stored as `[r, g, b]` triples in row-major order.
 /// Out-of-bounds [`Self::pixel`] / [`Self::put_pixel`] calls return
 /// `None` / silently no-op respectively.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct SstvImage {
     /// The mode this image was decoded as.

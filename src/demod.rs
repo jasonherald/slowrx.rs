@@ -21,28 +21,31 @@ use rustfft::{num_complex::Complex, FftPlanner};
 pub(crate) const HANN_LENS: [usize; 7] = [12, 16, 24, 32, 64, 128, 256];
 
 /// Bank of seven Hann windows, indexed by SNR-derived window selector.
-/// Construct once per decoder; the inner `Vec<f32>`s have lengths matching
-/// [`HANN_LENS`].
+/// Construct once per decoder; the inner `Box<[f32]>`s have lengths
+/// matching [`HANN_LENS`]. Built once per `HannBank::new()` via
+/// `std::array::from_fn` over the 7 entries; the bank is immutable
+/// post-construction. (Audit #92 C7.)
 pub(crate) struct HannBank {
-    windows: [Vec<f32>; 7],
+    windows: [Box<[f32]>; 7],
 }
 
 impl HannBank {
     pub fn new() -> Self {
         Self {
-            windows: [
-                crate::dsp::build_hann(HANN_LENS[0]),
-                crate::dsp::build_hann(HANN_LENS[1]),
-                crate::dsp::build_hann(HANN_LENS[2]),
-                crate::dsp::build_hann(HANN_LENS[3]),
-                crate::dsp::build_hann(HANN_LENS[4]),
-                crate::dsp::build_hann(HANN_LENS[5]),
-                crate::dsp::build_hann(HANN_LENS[6]),
-            ],
+            windows: std::array::from_fn(|idx| {
+                crate::dsp::build_hann(HANN_LENS[idx]).into_boxed_slice()
+            }),
         }
     }
 
-    /// Borrow window `idx` (0..=6). Length is `HANN_LENS[idx]`.
+    /// Borrow window `idx`. Length is `HANN_LENS[idx]`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx >= 7`. The [`window_idx_for_snr`] selector returns
+    /// `0..=6` by construction (it's a 7-branch `if`-`else` chain over SNR
+    /// thresholds), so this should never fire from inside the decoder.
+    /// Out-of-range calls would be a programmer error.
     #[must_use]
     pub fn get(&self, idx: usize) -> &[f32] {
         &self.windows[idx]
@@ -266,7 +269,10 @@ impl ChannelDemod {
             fft,
             hann_bank: HannBank::new(),
             fft_buf: vec![Complex { re: 0.0, im: 0.0 }; FFT_LEN],
-            scratch: vec![Complex { re: 0.0, im: 0.0 }; scratch_len.max(FFT_LEN)],
+            // rustfft returns scratch_len = 0 for power-of-two sizes
+            // (FFT_LEN=1024 is radix-2). The prior .max(FFT_LEN) was
+            // dead-allocating ~8 KiB. (Audit #92 C8.)
+            scratch: vec![Complex { re: 0.0, im: 0.0 }; scratch_len],
         }
     }
 
@@ -280,6 +286,7 @@ impl ChannelDemod {
     ///
     /// Translated from slowrx `video.c:369-395` (windowed FFT + bin
     /// search + Gaussian interp).
+    #[must_use = "the demodulated frequency must be consumed; dropping it discards the per-pixel demod result"]
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
@@ -302,9 +309,7 @@ impl ChannelDemod {
         // `WinLength` windowed samples into the FIRST `WinLength` bins
         // of the FFT input; the magnitude spectrum is invariant to that
         // offset (just a phase rotation).
-        for c in &mut self.fft_buf {
-            *c = Complex { re: 0.0, im: 0.0 };
-        }
+        self.fft_buf.fill(Complex { re: 0.0, im: 0.0 });
         let half = (win_len as i64) / 2;
         for (i, (&w, dst)) in hann.iter().zip(self.fft_buf.iter_mut()).enumerate() {
             let idx = center_sample - half + i as i64;

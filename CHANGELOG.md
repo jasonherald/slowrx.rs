@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Internal
+
+- **API hygiene sweep** — eight small public-surface polishes (audit
+  bundle 8 of 12). `#[must_use]` on `Resampler::{new, process}`,
+  `SnrEstimator::{new, estimate}`, `ChannelDemod::pixel_freq`,
+  `VisDetector::new`, `SyncTracker::new`, `find_sync` (audit C3).
+  `PartialEq` derive on `SstvEvent`, `SstvImage`, `SyncResult` (plus
+  free `Eq` on `SstvImage` — its fields support it; the clippy
+  `derive_partial_eq_without_eq` lint expected it); `Debug` derive on
+  `Resampler`; hand-written `Debug` impl for `SstvDecoder` (rate / state
+  / sample counters with `.finish_non_exhaustive()`) and for the
+  internal `State` enum (`SyncTracker`'s `Arc<dyn Fft<f32>>` blocks
+  derive; the `Decoding` arm now surfaces `mode`, audio/probe lengths,
+  `next_probe_sample`, `target_audio_samples`, `hedr_shift_hz` for
+  diagnostic value) (audit C4). `MAX_INPUT_SAMPLE_RATE_HZ`
+  re-exported at the crate root alongside `WORKING_SAMPLE_RATE_HZ`;
+  `Error::InvalidSampleRate`'s message is now derived from the const
+  at `Display` time (audit C9). Compile-time `Error: Send + Sync +
+  'static` static-assert in `error.rs` — protects `anyhow` /
+  `Box<dyn Error + Send + Sync>` consumers from a future non-`Send`
+  variant (audit C12). `HannBank` reshaped from `[Vec<f32>; 7]` to
+  `[Box<[f32]>; 7]` via `std::array::from_fn`, with a documented panic
+  precondition on `HannBank::get` (audit C7). Dropped the dead
+  `.max(FFT_LEN)` scratch over-allocation at four FFT-using sites
+  (`SnrEstimator`, `ChannelDemod`, `VisDetector`, `SyncTracker`) —
+  ~26 KiB saved per `SstvDecoder` construction (audit C8). Two
+  micro-opts: `fft_buf.fill(Complex { re: 0.0, im: 0.0 })` replaces a
+  manual zero loop in `ChannelDemod::pixel_freq` (audit D8); `Resampler::process`
+  pre-sizes its output `Vec` (audit D9). D7 (shared FFT plan) deferred
+  per the audit's "low priority" framing — `rustfft` plan construction
+  is microseconds-fast one-shot work; sharing buys plumbing complexity
+  without measurable runtime benefit. (#92; audit C3/C4/C7/C8/C9/C12/D8/D9.)
+
 ## [0.5.3] — 2026-05-14
 
 Epic #97 audit-cleanup follow-up: 5 internal refactor / test-coverage
