@@ -13,10 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bundle 8 of 12). `#[must_use]` on `Resampler::{new, process}`,
   `SnrEstimator::{new, estimate}`, `ChannelDemod::pixel_freq`,
   `VisDetector::new`, `SyncTracker::new`, `find_sync` (audit C3).
-  `PartialEq` derive on `SstvEvent`, `SstvImage`, `SyncResult`; `Debug`
-  derive on `Resampler`; hand-written `Debug` impl for `SstvDecoder`
-  that prints rate / state / sample counters with
-  `.finish_non_exhaustive()` (audit C4). `MAX_INPUT_SAMPLE_RATE_HZ`
+  `PartialEq` derive on `SstvEvent`, `SstvImage`, `SyncResult` (plus
+  free `Eq` on `SstvImage` — its fields support it; the clippy
+  `derive_partial_eq_without_eq` lint expected it); `Debug` derive on
+  `Resampler`; hand-written `Debug` impl for `SstvDecoder` (rate / state
+  / sample counters with `.finish_non_exhaustive()`) and for the
+  internal `State` enum (`SyncTracker`'s `Arc<dyn Fft<f32>>` blocks
+  derive; the `Decoding` arm now surfaces `mode`, audio/probe lengths,
+  `next_probe_sample`, `target_audio_samples`, `hedr_shift_hz` for
+  diagnostic value) (audit C4). `MAX_INPUT_SAMPLE_RATE_HZ`
   re-exported at the crate root alongside `WORKING_SAMPLE_RATE_HZ`;
   `Error::InvalidSampleRate`'s message is now derived from the const
   at `Display` time (audit C9). Compile-time `Error: Send + Sync +
@@ -28,8 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.max(FFT_LEN)` scratch over-allocation at four FFT-using sites
   (`SnrEstimator`, `ChannelDemod`, `VisDetector`, `SyncTracker`) —
   ~26 KiB saved per `SstvDecoder` construction (audit C8). Two
-  micro-opts: `fft_buf.fill(Complex::ZERO)` replaces a manual zero
-  loop in `ChannelDemod::pixel_freq` (audit D8); `Resampler::process`
+  micro-opts: `fft_buf.fill(Complex { re: 0.0, im: 0.0 })` replaces a
+  manual zero loop in `ChannelDemod::pixel_freq` (audit D8); `Resampler::process`
   pre-sizes its output `Vec` (audit D9). D7 (shared FFT plan) deferred
   per the audit's "low priority" framing — `rustfft` plan construction
   is microseconds-fast one-shot work; sharing buys plumbing complexity

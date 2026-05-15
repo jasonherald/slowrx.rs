@@ -100,7 +100,15 @@ impl std::fmt::Debug for State {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::AwaitingVis => write!(f, "AwaitingVis"),
-            Self::Decoding(d) => f.debug_tuple("Decoding").field(&d.mode).finish(),
+            Self::Decoding(d) => f
+                .debug_struct("Decoding")
+                .field("mode", &d.mode)
+                .field("audio_samples", &d.audio.len())
+                .field("has_sync_probes", &d.has_sync.len())
+                .field("next_probe_sample", &d.next_probe_sample)
+                .field("target_audio_samples", &d.target_audio_samples)
+                .field("hedr_shift_hz", &d.hedr_shift_hz)
+                .finish_non_exhaustive(),
         }
     }
 }
