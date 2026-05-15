@@ -1,6 +1,6 @@
 [package]
 name = "slowrx"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2021"
 rust-version = "1.85"
 description = "Pure-Rust SSTV (Slow-Scan TV) decoder library — a port of slowrx by Oona Räisänen"
