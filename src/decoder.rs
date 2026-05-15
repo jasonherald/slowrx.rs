@@ -202,6 +202,10 @@ pub struct SstvDecoder {
     /// [`crate::mode_pd::decode_pd_line_pair`] (every
     /// [`crate::demod::SNR_REESTIMATE_STRIDE`] samples).
     snr_est: crate::snr::SnrEstimator,
+    /// Scratch buffers for `find_sync` (`sync_img` / `lines` / `x_acc`).
+    /// Hoisted here so they're reused across decode passes instead of
+    /// being allocated fresh per call. (Audit #93 D6.)
+    find_sync_scratch: crate::sync::FindSyncScratch,
     state: State,
     samples_processed: u64,
     /// Cumulative working-rate samples emitted by the resampler.
@@ -250,6 +254,7 @@ impl SstvDecoder {
             vis: crate::vis::VisDetector::new(IS_KNOWN_VIS),
             channel_demod: crate::demod::ChannelDemod::new(),
             snr_est: crate::snr::SnrEstimator::new(),
+            find_sync_scratch: crate::sync::FindSyncScratch::new(),
             state: State::AwaitingVis,
             samples_processed: 0,
             working_samples_emitted: 0,
@@ -402,6 +407,7 @@ impl SstvDecoder {
                         d,
                         &mut self.channel_demod,
                         &mut self.snr_est,
+                        &mut self.find_sync_scratch,
                         &mut out,
                     );
 
@@ -479,10 +485,11 @@ impl SstvDecoder {
         d: &mut DecodingState,
         channel_demod: &mut crate::demod::ChannelDemod,
         snr_est: &mut crate::snr::SnrEstimator,
+        find_sync_scratch: &mut crate::sync::FindSyncScratch,
         out: &mut Vec<SstvEvent>,
     ) {
         let work_rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
-        let result = find_sync(&d.has_sync, work_rate, d.spec);
+        let result = find_sync(&d.has_sync, work_rate, d.spec, find_sync_scratch);
         let rate = result.adjusted_rate_hz;
         let skip = result.skip_samples;
 
