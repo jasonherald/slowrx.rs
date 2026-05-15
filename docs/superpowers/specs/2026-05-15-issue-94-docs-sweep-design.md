@@ -2,7 +2,7 @@
 
 **Issue:** [#94](https://github.com/jasonherald/slowrx.rs/issues/94) (audit bundle 10 of 12 — IDs E3, E4, E5, E6, E8, E9, E10, E12, E13, B15).
 
-**Scope:** pure documentation cleanup across 10 source files + `docs/intentional-deviations.md`. No code changes; no API surface changes; no test changes. Catches up stale module docs (E3, E4), fixes contradictory or imprecise inline comments (E5, E9, E13), corrects a misleading rustdoc example table (E6), aligns slowrx C line references against the vendored snapshot (E10), restructures issue-archaeology in one rustdoc (E12), adds two new sections to `intentional-deviations.md` separating "faithful-to-slowrx artifacts" from "fidelity improvements over slowrx" (E8), and records the deferred `mode_scottie → mode_rgb_sequential` rename (B15).
+**Scope:** pure documentation cleanup across 10 source files + `docs/intentional-deviations.md`. No code changes; no API surface changes; no test changes. Catches up stale module docs (E3, E4), fixes contradictory or imprecise inline comments (E5, E9, E13), corrects a misleading rustdoc example table (E6), aligns slowrx C line references against the gitignored local reference clone in `original/slowrx/` (E10), restructures issue-archaeology in one rustdoc (E12), adds two new sections to `intentional-deviations.md` separating "faithful-to-slowrx artifacts" from "fidelity improvements over slowrx" (E8), and records the deferred `mode_scottie → mode_rgb_sequential` rename (B15).
 
 This should be the simplest PR in the epic. The CI gate's `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features` step is the load-bearing check (catches broken intra-doc links + malformed markdown in doc-comments).
 
@@ -23,7 +23,7 @@ This should be the simplest PR in the epic. The CI gate's `RUSTDOCFLAGS="-D warn
   - `src/snr.rs:155-160` (hysteresis comment says baseline; actually converges to within-one-band of baseline).
   - `src/mode_robot.rs:178-206` (`chan_start_chroma` site — explain the slowrx 3-entry `ChanStart` collapse to a single Rust local).
   - `src/mode_pd.rs:228-237` (`PIXEL_FFT_STRIDE` is fixed at 1 — the `%`-guard is vestigial; explain or remove).
-- **E10 — slowrx C line refs drift.** Inline `// slowrx <file>.c:NNN` comments throughout the codebase are off by 1-3 lines vs the vendored `original/slowrx/` snapshot. Approach: **one alignment pass + per-file disclaimer.** Audit every ref via grep, verify against `original/slowrx/<file>.c`, fix any drift, add a one-line disclaimer at the top of each affected file's module doc anchoring the refs to the vendored snapshot.
+- **E10 — slowrx C line refs drift.** Inline `// slowrx <file>.c:NNN` comments throughout the codebase are off by 1-3 lines vs the gitignored local reference clone in `original/slowrx/`. Approach: **one alignment pass + per-file disclaimer.** Audit every ref via grep, verify against `original/slowrx/<file>.c`, fix any drift, add a one-line disclaimer at the top of each affected file's module doc anchoring the refs to that local clone.
 - **E12 — `decode_pd_line_pair`'s rustdoc** has bare `#NN` GitHub issue refs (`#32`, `#34`, `#40`, `#42`). They don't render as links and clutter the function's user-facing doc. **Move the issue archaeology to a `// HISTORY:` block** immediately below the rustdoc — clean rustdoc keeps the "what this function does" framing; HISTORY block carries the per-issue notes for future archaeologists.
 - **E13 — four comment-vs-code mismatches:**
   - `src/vis.rs:212-215` (`HedrBuf[-1]` UB-fix isn't flagged as a deliberate improvement).
@@ -55,8 +55,8 @@ This should be the simplest PR in the epic. The CI gate's `RUSTDOCFLAGS="-D warn
 //! Translated in spirit from slowrx's `slowrx.c::Listen()` loop +
 //! `vis.c::GetVIS()` + `video.c::GetVideo()`. ISC License — see
 //! `NOTICE.md`. Inline `// slowrx <file>.c:NNN` references throughout
-//! point at the vendored copy under `original/slowrx/`; verified at
-//! audit #94 (2026-05-15).
+//! point at the gitignored local reference clone under `original/slowrx/`
+//! (see `clone-slowrx.sh`); verified at audit #94 (2026-05-15).
 ```
 
 **E4 — generalize version-pinned prose** in 3 sites:
@@ -102,8 +102,9 @@ This should be the simplest PR in the epic. The CI gate's `RUSTDOCFLAGS="-D warn
 
 2. **Per-file disclaimer.** Add a one-line note to each affected file's module doc (the disclaimer is already in E3 above for `decoder.rs`; replicate the same line to other files). Standard form:
    ```rust
-   //! Inline `// slowrx <file>.c:NNN` line refs are against the vendored
-   //! snapshot in `original/slowrx/`; verified at audit #94 (2026-05-15).
+   //! Inline `// slowrx <file>.c:NNN` line refs are against the gitignored
+   //! local reference clone in `original/slowrx/` (see `clone-slowrx.sh`);
+   //! verified at audit #94 (2026-05-15).
    ```
    
    Files getting the disclaimer (based on which carry slowrx C line refs): `decoder.rs`, `vis.rs`, `sync.rs`, `mode_pd.rs`, `mode_robot.rs`, `mode_scottie.rs`, `demod.rs`, `snr.rs`. The implementer greps to confirm coverage.

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Pure documentation cleanup across 10 source files + `docs/intentional-deviations.md` — refresh stale module docs (E3, E4), fix contradictory or imprecise inline comments (E5, E9, E13), correct a misleading rustdoc table (E6), align slowrx C line refs against the vendored snapshot (E10), restructure issue-archaeology in `decode_pd_line_pair` (E12), add two new sections to `intentional-deviations.md` separating "faithful-to-slowrx artifacts" from "fidelity improvements" (E8), and record the deferred `mode_scottie → mode_rgb_sequential` rename (B15).
+**Goal:** Pure documentation cleanup across 10 source files + `docs/intentional-deviations.md` — refresh stale module docs (E3, E4), fix contradictory or imprecise inline comments (E5, E9, E13), correct a misleading rustdoc table (E6), align slowrx C line refs against the gitignored local reference clone in `original/slowrx/` (E10), restructure issue-archaeology in `decode_pd_line_pair` (E12), add two new sections to `intentional-deviations.md` separating "faithful-to-slowrx artifacts" from "fidelity improvements" (E8), and record the deferred `mode_scottie → mode_rgb_sequential` rename (B15).
 
 **Architecture:** Seven sequential tasks. T1 handles top-of-file module-doc rewrites + version-pinned prose + the rename NOTE (E3 + E4 + B15). T2 is the standalone `get_bin` bin-scaling caveat (E6). T3 is all `mode_pd.rs` inline cleanups in one place (E5 + E9 + E12 — closely coupled). T4 is the remaining inline cleanups across 4 files (E9 + E13). T5 is the big mechanical line-ref alignment sweep across 8 files + per-file disclaimer (E10). T6 adds the two new sections to `intentional-deviations.md` (E8). T7 closes with the CHANGELOG and final gate.
 
@@ -87,8 +87,8 @@ Replace with:
 //! Translated in spirit from slowrx's `slowrx.c::Listen()` loop +
 //! `vis.c::GetVIS()` + `video.c::GetVideo()`. ISC License — see
 //! `NOTICE.md`. Inline `// slowrx <file>.c:NNN` references throughout
-//! point at the vendored copy under `original/slowrx/`; verified at
-//! audit #94 (2026-05-15).
+//! point at the gitignored local reference clone under `original/slowrx/`
+//! (see `clone-slowrx.sh`); verified at audit #94 (2026-05-15).
 ```
 
 The `// slowrx … verified at audit #94` line is the E10 per-file disclaimer, landed here as part of E3's rewrite.
@@ -621,7 +621,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 ## Task 5: E10 — slowrx C line-ref alignment + per-file disclaimer
 
-The big mechanical task. Verify every `// slowrx <file>.c:NNN` line reference against the vendored `original/slowrx/` snapshot, fix any drift, add a per-file disclaimer to each affected file's module doc.
+The big mechanical task. Verify every `// slowrx <file>.c:NNN` line reference against the gitignored local reference clone in `original/slowrx/` (see `clone-slowrx.sh`), fix any drift, add a per-file disclaimer to each affected file's module doc.
 
 **Files:**
 - Modify: `src/decoder.rs` (disclaimer already added in T1 Step 1)
@@ -655,7 +655,7 @@ sed -n '138,145p' /data/source/slowrx.rs/original/slowrx/video.c
 For each ref:
 - If line numbers match the cited construct: no edit needed.
 - If line numbers are off by N (the construct is at video.c:142-144 not video.c:140-142): update the ref in the Rust source.
-- If the cited construct no longer exists in the vendored snapshot (slowrx upstream rewrote that function): note in the commit message; either remove the line ref entirely or update it to the new location of the equivalent logic.
+- If the cited construct no longer exists in the local reference clone (slowrx upstream rewrote that function): note in the commit message; either remove the line ref entirely or update it to the new location of the equivalent logic.
 
 Log every fix in a working file:
 
@@ -676,8 +676,9 @@ For each ref that needs an update, edit the corresponding `.rs` file to use the 
 For each `.rs` file that has at least one slowrx C line reference, ensure the file's module doc ends with the standard disclaimer line:
 
 ```rust
-//! Inline `// slowrx <file>.c:NNN` line refs are against the vendored
-//! snapshot in `original/slowrx/`; verified at audit #94 (2026-05-15).
+//! Inline `// slowrx <file>.c:NNN` line refs are against the gitignored
+//! local reference clone in `original/slowrx/` (see `clone-slowrx.sh`);
+//! verified at audit #94 (2026-05-15).
 ```
 
 `src/decoder.rs` already has this disclaimer (added in T1 Step 1's E3 rewrite). For the other 7 files, append the disclaimer as a new line at the end of the existing module doc.
@@ -719,10 +720,10 @@ git add src/
 git commit -m "docs: E10 — slowrx C line-ref alignment + per-file disclaimers (#94)
 
 Audited all inline \`// slowrx <file>.c:NNN\` references across 8 files
-against the vendored snapshot in \`original/slowrx/\`. Fixed N drifted
-refs (off-by-1 to off-by-3 in most cases); added a per-file disclaimer
-to each module doc anchoring the refs to the vendored copy and
-verifying at this audit pass.
+against the gitignored local reference clone in \`original/slowrx/\`.
+Fixed N drifted refs (off-by-1 to off-by-3 in most cases); added a
+per-file disclaimer to each module doc anchoring the refs to that
+local clone and verifying at this audit pass.
 
 [Implementer: list the specific files + line-number changes here, from
 the working file built in Step 2.]
@@ -730,8 +731,8 @@ the working file built in Step 2.]
 The disclaimer template:
 
     //! Inline \`// slowrx <file>.c:NNN\` line refs are against the
-    //! vendored snapshot in \`original/slowrx/\`; verified at audit
-    //! #94 (2026-05-15).
+    //! gitignored local reference clone in \`original/slowrx/\` (see
+    //! \`clone-slowrx.sh\`); verified at audit #94 (2026-05-15).
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
@@ -993,9 +994,9 @@ Open `CHANGELOG.md`. Under `## [Unreleased]` `### Internal`, prepend a new bulle
   the 1024/11025 SNR + per-pixel FFTs (E6); contradictory or stale
   inline comments fixed in `mode_pd.rs` (E5), `snr.rs` (3 sites),
   `mode_robot.rs` (2 sites), `vis.rs`, and `sync.rs` (2 sites)
-  (E9 + E13); slowrx C line refs aligned against the vendored
-  snapshot in `original/slowrx/`, with per-file disclaimers anchoring
-  the refs (E10); `decode_pd_line_pair` issue archaeology moved from
+  (E9 + E13); slowrx C line refs aligned against the gitignored
+  local reference clone in `original/slowrx/`, with per-file disclaimers
+  anchoring the refs (E10); `decode_pd_line_pair` issue archaeology moved from
   inline `#NN` references in the rustdoc to a `// HISTORY:` block
   below the rustdoc (E12); two new sections in
   `docs/intentional-deviations.md` — "Faithful-to-slowrx artifacts"
