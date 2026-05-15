@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] — 2026-05-14
+
+Epic #97 audit-cleanup follow-up: 5 internal refactor / test-coverage
+bundles. No public-API breaks (the two new `ModeSpec` fields are
+additive under `#[non_exhaustive]`); the CLI's `mode_tag` function is
+gone but filename slugs are byte-identical to the prior output.
+
 ### Internal
 
 - **`ModeSpec` as single source of truth** — adds two new fields
