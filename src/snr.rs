@@ -53,6 +53,7 @@ pub(crate) struct SnrEstimator {
 }
 
 impl SnrEstimator {
+    #[must_use]
     pub fn new() -> Self {
         let mut planner = FftPlanner::<f32>::new();
         let fft = planner.plan_fft_forward(FFT_LEN);
@@ -70,6 +71,7 @@ impl SnrEstimator {
     /// `video.c:316-326`. Out-of-bounds samples zero-pad.
     ///
     /// Returns SNR in dB; floored at -20 dB to match `video.c:340-341`.
+    #[must_use = "the SNR estimate must be consumed; dropping it makes the estimator a no-op"]
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,

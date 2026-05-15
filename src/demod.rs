@@ -280,6 +280,7 @@ impl ChannelDemod {
     ///
     /// Translated from slowrx `video.c:369-395` (windowed FFT + bin
     /// search + Gaussian interp).
+    #[must_use = "the demodulated frequency must be consumed; dropping it discards the per-pixel demod result"]
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,

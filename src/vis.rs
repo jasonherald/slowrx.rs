@@ -87,6 +87,7 @@ pub(crate) struct DetectedVis {
 impl VisDetector {
     /// Construct a fresh VIS detector. Allocates the FFT plan + reusable
     /// buffers; reuse across many `process` calls.
+    #[must_use]
     pub fn new(is_known_vis: fn(u8) -> bool) -> Self {
         let mut planner = FftPlanner::<f32>::new();
         let fft = planner.plan_fft_forward(FFT_LEN);
