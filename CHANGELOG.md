@@ -7,19 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- **`SstvEvent::LineDecoded` no longer carries `pixels: Vec<[u8; 3]>`.**
-  Consumers call the new `SstvDecoder::current_image() -> Option<&SstvImage>`
-  to borrow the in-progress image instead. Row `N` is fully populated
-  after the `LineDecoded { line_index: N, .. }` event fires. **Breaking
-  change** — bumps the next release to **0.6.0**. The migration is
-  one-line per call site: drop the `pixels` field from the match-arm
-  pattern; if pixel data was being used, fetch it via
-  `decoder.current_image().map(|img| &img.pixels[start..end])`.
-  Eliminates ~496 per-line `.to_vec()` allocations per PD240 image.
-  (#93; audit D5.)
-
 ### Internal
 
 - **Performance: hoist per-channel/per-line allocations into reusable
@@ -37,17 +24,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scratch: &mut FindSyncScratch` parameter; ~7 existing `find_sync_*`
   tests construct `FindSyncScratch::new()` locally (audit D6.3);
   (3) `DecodingState.audio` / `.has_sync` use
-  `with_capacity(target_audio_samples)` instead of `Vec::new()`
-  (audit D6.1); (4) `run_findsync_and_decode` now takes
+  `with_capacity(target_audio_samples)` instead of `Vec::new()` (the
+  audio constructor preserves the residual move + reserves remaining
+  capacity) (audit D6.1); (4) `run_findsync_and_decode` now takes
   `DecodingState` by value and moves `d.image` directly into the
   `ImageComplete` event — eliminates the throwaway ~950 KB
   black-image `mem::replace` workaround (audit D6.2). Plus
   `out.reserve(image_lines + 1)` before the burst-emit loop saves
-  ~9 `Vec` growth reallocs. All hot-loop allocation patterns become
-  "0 allocs after first decode" instead of growing with image size.
-  `tests/roundtrip.rs` 11/11 unchanged — pixel output bit-identical.
-  Net new test: `current_image_is_none_when_awaiting_vis` (lib 136
-  → 137). (#93; audit D3/D6.)
+  ~9 `Vec` growth reallocs.
+  
+  D5's original "drop `LineDecoded.pixels`, expose `current_image()`"
+  framing was reverted late in the PR — `process()` batches all events
+  before returning, so `current_image()` would have returned `None` by
+  the time callers iterated `LineDecoded` events (CodeRabbit catch).
+  An architectural fix that preserves D5's perf win (Completed state
+  + `take_image()`) is incompatible with the multi-image-in-one-call
+  contract `tests/multi_image.rs` exercises. Keeping `LineDecoded.pixels`
+  loses only the ~496 small `to_vec()` allocs per PD240 image
+  (allocator-poolable; negligible vs the ~7000+ ChannelDemod allocs +
+  ~730 KB find_sync scratch + ~950 KB black-image throwaway we still
+  eliminate). PR stays non-breaking. `tests/roundtrip.rs` 11/11
+  unchanged — pixel output bit-identical. (#93; audit D3/D6;
+  D5 deferred to a future API-design pass.)
 
 - **API hygiene sweep** — eight small public-surface polishes (audit
   bundle 8 of 12). `#[must_use]` on `Resampler::{new, process}`,
