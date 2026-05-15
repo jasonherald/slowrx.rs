@@ -232,6 +232,16 @@ impl VisDetector {
     /// vis.c line 67 falls back to `HedrBuf[(HedrPtr-1) % 45]` when the
     /// peak is at the search boundary or has a non-positive neighbour;
     /// we encode that by returning NaN from `estimate_peak_freq`.
+    ///
+    /// **`HedrBuf`\[-1\] UB fix:** slowrx C's fallback `HedrBuf[(HedrPtr - 1) % 45]`
+    /// wraps to `HedrBuf[44]` when only the first sample exists (`HedrPtr` == 1),
+    /// reading garbage from a slot last touched by a prior detection (or
+    /// zero-initialised on first use — still technically UB in C). Rust's
+    /// `history` is zero-initialised and the `prev_idx` computation uses
+    /// wrapping arithmetic, so the first-hop fallback reads `history[44] = 0.0`
+    /// (a clean zero, not garbage). **Deliberate fidelity improvement**; see
+    /// `docs/intentional-deviations.md::"Fidelity improvements over slowrx"`
+    /// → `"HedrBuf[-1] wraparound read in VIS detector"`.
     fn process_hop(&mut self, buf_window_start: usize) {
         let window = &self.audio_buffer[buf_window_start..buf_window_start + WINDOW_SAMPLES];
         for (i, slot) in self.fft_buf.iter_mut().enumerate() {

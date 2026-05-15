@@ -9,6 +9,13 @@
 //! per-mode case split mirrors slowrx `video.c:60-101` (channel-time
 //! switch) and `:104-130` (`NumChans` switch).
 //!
+//! **Time vs image-row layout:** R36/R24 are 2-channel per *radio line*
+//! in time-allocation terms (Y at 2× pixel-time, then alternating
+//! Cr/Cb), but each radio line populates TWO image rows because the
+//! chroma sample is duplicated to the neighbor image row (`video.c:421-425`).
+//! R72 is 3-channel per radio line, one image row per radio line, no
+//! chroma duplication.
+//!
 //! Translated from slowrx's `video.c` (Oona Räisänen, ISC License).
 //! Per-mode chroma layout: video.c lines 60-101, 178-209, 421-425.
 //! YUV→RGB matrix: video.c lines 446-451 (shared with PD; we re-use
@@ -222,6 +229,14 @@ fn decode_r36_or_r24_line(
     let chan_len_y = f64::from(width) * pixel_secs * 2.0;
 
     let chan_start_y = sync_secs + porch_secs;
+    // slowrx C carries 3 ChanStart[] entries (Y, Cr, Cb at distinct
+    // offsets). Rust collapses Cr and Cb into a single
+    // `chan_start_chroma` because for R36/R24 the per-line parity
+    // determines which channel actually lives in that time slot (the
+    // per-line decode reads `chan_start_chroma`, knowing from `line % 2`
+    // whether it's Cr or Cb). For R72 all three offsets are used
+    // distinctly — the per-mode dispatch handles that path separately.
+    // (Audit #94 E9.)
     let chan_start_chroma = chan_start_y + chan_len_y + septr_secs;
 
     let width_us = width as usize;
