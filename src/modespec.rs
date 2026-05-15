@@ -3,11 +3,10 @@
 //! Translated from slowrx's `modespec.c` (Oona Räisänen, ISC License).
 //! See `NOTICE.md` for full attribution.
 //!
-//! Implemented as of V2.4 (0.5.0): PD120, PD180, PD240, Robot 24,
-//! Robot 36, Robot 72, Scottie 1, Scottie 2, Scottie DX, Martin 1,
-//! Martin 2. All RGB-sequential modes (Scottie + Martin) share a
-//! single decode path; the per-line offsets branch on
-//! [`SyncPosition`].
+//! Implemented modes: PD120, PD180, PD240, Robot 24, Robot 36, Robot 72,
+//! Scottie 1, Scottie 2, Scottie DX, Martin 1, Martin 2. All RGB-sequential
+//! modes (Scottie + Martin) share a single decode path; the per-line
+//! offsets branch on [`SyncPosition`].
 
 /// SSTV operating mode. Implemented: [`SstvMode::Pd120`], [`SstvMode::Pd180`],
 /// [`SstvMode::Pd240`], [`SstvMode::Robot24`], [`SstvMode::Robot36`],
@@ -304,7 +303,7 @@ const SCOTTIE1: ModeSpec = ModeSpec {
     vis_code: 0x3C,
     line_pixels: 320,
     image_lines: 256,
-    // slowrx modespec.c:91-104 — S1 LineTime = 428.38e-3,
+    // slowrx modespec.c:91-102 — S1 LineTime = 428.38e-3,
     // PixelTime = 0.4320e-3, SyncTime = 9e-3, PorchTime = 1.5e-3,
     // SeptrTime = 1.5e-3.
     line_seconds: 0.428_38,
@@ -323,7 +322,7 @@ const SCOTTIE2: ModeSpec = ModeSpec {
     vis_code: 0x38,
     line_pixels: 320,
     image_lines: 256,
-    // slowrx modespec.c:105-117 — S2 LineTime = 277.692e-3,
+    // slowrx modespec.c:104-115 — S2 LineTime = 277.692e-3,
     // PixelTime = 0.2752e-3, SyncTime = 9e-3, PorchTime = 1.5e-3,
     // SeptrTime = 1.5e-3.
     line_seconds: 0.277_692,
@@ -342,7 +341,7 @@ const SCOTTIE_DX: ModeSpec = ModeSpec {
     vis_code: 0x4C,
     line_pixels: 320,
     image_lines: 256,
-    // slowrx modespec.c:118-128 — SDX LineTime = 1050.3e-3,
+    // slowrx modespec.c:117-128 — SDX LineTime = 1050.3e-3,
     // PixelTime = 1.08053e-3, SyncTime = 9e-3, PorchTime = 1.5e-3,
     // SeptrTime = 1.5e-3.
     line_seconds: 1.050_3,

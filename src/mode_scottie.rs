@@ -34,6 +34,18 @@
 //! RGB directly via [`crate::image::SstvImage::put_pixel`].
 //!
 //! See `NOTICE.md` for full slowrx attribution.
+//!
+//! Inline `// slowrx <file>.c:NNN` line refs are against the gitignored
+//! local reference clone in `original/slowrx/` (see `clone-slowrx.sh`);
+//! verified at audit #94 (2026-05-15).
+
+// NOTE (audit #94 B15): the file is named `mode_scottie.rs` but its
+// `decode_line` is shared by Martin 1 / Martin 2 (both
+// `ChannelLayout::RgbSequential` per ModeSpec). A rename to
+// `mode_rgb_sequential.rs` is tracked but deferred — the existing
+// name is grep-able and the per-mode behavior branches on
+// `spec.sync_position` (mid-line for Scottie, line-start for Martin)
+// rather than file boundaries.
 
 use crate::modespec::ModeSpec;
 

@@ -9,6 +9,10 @@
 //! here from `crate::snr` (#85 B1): they're per-pixel-demod machinery, not
 //! SNR-estimation logic. The `SnrEstimator` itself stays in `crate::snr` and
 //! carries its own separate 1024-sample SNR-analysis Hann.
+//!
+//! Inline `// slowrx <file>.c:NNN` line refs are against the gitignored
+//! local reference clone in `original/slowrx/` (see `clone-slowrx.sh`);
+//! verified at audit #94 (2026-05-15).
 
 use rustfft::{num_complex::Complex, FftPlanner};
 

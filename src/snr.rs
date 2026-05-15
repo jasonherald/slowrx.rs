@@ -29,6 +29,10 @@
 //! See `docs/intentional-deviations.md::"FFT frequency resolution
 //! exceeds slowrx C by 4×"` for the full rationale and revisit
 //! triggers.
+//!
+//! Inline `// slowrx <file>.c:NNN` line refs are against the gitignored
+//! local reference clone in `original/slowrx/` (see `clone-slowrx.sh`);
+//! verified at audit #94 (2026-05-15).
 
 use rustfft::{num_complex::Complex, FftPlanner};
 
@@ -82,7 +86,10 @@ impl SnrEstimator {
         clippy::cast_possible_wrap
     )]
     pub fn estimate(&mut self, audio: &[f32], center_sample: i64, hedr_shift_hz: f64) -> f64 {
-        // Fill FFT buffer: zero-pad, then window the live samples.
+        // Fill FFT buffer: window the live samples; out-of-bounds indices
+        // (before audio start or past audio end) contribute 0.0 — edge-of-audio
+        // zero-fill, not FFT zero-padding (hann_long spans the full FFT_LEN so
+        // there are no unwindowed trailing zeros in the SNR path).
         let half = (FFT_LEN as i64) / 2;
         for i in 0..FFT_LEN {
             let idx = center_sample - half + i as i64;

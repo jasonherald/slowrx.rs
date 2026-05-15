@@ -19,6 +19,10 @@
 //! The corrected `(rate, skip)` drives a single per-pixel decode pass.
 //! `LineDecoded` events fire in fast succession at end-of-buffer rather
 //! than incrementally; callers still see every event.
+//!
+//! Inline `// slowrx <file>.c:NNN` line refs are against the gitignored
+//! local reference clone in `original/slowrx/` (see `clone-slowrx.sh`);
+//! verified at audit #94 (2026-05-15).
 
 use rustfft::{num_complex::Complex, FftPlanner};
 use std::sync::Arc;
@@ -150,8 +154,12 @@ impl SyncTracker {
         let scratch_len = fft.get_inplace_scratch_len();
 
         // Use slowrx-equivalent truncation via `crate::dsp::get_bin` (not `.round()`).
-        // See `crate::dsp::get_bin` for rationale.  sync_target_bin for 1200 Hz
-        // is 27 (slowrx-correct) not 28 (what `.round()` would give).
+        // See `crate::dsp::get_bin` for rationale.
+        // sync_target_bin for 1200 Hz is 27 (slowrx-correct) not 28 (what
+        // `.round()` would give) — at zero `hedr_shift_hz`. The actual
+        // computed bin is `get_bin(1200.0 + hedr_shift_hz, ...)`, so a
+        // non-zero radio mistuning shifts the target bin accordingly.
+        // (Audit #94 E13.)
         let bin_for =
             |hz: f64| -> usize { crate::dsp::get_bin(hz, SYNC_FFT_LEN, WORKING_SAMPLE_RATE_HZ) };
 
@@ -196,6 +204,11 @@ impl SyncTracker {
             .process_with_scratch(&mut self.fft_buf, &mut self.scratch[..]);
 
         // Praw = average power per bin across video band (video.c:282-288).
+        // slowrx-faithful off-by-one: slowrx C uses `hi - lo` as the
+        // divisor for an inclusive `[lo, hi]` range, undercounting by 1.
+        // We match for bit-parity of the `p_sync > 2 × p_raw` decision.
+        // See `docs/intentional-deviations.md::"Faithful-to-slowrx
+        // artifacts"`. (Audit #94 E13.)
         let mut p_raw = 0.0_f64;
         let lo = self.video_lo_bin.max(1);
         let hi = self.video_hi_bin.min(SYNC_FFT_LEN / 2 - 1);
