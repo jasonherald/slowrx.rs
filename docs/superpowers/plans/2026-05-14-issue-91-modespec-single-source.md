@@ -613,7 +613,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
   - CLI filenames: `for_mode(m).short_name` returns the same string as the deleted `mode_tag(m)` for every variant (verified by the mapping table in T1 Step 2 matching the CLI's `mode_tag` arms character-for-character).
   - `lookup(vis_code)`: the `.iter().find()` over `ALL_SPECS` returns the same `Option<ModeSpec>` as the deleted 12-arm match (the F8 test asserts every existing entry round-trips).
   - `for_mode(mode)`: unchanged (body untouched in T4 Step 1).
-  - All existing per-mode tests in `modespec::tests` pass without modification (24 tests, none of them touch `short_name` or `name`).
+  - All existing per-mode tests in `modespec::tests` pass without modification (21 tests, none of them touch `short_name` or `name`; total becomes 22 with F8).
 
 - **Compile-time vs run-time gating of "new variant added without table entry":**
   - `SstvMode` variant added without `for_mode` arm → **compile error** (load-bearing).

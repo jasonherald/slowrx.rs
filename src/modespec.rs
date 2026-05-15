@@ -710,6 +710,13 @@ mod tests {
             "ALL_SPECS has duplicate short_names"
         );
 
+        let names: HashSet<_> = ALL_SPECS.iter().map(|s| s.name).collect();
+        assert_eq!(
+            names.len(),
+            ALL_SPECS.len(),
+            "ALL_SPECS has duplicate `name`s"
+        );
+
         for spec in ALL_SPECS.iter().copied() {
             assert_eq!(
                 lookup(spec.vis_code),
