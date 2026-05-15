@@ -19,18 +19,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0.3.3 (E6); inline comment cleanups in `mode_pd.rs` (E5 verified
   absent + E9 PIXEL_FFT_STRIDE verified absent + E12 — issue
   archaeology moved from `decode_pd_line_pair` rustdoc to a
-  `// HISTORY:` block); `snr.rs` (E9 — zero-pad comment clarified +
-  hysteresis description sharpened), `mode_robot.rs` (E9 + E13 —
+  `// HISTORY:` block); `snr.rs` (E9 — zero-pad comment clarified;
+  hysteresis description verified absent post-#85), `mode_robot.rs` (E9 + E13 —
   time vs image-row layout note added + 3-entry ChanStart[] →
   single chan_start_chroma collapse explained), `vis.rs` (E13 —
   `HedrBuf[-1]` UB-fix flagged as deliberate fidelity improvement),
   `sync.rs` (E13 — `1200 Hz bin == 27` clarified as zero-hedr-shift
   only + `Praw /= (hi-lo)` off-by-one flagged as slowrx-faithful);
   61 inline `// slowrx <file>.c:NNN` references audited against the
-  vendored snapshot in `original/slowrx/` (3 drifted refs corrected
-  in `modespec.rs`, all in the Scottie family entries; 58 verified
-  clean) and a per-file disclaimer added to each of the 8 affected
-  files anchoring the refs to the vendored copy (E10); two new
+  gitignored local reference clone in `original/slowrx/` (see
+  `clone-slowrx.sh`; 3 drifted refs corrected in `modespec.rs`, all
+  in the Scottie family entries; 58 verified clean) and a per-file
+  disclaimer added to each of the 8 affected files anchoring the
+  refs to that local clone (E10); two new
   top-level sections in `docs/intentional-deviations.md` —
   "Faithful-to-slowrx artifacts" (`Praw` off-by-one, row-0 Cb
   zero-init for R36/R24, `xAcc[8]` window-bound truncation) and

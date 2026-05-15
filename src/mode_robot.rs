@@ -21,8 +21,9 @@
 //! YUV→RGB matrix: video.c lines 446-451 (shared with PD; we re-use
 //! [`crate::demod::ycbcr_to_rgb`]). See `NOTICE.md` for full attribution.
 //!
-//! Inline `// slowrx <file>.c:NNN` line refs are against the vendored
-//! snapshot in `original/slowrx/`; verified at audit #94 (2026-05-15).
+//! Inline `// slowrx <file>.c:NNN` line refs are against the gitignored
+//! local reference clone in `original/slowrx/` (see `clone-slowrx.sh`);
+//! verified at audit #94 (2026-05-15).
 
 use crate::modespec::{ModeSpec, SstvMode};
 

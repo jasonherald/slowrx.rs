@@ -20,8 +20,9 @@
 //! `LineDecoded` events fire in fast succession at end-of-buffer rather
 //! than incrementally; callers still see every event.
 //!
-//! Inline `// slowrx <file>.c:NNN` line refs are against the vendored
-//! snapshot in `original/slowrx/`; verified at audit #94 (2026-05-15).
+//! Inline `// slowrx <file>.c:NNN` line refs are against the gitignored
+//! local reference clone in `original/slowrx/` (see `clone-slowrx.sh`);
+//! verified at audit #94 (2026-05-15).
 
 use rustfft::{num_complex::Complex, FftPlanner};
 use std::sync::Arc;

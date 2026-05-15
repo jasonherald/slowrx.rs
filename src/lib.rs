@@ -76,8 +76,9 @@ pub use crate::resample::{Resampler, MAX_INPUT_SAMPLE_RATE_HZ, WORKING_SAMPLE_RA
 /// Test-support — exposed under the `test-support` feature for integration
 /// tests in this crate (e.g., `tests/roundtrip.rs`). NOT part of the stable
 /// public API; the module is `#[doc(hidden)]` and the items inside are thin
-/// wrappers around `pub(crate)` internals — the API is
-/// `#[non_exhaustive]`-protected for additive growth.
+/// wrappers around `pub(crate)` internals. The genuinely public types they
+/// wrap (`SstvMode`, `ChannelLayout`, `SyncPosition`, `SstvEvent`, etc.)
+/// carry `#[non_exhaustive]` so additive growth there is non-breaking.
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod __test_support {

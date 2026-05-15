@@ -14,8 +14,9 @@
 //! (`HOP_SAMPLES`, `WINDOW_SAMPLES`, `FFT_LEN`); `HISTORY_LEN`
 //! stays 45 (450 ms). `FFT_LEN=512` gives 21.5 Hz/bin like slowrx's 2048/44100.
 //!
-//! Inline `// slowrx <file>.c:NNN` line refs are against the vendored
-//! snapshot in `original/slowrx/`; verified at audit #94 (2026-05-15).
+//! Inline `// slowrx <file>.c:NNN` line refs are against the gitignored
+//! local reference clone in `original/slowrx/` (see `clone-slowrx.sh`);
+//! verified at audit #94 (2026-05-15).
 
 use rustfft::{num_complex::Complex, FftPlanner};
 use std::sync::Arc;

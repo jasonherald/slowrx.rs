@@ -12,8 +12,8 @@
 //! Translated in spirit from slowrx's `slowrx.c::Listen()` loop +
 //! `vis.c::GetVIS()` + `video.c::GetVideo()`. ISC License — see
 //! `NOTICE.md`. Inline `// slowrx <file>.c:NNN` references throughout
-//! point at the vendored copy under `original/slowrx/`; verified at
-//! audit #94 (2026-05-15).
+//! point at the gitignored local reference clone under `original/slowrx/`
+//! (see `clone-slowrx.sh`); verified at audit #94 (2026-05-15).
 
 use crate::error::Result;
 use crate::image::SstvImage;

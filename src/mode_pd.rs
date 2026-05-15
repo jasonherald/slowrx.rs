@@ -8,8 +8,9 @@
 //! Channel layout: video.c lines 81-93. YUV→RGB matrix: video.c lines
 //! 446-451. See `NOTICE.md` for full attribution.
 //!
-//! Inline `// slowrx <file>.c:NNN` line refs are against the vendored
-//! snapshot in `original/slowrx/`; verified at audit #94 (2026-05-15).
+//! Inline `// slowrx <file>.c:NNN` line refs are against the gitignored
+//! local reference clone in `original/slowrx/` (see `clone-slowrx.sh`);
+//! verified at audit #94 (2026-05-15).
 
 use crate::demod::ChannelDemod;
 
