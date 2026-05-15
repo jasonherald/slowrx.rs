@@ -70,7 +70,8 @@ pub enum SstvEvent {
         mode: SstvMode,
         /// 0-based row index for this line.
         line_index: u32,
-        /// Row pixels in `[r, g, b]` order, length = mode's `line_pixels`.
+        /// `line_pixels` RGB triplets for this row, taken from the
+        /// in-progress image at emission time.
         pixels: Vec<[u8; 3]>,
     },
     /// Image complete (`LineDecoded` for the final line was just emitted).
@@ -202,6 +203,10 @@ pub struct SstvDecoder {
     /// [`crate::mode_pd::decode_pd_line_pair`] (every
     /// [`crate::demod::SNR_REESTIMATE_STRIDE`] samples).
     snr_est: crate::snr::SnrEstimator,
+    /// Scratch buffers for `find_sync` (`sync_img` / `lines` / `x_acc`).
+    /// Hoisted here so they're reused across decode passes instead of
+    /// being allocated fresh per call. (Audit #93 D6.)
+    find_sync_scratch: crate::sync::FindSyncScratch,
     state: State,
     samples_processed: u64,
     /// Cumulative working-rate samples emitted by the resampler.
@@ -250,6 +255,7 @@ impl SstvDecoder {
             vis: crate::vis::VisDetector::new(IS_KNOWN_VIS),
             channel_demod: crate::demod::ChannelDemod::new(),
             snr_est: crate::snr::SnrEstimator::new(),
+            find_sync_scratch: crate::sync::FindSyncScratch::new(),
             state: State::AwaitingVis,
             samples_processed: 0,
             working_samples_emitted: 0,
@@ -318,8 +324,16 @@ impl SstvDecoder {
                                 mode: spec.mode,
                                 spec,
                                 image,
-                                audio: residual,
-                                has_sync: Vec::new(),
+                                audio: {
+                                    // D6.1: keep the residual move + pre-reserve
+                                    // the remaining capacity. Avoids copying
+                                    // residual bytes AND avoids Vec growth
+                                    // reallocs over the burst.
+                                    let mut v = residual;
+                                    v.reserve(target.saturating_sub(v.len()));
+                                    v
+                                },
+                                has_sync: Vec::with_capacity(target / SYNC_PROBE_STRIDE),
                                 next_probe_sample: 0,
                                 sync_tracker: SyncTracker::new(detected.hedr_shift_hz),
                                 hedr_shift_hz: detected.hedr_shift_hz,
@@ -398,10 +412,31 @@ impl SstvDecoder {
                     }
 
                     // Buffer is full → run FindSync once, then per-pair decode.
+                    // Capture carryback parameters + the tail audio slice
+                    // BEFORE moving `d` into `run_findsync_and_decode` (which
+                    // consumes it by value so `d.image` can move directly into
+                    // the `ImageComplete` event without a fresh black-image
+                    // realloc — Audit #93 D6.2).
+                    let work_rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
+                    let carryback = (f64::from(MULTI_IMAGE_CARRYBACK_LINES)
+                        * d.spec.line_seconds
+                        * work_rate) as usize;
+                    let carry_from = d.target_audio_samples.saturating_sub(carryback);
+                    let carry_audio: Vec<f32> = d.audio[carry_from..].to_vec();
+                    // Now extract the Box<DecodingState> by value. The
+                    // `mem::replace` swap leaves `self.state` as `AwaitingVis`
+                    // so the next loop iteration re-enters the AwaitingVis arm
+                    // (no explicit assignment needed below).
+                    let State::Decoding(d_box) =
+                        std::mem::replace(&mut self.state, State::AwaitingVis)
+                    else {
+                        unreachable!("outer match arm is Decoding");
+                    };
                     Self::run_findsync_and_decode(
-                        d,
+                        *d_box,
                         &mut self.channel_demod,
                         &mut self.snr_est,
+                        &mut self.find_sync_scratch,
                         &mut out,
                     );
 
@@ -418,17 +453,11 @@ impl SstvDecoder {
                     // Closes #31; #90 (A2 + D4). (`sample_offset` on detections
                     // after the first is relative to the carry-forward start,
                     // not absolute — #99.)
-                    let work_rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
-                    let carryback = (f64::from(MULTI_IMAGE_CARRYBACK_LINES)
-                        * d.spec.line_seconds
-                        * work_rate) as usize;
-                    let carry_from = d.target_audio_samples.saturating_sub(carryback);
                     Self::restart_vis_detection(
                         &mut self.vis,
                         self.working_samples_emitted,
-                        &d.audio[carry_from..],
+                        &carry_audio,
                     );
-                    self.state = State::AwaitingVis;
                     remaining = &[]; // already folded into d.audio → now inside the fresh detector
                 }
             }
@@ -476,15 +505,20 @@ impl SstvDecoder {
         clippy::cast_possible_wrap
     )]
     fn run_findsync_and_decode(
-        d: &mut DecodingState,
+        mut d: DecodingState,
         channel_demod: &mut crate::demod::ChannelDemod,
         snr_est: &mut crate::snr::SnrEstimator,
+        find_sync_scratch: &mut crate::sync::FindSyncScratch,
         out: &mut Vec<SstvEvent>,
     ) {
         let work_rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
-        let result = find_sync(&d.has_sync, work_rate, d.spec);
+        let result = find_sync(&d.has_sync, work_rate, d.spec, find_sync_scratch);
         let rate = result.adjusted_rate_hz;
         let skip = result.skip_samples;
+
+        // Image-complete burst: image_lines LineDecoded events + 1 ImageComplete.
+        // Pre-reserve to avoid Vec growth reallocs. (Audit #93 D5.)
+        out.reserve(d.spec.image_lines as usize + 1);
 
         let line_pixels = d.spec.line_pixels as usize;
         match d.spec.channel_layout {
@@ -586,12 +620,11 @@ impl SstvDecoder {
             }
         }
 
-        let final_image = std::mem::replace(
-            &mut d.image,
-            SstvImage::new(d.mode, d.spec.line_pixels, d.spec.image_lines),
-        );
+        // Move the now-populated image into the ImageComplete event. The
+        // by-value `d` (audit #93 D6.2) lets `d.image` move directly
+        // into the event without a fresh black-image realloc.
         out.push(SstvEvent::ImageComplete {
-            image: final_image,
+            image: d.image,
             partial: false,
         });
     }

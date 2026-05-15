@@ -83,6 +83,39 @@ const X_ACC_SLIP_THRESHOLD: i32 = (X_ACC_BINS / 2) as i32; // 350
 const SYNC_EDGE_KERNEL: [i32; 8] = [1, 1, 1, 1, -1, -1, -1, -1];
 const SYNC_EDGE_KERNEL_LEN: usize = SYNC_EDGE_KERNEL.len();
 
+/// Scratch buffers for [`find_sync`] and its helpers. Hoisted onto
+/// [`crate::decoder::SstvDecoder`] so they're reused across decode
+/// passes — the largest two (`sync_img`, `x_acc`) are sized at
+/// construction and never resized; `lines` resizes per-call because
+/// `n_slant_bins × LINES_D_BINS` depends on the mode's `line_width`.
+/// (Audit #93 D6.)
+pub(crate) struct FindSyncScratch {
+    /// `[X_ACC_BINS × SYNC_IMG_Y_BINS]` flat buffer for the 2D sync image.
+    /// Sized once; `find_sync` calls `.fill(false)` each invocation.
+    pub(crate) sync_img: Vec<bool>,
+    /// `[LINES_D_BINS × n_slant_bins]` flat buffer for the Hough
+    /// accumulator. Resized per-call (`.clear() + .resize(...)`).
+    pub(crate) lines: Vec<u16>,
+    /// `[X_ACC_BINS]` column accumulator. Sized once; `.fill(0)` per call.
+    pub(crate) x_acc: Vec<u32>,
+}
+
+impl FindSyncScratch {
+    pub(crate) fn new() -> Self {
+        Self {
+            sync_img: vec![false; X_ACC_BINS * SYNC_IMG_Y_BINS],
+            lines: Vec::new(),
+            x_acc: vec![0; X_ACC_BINS],
+        }
+    }
+}
+
+impl Default for FindSyncScratch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Convert degrees to radians. Matches slowrx `common.c::deg2rad`.
 fn deg2rad(deg: f64) -> f64 {
     deg * std::f64::consts::PI / 180.0
@@ -227,14 +260,20 @@ pub(crate) struct SyncResult {
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap
 )]
-pub(crate) fn find_sync(has_sync: &[bool], initial_rate_hz: f64, spec: ModeSpec) -> SyncResult {
+pub(crate) fn find_sync(
+    has_sync: &[bool],
+    initial_rate_hz: f64,
+    spec: ModeSpec,
+    scratch: &mut FindSyncScratch,
+) -> SyncResult {
     let line_width: usize = ((spec.line_seconds / spec.sync_seconds) * 4.0) as usize;
     let num_lines = spec.image_lines as usize;
     let mut rate = initial_rate_hz;
     let mut slant_deg_detected: Option<f64> = None;
 
     for retry in 0..=MAX_SLANT_RETRIES {
-        let Some((slant, adjusted)) = hough_detect_slant(has_sync, rate, spec, line_width) else {
+        let Some((slant, adjusted)) = hough_detect_slant(has_sync, rate, spec, line_width, scratch)
+        else {
             // No sync pulses → no Hough peak → no rate correction.
             break;
         };
@@ -258,7 +297,7 @@ pub(crate) fn find_sync(has_sync: &[bool], initial_rate_hz: f64, spec: ModeSpec)
         }
     }
 
-    let xmax = find_falling_edge(has_sync, rate, spec, num_lines);
+    let xmax = find_falling_edge(has_sync, rate, spec, num_lines, scratch);
     let s_secs = skip_seconds_for(xmax, spec);
     let skip_samples = (s_secs * rate).round() as i64;
 
@@ -286,6 +325,7 @@ fn hough_detect_slant(
     rate_hz: f64,
     spec: ModeSpec,
     line_width: usize,
+    scratch: &mut FindSyncScratch,
 ) -> Option<(f64 /* slant_deg */, f64 /* adjusted_rate */)> {
     let n_slant_bins = ((MAX_SLANT_DEG - MIN_SLANT_DEG) / SLANT_STEP_DEG).round() as usize;
     let num_lines = spec.image_lines as usize;
@@ -309,25 +349,28 @@ fn hough_detect_slant(
         }
     };
 
+    // Reset the hoisted scratch buffers (was: fresh Vec allocations).
+    scratch.sync_img.fill(false);
+    scratch.lines.clear();
+    scratch.lines.resize(LINES_D_BINS * n_slant_bins, 0);
+
     // Draw the 2D sync signal at current rate.
-    let mut sync_img = vec![false; X_ACC_BINS * SYNC_IMG_Y_BINS];
     for y in 0..num_lines.min(SYNC_IMG_Y_BINS) {
         for x in 0..line_width.min(X_ACC_BINS) {
             let t = ((y as f64) + (x as f64) / (line_width as f64)) * spec.line_seconds;
             let idx = probe_index(t);
             if idx < has_sync.len() {
-                sync_img[sync_img_idx(x, y)] = has_sync[idx];
+                scratch.sync_img[sync_img_idx(x, y)] = has_sync[idx];
             }
         }
     }
 
     // Linear Hough transform.
-    let mut lines = vec![0u16; LINES_D_BINS * n_slant_bins];
     let mut q_most = 0_usize;
     let mut max_count = 0_u16;
     for cy in 0..num_lines.min(SYNC_IMG_Y_BINS) {
         for cx in 0..line_width.min(X_ACC_BINS) {
-            if !sync_img[sync_img_idx(cx, cy)] {
+            if !scratch.sync_img[sync_img_idx(cx, cy)] {
                 continue;
             }
             for q in 0..n_slant_bins {
@@ -337,7 +380,7 @@ fn hough_detect_slant(
                 if d_signed > 0.0 && d_signed < (line_width as f64) {
                     let d = d_signed as usize;
                     if d < LINES_D_BINS {
-                        let cell = &mut lines[lines_idx(d, q)];
+                        let cell = &mut scratch.lines[lines_idx(d, q)];
                         *cell = cell.saturating_add(1);
                         if *cell > max_count {
                             max_count = *cell;
@@ -406,7 +449,13 @@ fn falling_edge_from_x_acc(x_acc: &[u32]) -> i32 {
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss
 )]
-fn find_falling_edge(has_sync: &[bool], rate_hz: f64, spec: ModeSpec, num_lines: usize) -> i32 {
+fn find_falling_edge(
+    has_sync: &[bool],
+    rate_hz: f64,
+    spec: ModeSpec,
+    num_lines: usize,
+    scratch: &mut FindSyncScratch,
+) -> i32 {
     let probe_index = |t: f64| -> usize {
         let raw = t * rate_hz / (SYNC_PROBE_STRIDE as f64);
         if raw < 0.0 {
@@ -416,9 +465,9 @@ fn find_falling_edge(has_sync: &[bool], rate_hz: f64, spec: ModeSpec, num_lines:
         }
     };
 
-    let mut x_acc = vec![0u32; X_ACC_BINS];
+    scratch.x_acc.fill(0);
     for y in 0..num_lines {
-        for (x, slot) in x_acc.iter_mut().enumerate() {
+        for (x, slot) in scratch.x_acc.iter_mut().enumerate() {
             let t = (y as f64) * spec.line_seconds
                 + ((x as f64) / (X_ACC_BINS as f64)) * spec.line_seconds;
             let idx = probe_index(t);
@@ -428,7 +477,7 @@ fn find_falling_edge(has_sync: &[bool], rate_hz: f64, spec: ModeSpec, num_lines:
         }
     }
 
-    falling_edge_from_x_acc(&x_acc)
+    falling_edge_from_x_acc(&scratch.x_acc)
 }
 
 /// Convert a falling-edge `xmax` (post-slip-wrap) to skip seconds,
@@ -543,7 +592,8 @@ mod tests {
     fn find_sync_locks_clean_track_to_90_degrees() {
         let spec = modespec::for_mode(crate::modespec::SstvMode::Pd120);
         let rate = f64::from(WORKING_SAMPLE_RATE_HZ);
-        let r = find_sync(&synth_has_sync(spec, rate), rate, spec);
+        let mut scratch = FindSyncScratch::new();
+        let r = find_sync(&synth_has_sync(spec, rate), rate, spec, &mut scratch);
         let slant = r.slant_deg.expect("sync detected");
         assert!((slant - 90.0).abs() < 1.0, "{slant:.2}°");
         assert!((r.adjusted_rate_hz - rate).abs() / rate < 0.005);
@@ -559,7 +609,8 @@ mod tests {
     fn find_sync_empty_track_has_no_slant_detected() {
         let spec = modespec::for_mode(crate::modespec::SstvMode::Pd120);
         let rate = f64::from(WORKING_SAMPLE_RATE_HZ);
-        let r = find_sync(&vec![false; 16384], rate, spec);
+        let mut scratch = FindSyncScratch::new();
+        let r = find_sync(&vec![false; 16384], rate, spec, &mut scratch);
         assert!(
             r.slant_deg.is_none(),
             "empty track should yield slant_deg=None, got {:?}",
@@ -581,7 +632,8 @@ mod tests {
         let shift = ((0.010 * rate) / (SYNC_PROBE_STRIDE as f64)) as usize;
         let mut shifted = vec![false; shift];
         shifted.append(&mut track);
-        let r = find_sync(&shifted, rate, spec);
+        let mut scratch = FindSyncScratch::new();
+        let r = find_sync(&shifted, rate, spec, &mut scratch);
         let expected = (0.010 * rate) as i64;
         // 700-bin row ≈ 0.7 ms / bin at PD120; allow a few bins for wobble.
         assert!(
@@ -595,7 +647,8 @@ mod tests {
     fn find_sync_handles_empty_track() {
         let spec = modespec::for_mode(crate::modespec::SstvMode::Pd120);
         let rate = f64::from(WORKING_SAMPLE_RATE_HZ);
-        let r = find_sync(&vec![false; 16384], rate, spec);
+        let mut scratch = FindSyncScratch::new();
+        let r = find_sync(&vec![false; 16384], rate, spec, &mut scratch);
         assert!(r.adjusted_rate_hz.is_finite());
         assert!((r.adjusted_rate_hz - rate).abs() < 1.0);
         // Rate must be bit-exact when no sync detected (no rate correction ran).
@@ -623,7 +676,8 @@ mod tests {
         let true_rate = f64::from(WORKING_SAMPLE_RATE_HZ);
         let capture_rate = true_rate * 1.005;
         let track = synth_has_sync_slanted(spec, true_rate, capture_rate);
-        let r = find_sync(&track, capture_rate, spec);
+        let mut scratch = FindSyncScratch::new();
+        let r = find_sync(&track, capture_rate, spec, &mut scratch);
         let err_pct = (r.adjusted_rate_hz - true_rate).abs() / true_rate * 100.0;
         let initial_err_pct = (capture_rate - true_rate).abs() / true_rate * 100.0;
         // Verify sync was detected at all.
@@ -655,7 +709,8 @@ mod tests {
         let true_rate = f64::from(WORKING_SAMPLE_RATE_HZ);
         let capture_rate = true_rate * 1.01;
         let track = synth_has_sync_slanted(spec, true_rate, capture_rate);
-        let r = find_sync(&track, capture_rate, spec);
+        let mut scratch = FindSyncScratch::new();
+        let r = find_sync(&track, capture_rate, spec, &mut scratch);
         let initial_err_pct = (capture_rate - true_rate).abs() / true_rate * 100.0;
         let final_err_pct = (r.adjusted_rate_hz - true_rate).abs() / true_rate * 100.0;
         assert!(
@@ -681,7 +736,8 @@ mod tests {
         let spec = modespec::for_mode(crate::modespec::SstvMode::Scottie1);
         let rate = f64::from(WORKING_SAMPLE_RATE_HZ);
         let track = synth_has_sync(spec, rate);
-        let r = find_sync(&track, rate, spec);
+        let mut scratch = FindSyncScratch::new();
+        let r = find_sync(&track, rate, spec, &mut scratch);
 
         let chan_len = f64::from(spec.line_pixels) * spec.pixel_seconds;
         let expected_secs = -chan_len / 2.0 + 2.0 * spec.porch_seconds;

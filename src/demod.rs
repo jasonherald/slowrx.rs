@@ -258,6 +258,21 @@ pub(crate) struct ChannelDemod {
     hann_bank: HannBank,
     fft_buf: Vec<Complex<f32>>,
     scratch: Vec<Complex<f32>>,
+    /// Per-channel scratch hoisted out of `decode_one_channel_into`.
+    /// Reused across calls via `clear() + reserve()/resize()/extend()`
+    /// at the top of each invocation. (Audit #93 D3.)
+    pixel_times: Vec<i64>,
+    stored_lum: Vec<u8>,
+    scratch_audio: Vec<f32>,
+    /// PD line-pair scratch buffers hoisted out of `decode_pd_line_pair`.
+    /// Reused across calls via `clear() + resize()`. (Audit #93 D3.)
+    /// `pub(crate)` because `mode_pd::decode_pd_line_pair` takes ownership
+    /// temporarily (via `std::mem::take`) to satisfy the borrow checker while
+    /// `demod` is also mutably borrowed through `DemodState`.
+    pub(crate) pd_y_odd: Vec<u8>,
+    pub(crate) pd_cr: Vec<u8>,
+    pub(crate) pd_cb: Vec<u8>,
+    pub(crate) pd_y_even: Vec<u8>,
 }
 
 impl ChannelDemod {
@@ -273,6 +288,13 @@ impl ChannelDemod {
             // (FFT_LEN=1024 is radix-2). The prior .max(FFT_LEN) was
             // dead-allocating ~8 KiB. (Audit #92 C8.)
             scratch: vec![Complex { re: 0.0, im: 0.0 }; scratch_len],
+            pixel_times: Vec::new(),
+            stored_lum: Vec::new(),
+            scratch_audio: Vec::new(),
+            pd_y_odd: Vec::new(),
+            pd_cr: Vec::new(),
+            pd_cb: Vec::new(),
+            pd_y_even: Vec::new(),
         }
     }
 
@@ -490,22 +512,24 @@ pub(crate) fn decode_one_channel_into(
     // Robot passes `line_index * line_seconds`. The helper itself is
     // mode-agnostic — it only sees an additive seconds offset folded
     // inside the single `round()`.
-    let mut pixel_times: Vec<i64> = Vec::with_capacity(width);
+    state.demod.pixel_times.clear();
+    state.demod.pixel_times.reserve(width);
     for x in 0..width {
         let secs_in_frame = chan_start_sec + pixel_secs * (x as f64 + 0.5);
         let abs = ctx.skip_samples
             + ((radio_frame_offset_seconds + secs_in_frame) * ctx.rate_hz).round() as i64;
-        pixel_times.push(abs);
+        state.demod.pixel_times.push(abs);
     }
 
-    let first_time = pixel_times[0];
-    let last_time = pixel_times[width - 1];
+    let first_time = state.demod.pixel_times[0];
+    let last_time = state.demod.pixel_times[width - 1];
     let half_fft = (FFT_LEN as i64) / 2;
     let sweep_start = first_time - half_fft;
     let sweep_end = last_time + half_fft + 1;
 
     let sweep_len = (sweep_end - sweep_start).max(0) as usize;
-    let mut stored_lum = vec![0_u8; sweep_len];
+    state.demod.stored_lum.clear();
+    state.demod.stored_lum.resize(sweep_len, 0);
 
     // SNR is sticky across the sweep; slowrx initializes with `SNR = 0`
     // (`video.c:36`) so the first `WinIdx` lookup uses index 4 (slowrx C's
@@ -545,7 +569,14 @@ pub(crate) fn decode_one_channel_into(
 
     // Pre-fill a scratch buffer the FFT can index linearly. Cheaper than
     // copying `audio[…]` per sample inside the inner loop.
-    let scratch_audio: Vec<f32> = (sweep_start..sweep_end).map(read_audio).collect();
+    // The backing allocation is hoisted onto `ChannelDemod::scratch_audio`
+    // (Audit #93 D3). We take it out here to satisfy the borrow checker
+    // (pixel_freq takes &mut self, so we cannot pass &self.scratch_audio
+    // simultaneously); the Vec is returned at the end of the fn so the
+    // capacity is retained for the next call.
+    let mut scratch_audio = std::mem::take(&mut state.demod.scratch_audio);
+    scratch_audio.clear();
+    scratch_audio.extend((sweep_start..sweep_end).map(read_audio));
 
     let mod_round = |s: i64, stride: i64| -> i64 { s.rem_euclid(stride) };
 
@@ -593,21 +624,22 @@ pub(crate) fn decode_one_channel_into(
 
         let lum = freq_to_luminance(current_freq, ctx.hedr_shift_hz);
         let idx = (s - sweep_start) as usize;
-        if idx < stored_lum.len() {
-            stored_lum[idx] = lum;
+        if idx < state.demod.stored_lum.len() {
+            state.demod.stored_lum[idx] = lum;
         }
     }
 
-    for x in 0..width {
-        let pixel_time = pixel_times[x];
+    for (out_px, &pixel_time) in out.iter_mut().zip(state.demod.pixel_times.iter()) {
         let rel = pixel_time - sweep_start;
-        let lum = if rel >= 0 && (rel as usize) < stored_lum.len() {
-            stored_lum[rel as usize]
+        let lum = if rel >= 0 && (rel as usize) < state.demod.stored_lum.len() {
+            state.demod.stored_lum[rel as usize]
         } else {
             0
         };
-        out[x] = lum;
+        *out_px = lum;
     }
+    // Return the scratch_audio allocation so it is retained for the next call.
+    state.demod.scratch_audio = scratch_audio;
 }
 
 #[cfg(test)]
