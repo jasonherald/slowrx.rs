@@ -42,7 +42,7 @@ Verification step in the plan: `grep -n "#\[must_use\]" src/*.rs` before/after t
 **C4 derives:**
 
 - `SstvEvent` (`src/decoder.rs:17` — currently `#[derive(Clone, Debug)]`): add `PartialEq`. The enum's variants carry `String` (`PartialEq`-able), `u8`, `u64`, `f64` (`PartialEq` but not `Eq`), `Box<SstvImage>` (becomes `PartialEq`-able transitively). `Eq` is NOT added (f64 blocks).
-- `SstvImage` (`src/image.rs:13` — currently `#[derive(Clone, Debug)]`): add `PartialEq`. Field types are `u32` and `Vec<[u8; 3]>`, both `PartialEq + Eq`. Could also add `Eq` here — worth doing for free given the field types. Audit doesn't ask for it; leave at `PartialEq` for minimal-diff and to match `SstvEvent`'s shape.
+- `SstvImage` (`src/image.rs:13` — currently `#[derive(Clone, Debug)]`): add `PartialEq` + `Eq`. Field types (`SstvMode`, `u32`, `Vec<[u8; 3]>`) all support `Eq`; clippy's `derive_partial_eq_without_eq` lint expects `Eq` whenever the fields permit it. Adding `Eq` is a free polish and avoids an allow attribute.
 - `SyncResult` (`src/sync.rs:194` — currently `#[derive(Clone, Copy, Debug)]`): add `PartialEq`. Fields: `f64`, `i64`, `Option<f64>`. `Eq` blocked by `f64`.
 - `Resampler` (`src/resample.rs:50`): add `Debug` derive. Currently has no Debug. Fields: `input_rate: u32`, `stride: f64`, `phase: f64`, `tail: Vec<f32>`, `taps: Box<[[f32; FIR_TAPS]; NUM_PHASES]>`. All Debug-able; the `taps` print will be 256 rows × 64 f32s — verbose, but Debug output is a debugging aid, not a user-facing API. Acceptable.
 - `SstvDecoder` (`src/decoder.rs` — currently has no Debug): hand-written impl. The struct has fields with `rustfft::Fft<f32>` plans inside (`resampler`'s FIR taps are fine; `vis`, `channel_demod`, `snr_est` all hold `Arc<dyn rustfft::Fft<f32>>` which does NOT implement `Debug`). The hand-written impl prints the four scalar fields and `finish_non_exhaustive()`:
@@ -225,7 +225,7 @@ No code change. CHANGELOG bullet documents the deferral with the audit's "low pr
 ## Out of scope
 
 - **D7** — shared FFT plan between `SnrEstimator` and `ChannelDemod`. Deferred per the audit's "low priority" framing.
-- Adding `Eq` to `SstvImage` (its fields support it). Audit asks only for `PartialEq`; the spec stays at parity.
+- (Adding `Eq` to `SstvImage` was originally out-of-scope but moved in-scope during T1 to satisfy clippy's `derive_partial_eq_without_eq` — the fields all support `Eq`. See the C4 section above.)
 - Renaming `lookup_vis` (re-exported as in `src/lib.rs:72`) — that's a different audit item, not in #92.
 - Anything in `tests/` files — this is a public-surface sweep, not a test-coverage expansion.
 

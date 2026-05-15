@@ -199,7 +199,12 @@ Locate `pub struct SstvImage` (around line 15). Its current derive is `#[derive(
 pub struct SstvImage {
 ```
 
-`SstvImage` fields are `u32` and `Vec<[u8; 3]>` — both `PartialEq` (and `Eq`-able, but we stick to `PartialEq` only to match `SstvEvent`'s shape per the spec).
+`SstvImage` fields all support `Eq`, and clippy's `derive_partial_eq_without_eq` will fire on `PartialEq` alone. Per the spec, add both:
+
+```rust
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SstvImage {
+```
 
 - [ ] **Step 11: Run the full gate**
 
@@ -213,7 +218,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 
 All four must pass. Expected lib test count: **136** (additive annotations; no test changes).
 
-If `derive(Debug)` on `Resampler` fires `clippy::missing_fields_in_debug` or similar, that's the derive working as intended — no action needed. If clippy fires `clippy::derive_partial_eq_without_eq` on `SstvImage`, the existing field types support `Eq`; either add `Eq` to the derive (acceptable extension) OR add `#[allow(clippy::derive_partial_eq_without_eq)]` on the struct. Prefer adding `Eq` since the fields support it; this is a free polish (the spec hedges on it; adding `Eq` is strictly more permissive than not).
+If `derive(Debug)` on `Resampler` fires `clippy::missing_fields_in_debug` or similar, that's the derive working as intended — no action needed. (`Eq` on `SstvImage` is already in the Step 10 derive list, so `clippy::derive_partial_eq_without_eq` shouldn't fire.)
 
 If the hand-written `Debug` for `SstvDecoder` fires `clippy::missing_debug_implementations` for the dropped sub-types, that's fine — the impl deliberately omits them and `.finish_non_exhaustive()` signals the omission. No action needed.
 
@@ -224,7 +229,7 @@ git add src/resample.rs src/snr.rs src/demod.rs src/vis.rs src/sync.rs src/decod
 git commit -m "feat(api): C3 + C4 — #[must_use] + PartialEq/Debug derives (#92)
 
 C3: #[must_use] on Resampler::{new,process}, SnrEstimator::{new,estimate},
-ChannelDemod::{new,pixel_freq}, VisDetector::new, SyncTracker::new,
+ChannelDemod::pixel_freq, VisDetector::new, SyncTracker::new,
 find_sync.
 
 C4: PartialEq derive on SstvEvent, SstvImage, SyncResult; Debug derive
@@ -694,10 +699,14 @@ Open `CHANGELOG.md`. Under `## [Unreleased]` `### Internal`, prepend (so the new
   bundle 8 of 12). `#[must_use]` on `Resampler::{new, process}`,
   `SnrEstimator::{new, estimate}`, `ChannelDemod::pixel_freq`,
   `VisDetector::new`, `SyncTracker::new`, `find_sync` (audit C3).
-  `PartialEq` derive on `SstvEvent`, `SstvImage`, `SyncResult`; `Debug`
-  derive on `Resampler`; hand-written `Debug` impl for `SstvDecoder`
-  that prints rate / state / sample counters with
-  `.finish_non_exhaustive()` (audit C4). `MAX_INPUT_SAMPLE_RATE_HZ`
+  `PartialEq` derive on `SstvEvent`, `SstvImage`, `SyncResult` (plus
+  free `Eq` on `SstvImage` — its fields support it; clippy's
+  `derive_partial_eq_without_eq` lint expected it); `Debug` derive on
+  `Resampler`; hand-written `Debug` impl for `SstvDecoder` (rate /
+  state / sample counters with `.finish_non_exhaustive()`) and for the
+  internal `State` enum (`SyncTracker`'s `Arc<dyn Fft<f32>>` blocks
+  derive; the `Decoding` arm surfaces `mode` + audio/probe counters +
+  `hedr_shift_hz` for diagnostic value) (audit C4). `MAX_INPUT_SAMPLE_RATE_HZ`
   re-exported at the crate root alongside `WORKING_SAMPLE_RATE_HZ`;
   `Error::InvalidSampleRate`'s message is now derived from the const
   at `Display` time (audit C9). Compile-time `Error: Send + Sync +
@@ -709,7 +718,7 @@ Open `CHANGELOG.md`. Under `## [Unreleased]` `### Internal`, prepend (so the new
   `.max(FFT_LEN)` scratch over-allocation at four FFT-using sites
   (`SnrEstimator`, `ChannelDemod`, `VisDetector`, `SyncTracker`) —
   ~26 KiB saved per `SstvDecoder` construction (audit C8). Two
-  micro-opts: `fft_buf.fill(Complex::ZERO)` replaces a manual zero
+  micro-opts: `fft_buf.fill(Complex { re: 0.0, im: 0.0 })` replaces a manual zero
   loop in `ChannelDemod::pixel_freq` (audit D8); `Resampler::process`
   pre-sizes its output `Vec` (audit D9). D7 (shared FFT plan) deferred
   per the audit's "low priority" framing — `rustfft` plan construction
