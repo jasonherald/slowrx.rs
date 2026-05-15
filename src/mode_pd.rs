@@ -13,35 +13,40 @@ use crate::demod::ChannelDemod;
 /// Decode one PD radio frame (`Y(odd)`/`Cr`/`Cb`/`Y(even)`) into two image
 /// rows of `image`. Translated from slowrx `video.c:259-486`.
 ///
-/// Closes audit issues:
-/// - **#24** time-base alignment: every pixel uses slowrx's exact
-///   `Skip + round(rate * (chan_start_sec + pixel_secs * (x + 0.5)))`
-///   single-round formula (`video.c:140-142`); `pair_seconds` is folded
-///   in here, NOT pre-rounded by the caller, so per-pair rounding
-///   error never accumulates.
-/// - **#23** FFT-every-N + `StoredLum`: one FFT per working-rate sample
-///   produces the latest `Freq`, which fills `StoredLum` at every
-///   sample; pixel times read out via `StoredLum[pixel_time]`
-///   (`video.c:350-406`). See
-///   [`crate::demod::decode_one_channel_into`] for the per-channel
-///   inner loop.
-/// - **#18** SNR estimator: [`crate::snr::SnrEstimator`] is recomputed
-///   every [`crate::demod::SNR_REESTIMATE_STRIDE`] samples
-///   (`video.c:302-343`).
+/// Every pixel uses slowrx's exact
+/// `Skip + round(rate * (chan_start_sec + pixel_secs * (x + 0.5)))`
+/// single-round formula (`video.c:140-142`); `pair_seconds` is folded
+/// in here, NOT pre-rounded by the caller, so per-pair rounding
+/// error never accumulates.
+///
+/// One FFT per working-rate sample produces the latest `Freq`, which
+/// fills `StoredLum` at every sample; pixel times read out via
+/// `StoredLum[pixel_time]` (`video.c:350-406`). See
+/// [`crate::demod::decode_one_channel_into`] for the per-channel
+/// inner loop. [`crate::snr::SnrEstimator`] is recomputed every
+/// [`crate::demod::SNR_REESTIMATE_STRIDE`] samples (`video.c:302-343`).
 ///
 /// **Deviations from slowrx (deliberate):**
-/// - **#44 lifted with hysteresis (0.3.2)**: per-pixel Hann window
-///   length is SNR-adaptive (slowrx `video.c:354-367`) plus a 1 dB
-///   hysteresis band at each threshold to prevent flip-flop on real-
-///   radio SNR fluctuations near boundary values. See
-///   [`crate::demod::window_idx_for_snr_with_hysteresis`] and the
-///   `SNR hysteresis on adaptive Hann window selection` entry in
-///   `docs/intentional-deviations.md`.
+/// - Per-pixel Hann window length is SNR-adaptive (slowrx
+///   `video.c:354-367`) plus a 1 dB hysteresis band at each threshold
+///   to prevent flip-flop on real-radio SNR fluctuations near boundary
+///   values. See [`crate::demod::window_idx_for_snr_with_hysteresis`]
+///   and the `SNR hysteresis on adaptive Hann window selection` entry
+///   in `docs/intentional-deviations.md`.
 ///
 /// `skip_samples` is the absolute sample index inside `audio` where
 /// pair zero's sync pulse begins; `pair_seconds` is `pair_index *
 /// line_seconds` (un-rounded); `rate_hz` is the slant-corrected rate
 /// from [`crate::sync::find_sync`].
+// HISTORY (audit #94 E12 — issue archaeology moved out of rustdoc):
+//   #18 — SNR estimator: SnrEstimator recomputed every
+//          SNR_REESTIMATE_STRIDE samples (video.c:302-343; closed).
+//   #23 — FFT-every-N + StoredLum: one FFT per working-rate sample,
+//          pixel times via StoredLum[pixel_time] (video.c:350-406; closed).
+//   #24 — time-base alignment: single-round formula, pair_seconds folded
+//          in here rather than pre-rounded by caller (closed).
+//   #44 — SNR-adaptive Hann window lifted with 1 dB hysteresis band
+//          (0.3.2 deliberate deviation; see intentional-deviations.md).
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
