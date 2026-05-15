@@ -268,6 +268,13 @@ impl SstvDecoder {
     /// `AwaitingVis`. Row `N` is fully populated after the
     /// `LineDecoded { line_index: N, .. }` event for that row has been
     /// emitted by the most recent `process` call. (Audit #93 D5.)
+    ///
+    /// **R36/R24 caveat:** see [`SstvEvent::LineDecoded`] for the
+    /// cross-row chroma-duplication contract — row N's `Cb` (or `Cr`)
+    /// is zero-initialized when `LineDecoded(N)` fires for the first
+    /// of each row pair, and gets duplicated in by the next row's
+    /// decode. The final `ImageComplete.image` carries the fully
+    /// populated state.
     #[must_use]
     pub fn current_image(&self) -> Option<&SstvImage> {
         match &self.state {
@@ -339,10 +346,12 @@ impl SstvDecoder {
                                 spec,
                                 image,
                                 audio: {
-                                    // D6.1: pre-size to the known final length to
-                                    // avoid Vec growth reallocs over the burst.
-                                    let mut v = Vec::with_capacity(target);
-                                    v.extend(residual);
+                                    // D6.1: keep the residual move + pre-reserve
+                                    // the remaining capacity. Avoids copying
+                                    // residual bytes AND avoids Vec growth
+                                    // reallocs over the burst.
+                                    let mut v = residual;
+                                    v.reserve(target.saturating_sub(v.len()));
                                     v
                                 },
                                 has_sync: Vec::with_capacity(target / SYNC_PROBE_STRIDE),
@@ -947,6 +956,31 @@ mod tests {
     fn current_image_is_none_when_awaiting_vis() {
         let decoder = SstvDecoder::new(44100).expect("rate ok");
         assert!(decoder.current_image().is_none());
+    }
+
+    #[test]
+    fn current_image_is_some_after_vis_detected() {
+        use crate::vis::tests::synth_vis;
+        // Feed a VIS-only burst (no image audio after). Decoder transitions
+        // to Decoding with a zero-initialized image of the mode's expected
+        // dimensions. (audit #93 D5 follow-up — covers the Some(image) path.)
+        let mut decoder =
+            SstvDecoder::new(crate::resample::WORKING_SAMPLE_RATE_HZ).expect("rate ok");
+        let mut burst = synth_vis(0x5F, 0.0); // PD120
+        burst.append(&mut vec![0.0_f32; 1024]); // pad to ensure the VIS detector fires
+        let events = decoder.process(&burst);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, SstvEvent::VisDetected { .. })),
+            "expected VisDetected event"
+        );
+        let img = decoder
+            .current_image()
+            .expect("Some(image) after VisDetected");
+        // PD120 dimensions: 640 × 496 (per ModeSpec).
+        assert_eq!(img.width, 640, "PD120 image width");
+        assert_eq!(img.height, 496, "PD120 image height");
     }
 
     // TODO(future/PR-3): mid_image_vis_emits_partial_then_new_vis
