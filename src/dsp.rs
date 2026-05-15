@@ -74,6 +74,17 @@ pub(crate) fn power(c: Complex<f32>) -> f64 {
 /// | 2300 Hz   | 53          |
 /// | 2700 Hz   | 62          |
 /// | 3400 Hz   | 78          |
+///
+/// **Bin-scaling caveat:** the table above is for FFT setups with
+/// `fft_len/sample_rate ≈ 1024/44100 ≈ 256/11025` (the sync-band FFT;
+/// see `SYNC_FFT_LEN` in `crate::sync`). The SNR estimator and
+/// per-pixel FFTs run at `1024/11025` since 0.3.3, so their bin
+/// indices are ~4× larger (e.g., 1200 Hz lands at bin 111, not 27).
+/// The function itself is general over `fft_len` and `sample_rate_hz`;
+/// this caveat only affects readers who mentally apply the table's
+/// values to a `1024/11025` context. See
+/// `docs/intentional-deviations.md::"FFT frequency resolution
+/// exceeds slowrx C by 4×"`.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
