@@ -7,16 +7,16 @@
 //!
 //! ## Status
 //!
-//! `0.5.x` — V2.4 published. PD120/PD180/PD240 + Robot 24/36/72 +
-//! Scottie 1 / Scottie 2 / Scottie DX + Martin 1 / Martin 2 decoding
-//! from raw audio. PD120/PD180 validated against ARISS Dec-2017;
-//! Robot 36 validated against the ARISS Fram2 corpus (see
+//! PD120 / PD180 / PD240, Robot 24 / 36 / 72, Scottie 1 / 2 / DX, and
+//! Martin 1 / 2 decode from raw audio. PD120 and PD180 are validated
+//! against the ARISS Dec-2017 capture set; Robot 36 is validated
+//! against the ARISS Fram2 corpus (see
 //! `tests/ariss_fram2_validation.md`). Scottie and Martin families
 //! are synthetic round-trip-validated only — no Scottie or Martin
-//! reference WAVs available. The public API is
-//! `#[non_exhaustive]`-protected for additive growth as future
-//! mode-family epics land. See
-//! <https://github.com/jasonherald/slowrx.rs/issues/9> for the V2 roadmap.
+//! reference WAVs are available. The public API is
+//! `#[non_exhaustive]`-protected for additive growth. See
+//! <https://github.com/jasonherald/slowrx.rs/issues/9> for the
+//! roadmap.
 //!
 //! ## Example
 //!
@@ -75,7 +75,9 @@ pub use crate::resample::{Resampler, MAX_INPUT_SAMPLE_RATE_HZ, WORKING_SAMPLE_RA
 
 /// Test-support — exposed under the `test-support` feature for integration
 /// tests in this crate (e.g., `tests/roundtrip.rs`). NOT part of the stable
-/// public API; will be hidden behind `#[doc(hidden)]` until V1 publishes.
+/// public API; the module is `#[doc(hidden)]` and the items inside are thin
+/// wrappers around `pub(crate)` internals — the API is
+/// `#[non_exhaustive]`-protected for additive growth.
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod __test_support {

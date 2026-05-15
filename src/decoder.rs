@@ -1,11 +1,19 @@
-//! `SstvDecoder` — public state machine driving the decode pipeline.
+//! [`SstvDecoder`] — public state machine driving the decode pipeline.
 //!
-//! This is the V1 skeleton: state machine shell + public API surface.
-//! VIS detection lands in PR-1; per-mode pixel decoding lands in PR-2.
+//! Two-pass per-image flow: VIS detection (via [`crate::vis`]) →
+//! buffer audio in `Decoding` state until ~one image's worth → run
+//! `crate::sync::find_sync` once to recover the slant-corrected
+//! rate + line-zero `Skip` → burst-decode every row (via
+//! `crate::demod::decode_one_channel_into` in the per-mode glue
+//! for PD/Robot/Scottie/Martin) → emit `LineDecoded` events and a
+//! final `ImageComplete`. Multi-image streaming is supported in one
+//! `process()` call (issue #90).
 //!
-//! Translated in spirit from slowrx's `slowrx.c` `Listen()` loop +
-//! `vis.c` `GetVIS()` + `video.c` `GetVideo()`. ISC License — see
-//! `NOTICE.md`.
+//! Translated in spirit from slowrx's `slowrx.c::Listen()` loop +
+//! `vis.c::GetVIS()` + `video.c::GetVideo()`. ISC License — see
+//! `NOTICE.md`. Inline `// slowrx <file>.c:NNN` references throughout
+//! point at the vendored copy under `original/slowrx/`; verified at
+//! audit #94 (2026-05-15).
 
 use crate::error::Result;
 use crate::image::SstvImage;

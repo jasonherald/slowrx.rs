@@ -3,11 +3,10 @@
 //! Translated from slowrx's `modespec.c` (Oona Räisänen, ISC License).
 //! See `NOTICE.md` for full attribution.
 //!
-//! Implemented as of V2.4 (0.5.0): PD120, PD180, PD240, Robot 24,
-//! Robot 36, Robot 72, Scottie 1, Scottie 2, Scottie DX, Martin 1,
-//! Martin 2. All RGB-sequential modes (Scottie + Martin) share a
-//! single decode path; the per-line offsets branch on
-//! [`SyncPosition`].
+//! Implemented modes: PD120, PD180, PD240, Robot 24, Robot 36, Robot 72,
+//! Scottie 1, Scottie 2, Scottie DX, Martin 1, Martin 2. All RGB-sequential
+//! modes (Scottie + Martin) share a single decode path; the per-line
+//! offsets branch on [`SyncPosition`].
 
 /// SSTV operating mode. Implemented: [`SstvMode::Pd120`], [`SstvMode::Pd180`],
 /// [`SstvMode::Pd240`], [`SstvMode::Robot24`], [`SstvMode::Robot36`],
