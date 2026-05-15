@@ -71,7 +71,7 @@ pub use crate::image::SstvImage;
 pub use crate::modespec::{
     for_mode, lookup as lookup_vis, ChannelLayout, ModeSpec, SstvMode, SyncPosition,
 };
-pub use crate::resample::{Resampler, WORKING_SAMPLE_RATE_HZ};
+pub use crate::resample::{Resampler, MAX_INPUT_SAMPLE_RATE_HZ, WORKING_SAMPLE_RATE_HZ};
 
 /// Test-support — exposed under the `test-support` feature for integration
 /// tests in this crate (e.g., `tests/roundtrip.rs`). NOT part of the stable
