@@ -303,7 +303,7 @@ const SCOTTIE1: ModeSpec = ModeSpec {
     vis_code: 0x3C,
     line_pixels: 320,
     image_lines: 256,
-    // slowrx modespec.c:91-104 — S1 LineTime = 428.38e-3,
+    // slowrx modespec.c:91-102 — S1 LineTime = 428.38e-3,
     // PixelTime = 0.4320e-3, SyncTime = 9e-3, PorchTime = 1.5e-3,
     // SeptrTime = 1.5e-3.
     line_seconds: 0.428_38,
@@ -322,7 +322,7 @@ const SCOTTIE2: ModeSpec = ModeSpec {
     vis_code: 0x38,
     line_pixels: 320,
     image_lines: 256,
-    // slowrx modespec.c:105-117 — S2 LineTime = 277.692e-3,
+    // slowrx modespec.c:104-115 — S2 LineTime = 277.692e-3,
     // PixelTime = 0.2752e-3, SyncTime = 9e-3, PorchTime = 1.5e-3,
     // SeptrTime = 1.5e-3.
     line_seconds: 0.277_692,
@@ -341,7 +341,7 @@ const SCOTTIE_DX: ModeSpec = ModeSpec {
     vis_code: 0x4C,
     line_pixels: 320,
     image_lines: 256,
-    // slowrx modespec.c:118-128 — SDX LineTime = 1050.3e-3,
+    // slowrx modespec.c:117-128 — SDX LineTime = 1050.3e-3,
     // PixelTime = 1.08053e-3, SyncTime = 9e-3, PorchTime = 1.5e-3,
     // SeptrTime = 1.5e-3.
     line_seconds: 1.050_3,

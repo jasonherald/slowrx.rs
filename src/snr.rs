@@ -29,6 +29,9 @@
 //! See `docs/intentional-deviations.md::"FFT frequency resolution
 //! exceeds slowrx C by 4×"` for the full rationale and revisit
 //! triggers.
+//!
+//! Inline `// slowrx <file>.c:NNN` line refs are against the vendored
+//! snapshot in `original/slowrx/`; verified at audit #94 (2026-05-15).
 
 use rustfft::{num_complex::Complex, FftPlanner};
 

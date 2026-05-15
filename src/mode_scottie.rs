@@ -34,6 +34,9 @@
 //! RGB directly via [`crate::image::SstvImage::put_pixel`].
 //!
 //! See `NOTICE.md` for full slowrx attribution.
+//!
+//! Inline `// slowrx <file>.c:NNN` line refs are against the vendored
+//! snapshot in `original/slowrx/`; verified at audit #94 (2026-05-15).
 
 // NOTE (audit #94 B15): the file is named `mode_scottie.rs` but its
 // `decode_line` is shared by Martin 1 / Martin 2 (both
