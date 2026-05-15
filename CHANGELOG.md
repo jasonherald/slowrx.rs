@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- **Docs sweep** — ten audit findings, all docs-only (audit bundle
+  10 of 12). `decoder.rs` module doc rewritten as the actual two-pass
+  pipeline framing (E3); version-pinned prose generalized in
+  `modespec.rs` and `lib.rs` so patch bumps don't churn it (E4);
+  `get_bin` rustdoc gains a bin-scaling caveat noting that the
+  example table applies to the 256/11025 sync FFT and 1024/44100
+  slowrx-native case, NOT the 1024/11025 SNR + per-pixel FFTs since
+  0.3.3 (E6); inline comment cleanups in `mode_pd.rs` (E5 verified
+  absent + E9 PIXEL_FFT_STRIDE verified absent + E12 — issue
+  archaeology moved from `decode_pd_line_pair` rustdoc to a
+  `// HISTORY:` block); `snr.rs` (E9 — zero-pad comment clarified +
+  hysteresis description sharpened), `mode_robot.rs` (E9 + E13 —
+  time vs image-row layout note added + 3-entry ChanStart[] →
+  single chan_start_chroma collapse explained), `vis.rs` (E13 —
+  `HedrBuf[-1]` UB-fix flagged as deliberate fidelity improvement),
+  `sync.rs` (E13 — `1200 Hz bin == 27` clarified as zero-hedr-shift
+  only + `Praw /= (hi-lo)` off-by-one flagged as slowrx-faithful);
+  61 inline `// slowrx <file>.c:NNN` references audited against the
+  vendored snapshot in `original/slowrx/` (3 drifted refs corrected
+  in `modespec.rs`, all in the Scottie family entries; 58 verified
+  clean) and a per-file disclaimer added to each of the 8 affected
+  files anchoring the refs to the vendored copy (E10); two new
+  top-level sections in `docs/intentional-deviations.md` —
+  "Faithful-to-slowrx artifacts" (`Praw` off-by-one, row-0 Cb
+  zero-init for R36/R24, `xAcc[8]` window-bound truncation) and
+  "Fidelity improvements over slowrx" (`HedrBuf[-1]` wraparound
+  read, Gaussian-log interpolation div-by-zero guard, `-20 dB` SNR
+  return paths) — protect future audits from "correcting" Rust back
+  toward broken C (E8); `mode_scottie.rs` gains a `// NOTE:` block
+  recording the deferred `mode_scottie → mode_rgb_sequential`
+  rename (B15). Non-breaking; no code changes; lib test count
+  unchanged at 136. (#94; audit E3/E4/E5/E6/E8/E9/E10/E12/E13/B15.)
+
 - **Performance: hoist per-channel/per-line allocations into reusable
   scratch** (audit bundle 9 of 12). Three hot allocation sites moved
   out of the decode hot path: (1) per-channel scratch (`pixel_times`,
