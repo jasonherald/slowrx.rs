@@ -426,10 +426,14 @@ algorithm, so library users choose it. rtl-sdr turns it on.
 ### Still open
 
 Audit A4: slowrx keeps its SNR estimate and window index sticky across
-the whole image. `decode_one_channel_into` starts each channel cold (SNR 0,
-which selects the 64-sample window until the first re-estimate), so the
-first ~20 pixels of every channel use a 5× longer window than slowrx would.
-That's tracked separately as a fidelity fix to judge with the #119 metric.
+the whole image. `decode_one_channel_into` starts each channel sweep cold
+(SNR 0, with the window index ratcheting down from the longest window).
+The sweep begins half an FFT (512 samples) before pixel 0, so the
+cold-start window selection and the first SNR re-estimate happen before
+any output pixel. Early pixels therefore use an SNR estimate centred in
+that margin rather than slowrx's image-wide value; the estimator's
+1024-sample input can overlap pixel 0. This is tracked separately (#130)
+as a fidelity fix to judge with the #119 metric.
 
 ---
 
