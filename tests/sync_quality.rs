@@ -12,7 +12,8 @@
 #![allow(
     clippy::expect_used,
     clippy::cast_precision_loss,
-    clippy::cast_possible_truncation
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
 )]
 
 use slowrx::{SstvDecoder, SstvEvent, SstvMode, SyncQuality, WORKING_SAMPLE_RATE_HZ};
@@ -54,6 +55,49 @@ fn a_vis_followed_by_noise_looks_like_noise() {
     let q = first_completion(&audio);
     assert!(q.value() < 0.1, "noise image quality {}", q.value());
     assert!(q.looks_like_noise());
+}
+
+/// One `process` call carrying a noise PD120 image and then a clean one:
+/// the first must still look like noise. (PD's sync search folds twice its
+/// radio lines; before #121's fix it read the next transmission's pulses.)
+#[test]
+fn a_noise_image_followed_by_a_clean_one_in_the_same_call_looks_like_noise() {
+    const PD120_VIS: u8 = 0x5F;
+    let spec = slowrx::for_mode(SstvMode::Pd120);
+    let image_secs = f64::from(spec.image_lines / 2) * spec.line_seconds;
+    let mut audio = slowrx::__test_support::vis::synth_vis(PD120_VIS, 0.0);
+    audio.extend(slowrx::__test_support::noise::white(
+        (image_secs * f64::from(WORKING_SAMPLE_RATE_HZ)) as usize,
+        0xF00D,
+    ));
+    audio.extend(slowrx::__test_support::vis::synth_vis(PD120_VIS, 0.0));
+    let grey = vec![[128_u8, 128, 128]; (spec.line_pixels * spec.image_lines) as usize];
+    audio.extend(slowrx::__test_support::mode_pd::encode_pd(
+        SstvMode::Pd120,
+        &grey,
+    ));
+    audio.extend(std::iter::repeat_n(0.0_f32, 8192));
+
+    let mut d = SstvDecoder::new(WORKING_SAMPLE_RATE_HZ).expect("decoder");
+    let scores: Vec<SyncQuality> = d
+        .process(&audio)
+        .into_iter()
+        .filter_map(|e| match e {
+            SstvEvent::ImageComplete { sync_quality, .. } => Some(sync_quality),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(scores.len(), 2, "two images");
+    assert!(
+        scores[0].looks_like_noise(),
+        "noise image scored {}",
+        scores[0].value()
+    );
+    assert!(
+        scores[1].value() > 0.8,
+        "clean image scored {}",
+        scores[1].value()
+    );
 }
 
 // Real-data bounds from the module doc: junk <= 0.10, legible >= 0.43.

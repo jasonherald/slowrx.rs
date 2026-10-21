@@ -267,9 +267,13 @@ pub(crate) struct SyncResult {
 /// Linear Hough transform + 8-tap convolution edge-find.
 ///
 /// `has_sync` is the per-stride boolean track produced by [`SyncTracker`].
-/// `initial_rate_hz` is normally [`WORKING_SAMPLE_RATE_HZ`] but the
-/// function may adjust it. Translated from slowrx `sync.c::FindSync`
-/// (lines 18-133).
+/// Only its first image's worth (`radio_lines × line_seconds` at
+/// `initial_rate_hz`) is used: slowrx's `HasSync` spans exactly one image,
+/// but the decoder's track runs on when a `process` call carries more audio,
+/// and PD's `image_lines` folds (twice its radio lines) would otherwise read
+/// the next transmission. `initial_rate_hz` is normally
+/// [`WORKING_SAMPLE_RATE_HZ`] but the function may adjust it. Translated from
+/// slowrx `sync.c::FindSync` (lines 18-133).
 #[must_use = "the SyncResult must be consumed; dropping it discards the slant + skip correction"]
 #[allow(
     clippy::cast_precision_loss,
@@ -283,6 +287,10 @@ pub(crate) fn find_sync(
     spec: ModeSpec,
     scratch: &mut FindSyncScratch,
 ) -> SyncResult {
+    let image_probes = (f64::from(spec.radio_lines()) * spec.line_seconds * initial_rate_hz
+        / SYNC_PROBE_STRIDE as f64)
+        .ceil() as usize;
+    let has_sync = &has_sync[..has_sync.len().min(image_probes)];
     let line_width: usize = ((spec.line_seconds / spec.sync_seconds) * 4.0) as usize;
     let num_lines = spec.image_lines as usize;
     let mut rate = initial_rate_hz;
@@ -684,6 +692,38 @@ mod tests {
             "empty: {}",
             empty.sync_quality
         );
+    }
+
+    /// slowrx's `HasSync` spans exactly one image, but the decoder's track
+    /// runs on when one `process` call carries more audio. PD folds
+    /// `image_lines` = 2 × its radio lines, so without truncation it read
+    /// the *next* transmission's pulses: a noise image followed by a clean
+    /// one scored as clean (review of #121), and the edge depended on how
+    /// the audio was chunked.
+    #[test]
+    fn find_sync_ignores_the_track_past_the_image() {
+        let rate = f64::from(WORKING_SAMPLE_RATE_HZ);
+        let pd = modespec::for_mode(modespec::SstvMode::Pd120);
+        let image_probes = (f64::from(pd.radio_lines()) * pd.line_seconds * rate
+            / SYNC_PROBE_STRIDE as f64) as usize;
+        let mut seed = 0xBADD_u32;
+        let mut track: Vec<bool> = (0..image_probes)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                seed >> 24 < 77
+            })
+            .collect();
+        let noise_only = find_sync(&track, rate, pd, &mut FindSyncScratch::new());
+        // A clean transmission follows in the same buffer.
+        track.extend(synth_has_sync(pd, rate));
+        let with_next = find_sync(&track, rate, pd, &mut FindSyncScratch::new());
+        assert!(
+            with_next.sync_quality < 0.1,
+            "noise image scored {} with a clean image after it",
+            with_next.sync_quality
+        );
+        assert_eq!(with_next.skip_samples, noise_only.skip_samples);
+        assert_eq!(with_next.sync_quality, noise_only.sync_quality);
     }
 
     #[test]
