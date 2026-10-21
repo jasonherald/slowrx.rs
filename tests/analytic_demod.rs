@@ -76,3 +76,47 @@ fn a_robot36_round_trip_with_analytic_demod_is_as_exact_as_without() {
         "analytic {analytic:.2} vs real {real:.2}"
     );
 }
+
+/// The setting is latched when an image starts: toggling it while an image
+/// is being received leaves that image on the setting it started with, and
+/// the next image picks up the new one.
+#[test]
+fn toggling_mid_image_applies_from_the_next_image() {
+    let ycrcb = slowrx::__test_support::mode_robot::synthetic_ycrcb(SstvMode::Robot36);
+    let mut one = slowrx::__test_support::vis::synth_vis(ROBOT36_VIS, 0.0);
+    one.extend(slowrx::__test_support::mode_robot::encode_robot(
+        SstvMode::Robot36,
+        &ycrcb,
+    ));
+    let mut audio = one.clone();
+    audio.extend(std::iter::repeat_n(0.0_f32, 11_025));
+    audio.extend(&one);
+    audio.extend(std::iter::repeat_n(0.0_f32, 8192));
+
+    let images = |toggle_at: Option<usize>| -> Vec<SstvImage> {
+        let mut d = SstvDecoder::new(WORKING_SAMPLE_RATE_HZ).expect("decoder");
+        let split = toggle_at.unwrap_or(audio.len());
+        let mut events = d.process(&audio[..split]);
+        d.set_analytic_demod(true);
+        events.extend(d.process(&audio[split..]));
+        events
+            .into_iter()
+            .filter_map(|e| match e {
+                SstvEvent::ImageComplete { image, .. } => Some(image),
+                _ => None,
+            })
+            .collect()
+    };
+    // Real demod throughout, and analytic throughout, for reference.
+    let real = images(None);
+    let analytic = images(Some(0));
+    // Toggle halfway through the first image.
+    let toggled = images(Some(one.len() / 2));
+    assert_eq!(toggled.len(), 2);
+    assert_eq!(toggled[0].pixels, real[0].pixels, "first image stays real");
+    assert_eq!(
+        toggled[1].pixels, analytic[1].pixels,
+        "second image is analytic"
+    );
+    assert_ne!(real[0].pixels, analytic[0].pixels, "the setting matters");
+}

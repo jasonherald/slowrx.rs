@@ -1249,6 +1249,30 @@ mod tests {
         }
     }
 
+    /// The cached Hilbert plans are rebuilt when the sweep length changes
+    /// (channel sweeps differ in length per mode and channel).
+    #[test]
+    fn hilbert_stays_correct_across_changing_lengths() {
+        let sr = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
+        let mut d = ChannelDemod::new();
+        for len in [2000_usize, 500, 3000, 2000] {
+            let x: Vec<f32> = (0..len)
+                .map(|n| (2.0 * PI * 1700.0 * n as f64 / sr).cos() as f32)
+                .collect();
+            let mut h = Vec::new();
+            d.hilbert_into(&x, &mut h);
+            assert_eq!(h.len(), len);
+            let (lo, hi) = (len / 5, len - len / 5);
+            for (n, &got) in h.iter().enumerate().take(hi).skip(lo) {
+                let want = (2.0 * PI * 1700.0 * n as f64 / sr).sin();
+                assert!(
+                    (f64::from(got) - want).abs() < 0.03,
+                    "len {len}, n={n}: {got} vs {want}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn pixel_centres_follow_slowrx_per_layout() {
         // video.c:140-142 (PD): (x + 0.5); video.c:196-198 (others): (x - 0.5).

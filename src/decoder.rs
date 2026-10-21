@@ -208,18 +208,22 @@ struct DecodingState {
     /// need cross-radio-line chroma state will need to extend the
     /// constructor's match in `process` to opt in.
     chroma_planes: Option<[Vec<u8>; 2]>,
+    /// [`SstvDecoder::set_analytic_demod`] as it was when this image
+    /// started; applied when the image is demodulated, so toggling the
+    /// setting mid-image takes effect from the next image.
+    analytic: bool,
 }
 
 impl DecodingState {
     /// Start decoding `spec` from `audio` — the image's leading audio (VIS
     /// residue or the sync-start buffer) — with radio mistuning
-    /// `hedr_shift_hz`.
+    /// `hedr_shift_hz`, demodulating the analytic signal if `analytic`.
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
     )]
-    fn new(spec: ModeSpec, mut audio: Vec<f32>, hedr_shift_hz: f64) -> Self {
+    fn new(spec: ModeSpec, mut audio: Vec<f32>, hedr_shift_hz: f64, analytic: bool) -> Self {
         let work_rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
         // Audio duration is one `line_seconds` per radio line — half the
         // image rows for PD (slowrx video.c:251-254); see
@@ -240,6 +244,7 @@ impl DecodingState {
             sync_tracker: SyncTracker::new(hedr_shift_hz),
             hedr_shift_hz,
             target_audio_samples: target,
+            analytic,
             chroma_planes: match spec.mode {
                 SstvMode::Robot24 | SstvMode::Robot36 => {
                     let n = (spec.image_lines as usize) * (spec.line_pixels as usize);
@@ -466,6 +471,9 @@ pub struct SstvDecoder {
     /// Mode every image is decoded in, whatever its VIS says (#113);
     /// `None` (the default) decodes each image in its header's mode.
     forced_mode: Option<SstvMode>,
+    /// Requested analytic-signal demod ([`Self::set_analytic_demod`]),
+    /// latched into each image as it starts.
+    analytic_demod: bool,
     /// Sync-rhythm image-start detector (#115) for the expected mode — the
     /// forced mode, else the fallback. Fed only while awaiting an image;
     /// rebuilt after each image.
@@ -490,6 +498,7 @@ impl SstvDecoder {
             working_samples_emitted: 0,
             fallback_mode: None,
             forced_mode: None,
+            analytic_demod: false,
             sync_start: None,
         })
     }
@@ -554,13 +563,13 @@ impl SstvDecoder {
     /// effect from the next image and persists across [`Self::reset`]. There is
     /// no slowrx counterpart — see `docs/intentional-deviations.md`.
     pub fn set_analytic_demod(&mut self, on: bool) {
-        self.channel_demod.set_analytic(on);
+        self.analytic_demod = on;
     }
 
     /// Whether [`Self::set_analytic_demod`] is on.
     #[must_use]
     pub fn analytic_demod(&self) -> bool {
-        self.channel_demod.analytic()
+        self.analytic_demod
     }
 
     /// The mode a header-less image is assumed to be: the forced mode, else
@@ -775,7 +784,12 @@ impl SstvDecoder {
     /// Enter `Decoding`. The sync-rhythm detector is dropped and rebuilt
     /// once the image completes ([`Self::restart_detectors`]).
     fn begin_decoding(&mut self, spec: ModeSpec, audio: Vec<f32>, hedr_shift_hz: f64) {
-        self.state = State::Decoding(Box::new(DecodingState::new(spec, audio, hedr_shift_hz)));
+        self.state = State::Decoding(Box::new(DecodingState::new(
+            spec,
+            audio,
+            hedr_shift_hz,
+            self.analytic_demod,
+        )));
         self.sync_start = None;
     }
 
@@ -841,6 +855,7 @@ impl SstvDecoder {
     ) {
         let work_rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
         let result = find_sync(&d.has_sync, work_rate, d.spec, find_sync_scratch);
+        channel_demod.set_analytic(d.analytic);
 
         // Image-complete burst: image_lines LineDecoded events + 1 ImageComplete.
         // Pre-reserve to avoid Vec growth reallocs. (Audit #93 D5.)
@@ -878,9 +893,7 @@ impl SstvDecoder {
         self.sync_start = None;
         self.apply_expected_mode();
         self.resampler.reset_state();
-        let analytic = self.channel_demod.analytic();
         self.channel_demod = crate::demod::ChannelDemod::new();
-        self.channel_demod.set_analytic(analytic);
         self.snr_est = crate::snr::SnrEstimator::new();
     }
 
