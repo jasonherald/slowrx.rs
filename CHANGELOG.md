@@ -60,6 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `hound` can't read) as "unsupported sample container layout" instead of a
   generic read failure, and rejects float WAVs that aren't 32-bit up front.
   (#95)
+- `SstvDecoder::process` is `#[must_use]`: its events carry the decoded
+  images, so dropping them is almost certainly a bug. (#92)
 
 ### Internal
 
@@ -74,6 +76,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`tests/ariss_fram2_validation.md`, `docs/audits/`, `docs/history.md`)
   are now absolute GitHub URLs, so they resolve on docs.rs and crates.io.
   (#95)
+- Every mode's line decoder reuses one set of hoisted line buffers instead
+  of allocating two to four `Vec`s per radio line (Robot, Scottie, Martin;
+  PD already did). (#93)
+- The SNR estimate stays within its documented range (-20 to 60 dB); a
+  numerically empty noise band used to divide to `+∞`. Every window
+  threshold is ≤ 20 dB, so no decode changes. (#96 A9)
+- Audit tidy-ups (#96): PD's even image height is pinned by a test (A5); a
+  comment on why `pixel_freq`'s band clamps never bind (A10); one
+  `probe_index` helper instead of two closures with a dead guard (C16);
+  `mode_robot::decode_line` lists the non-Robot modes so a new mode is a
+  compile error, not a runtime panic (C17). The per-channel SNR cold start
+  (A4) changes pixels, so it moves to #71 to be judged against the Fram2
+  reference JPGs.
 
 ## [0.6.0] - 2026-10-21
 
