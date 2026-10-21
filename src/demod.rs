@@ -474,6 +474,12 @@ pub(crate) fn pixel_centre_offset(layout: ChannelLayout) -> f64 {
 /// (`video.c:343`); scaled to `11_025` Hz that's 64.
 pub(crate) const SNR_REESTIMATE_STRIDE: i64 = 64;
 
+// Each channel sweep starts half an FFT before pixel 0 with slowrx's cold
+// SNR of 0 and re-estimates every `SNR_REESTIMATE_STRIDE` samples, so the
+// cold value is replaced before any output pixel only while the stride
+// fits in that margin (#130).
+const _: () = assert!(SNR_REESTIMATE_STRIDE.unsigned_abs() <= FFT_LEN as u64 / 2);
+
 /// Distance, in working-rate samples, between successive per-pixel
 /// FFTs inside [`decode_one_channel_into`]. slowrx takes an FFT every
 /// 6 samples at `44_100` Hz (`video.c:350` — `if (SampleNum % 6 == 0)`).
