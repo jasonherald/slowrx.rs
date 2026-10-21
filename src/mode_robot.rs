@@ -445,4 +445,19 @@ mod tests {
             }
         }
     }
+
+    /// Each line's chroma lands in its own row and is duplicated to the next
+    /// (slowrx `video.c:421-425`): Cr on even lines, Cb on odd. Row 0's Cb
+    /// stays zero, as in slowrx, and the last line has no next row to write.
+    #[test]
+    fn store_chroma_writes_its_row_and_duplicates_it_to_the_next() {
+        const W: usize = 3;
+        let mut planes = [vec![0_u8; W * 4], vec![0_u8; W * 4]];
+        for (line, value) in [(0, 1), (1, 2), (2, 3), (3, 4)] {
+            store_chroma(&mut planes, line, &[value; W]);
+        }
+        let rows = |plane: &[u8]| plane.chunks(W).map(|r| r[0]).collect::<Vec<_>>();
+        assert_eq!(rows(&planes[0]), [1, 1, 3, 3], "Cr");
+        assert_eq!(rows(&planes[1]), [0, 2, 2, 4], "Cb");
+    }
 }
