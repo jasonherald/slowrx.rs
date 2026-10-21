@@ -69,7 +69,9 @@ pub(crate) fn encode_robot(mode: SstvMode, ycrcb: &[[u8; 3]]) -> Vec<f32> {
         | SstvMode::Scottie2
         | SstvMode::ScottieDx
         | SstvMode::Martin1
-        | SstvMode::Martin2 => unreachable!("encode_robot called with non-Robot mode {mode:?}"),
+        | SstvMode::Martin2
+        | SstvMode::Wraase120
+        | SstvMode::Wraase180 => unreachable!("encode_robot called with non-Robot mode {mode:?}"),
     }
 
     tone.into_vec()
