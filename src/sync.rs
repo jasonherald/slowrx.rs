@@ -258,6 +258,10 @@ pub(crate) struct SyncResult {
     /// both "perfectly aligned input" and "nothing-detected-at-all input".
     #[allow(dead_code)]
     pub slant_deg: Option<f64>,
+    /// How clearly the mode's sync pulses showed up across the image, from
+    /// `0.0` (no line-sync structure — e.g. a VIS followed by noise) to
+    /// about `1.0` (a pulse on every line). See [`sync_quality`].
+    pub sync_quality: f32,
 }
 
 /// Linear Hough transform + 8-tap convolution edge-find.
@@ -318,6 +322,9 @@ pub(crate) fn find_sync(
         adjusted_rate_hz: rate,
         skip_samples,
         slant_deg: slant_deg_detected,
+        // `x_acc` was just rebuilt by `find_falling_edge` at the final,
+        // slant-corrected rate.
+        sync_quality: sync_quality(&scratch.x_acc, spec, num_lines),
     }
 }
 
@@ -493,6 +500,43 @@ fn find_falling_edge(
     falling_edge_from_x_acc(&scratch.x_acc)
 }
 
+/// Line-sync quality of a decoded image from the column accumulator
+/// `x_acc` (how many of the image's `num_lines` lines had sync energy at
+/// each of the [`X_ACC_BINS`] positions across a line). A real image puts
+/// a sync pulse in the same columns on nearly every line, so the best
+/// pulse-wide window scores close to `num_lines` above the background;
+/// noise spreads its hits evenly. Returns
+/// `(best pulse-wide window mean − median) / num_lines`, clamped to
+/// `[0, 1]`: ~0.95 on clean real-radio Robot 36, 0.4–0.95 on faded but
+/// legible passes, ≤ 0.1 when the "image" is noise (#116). The window
+/// wraps around the line edge. No slowrx counterpart.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub(crate) fn sync_quality(x_acc: &[u32], spec: ModeSpec, num_lines: usize) -> f32 {
+    let n = x_acc.len();
+    if n == 0 || num_lines == 0 {
+        return 0.0;
+    }
+    let width = ((spec.sync_seconds / spec.line_seconds) * n as f64)
+        .round()
+        .clamp(1.0, n as f64) as usize;
+    // Circular sliding-window sum, O(n).
+    let mut sum: u64 = x_acc[..width].iter().map(|&c| u64::from(c)).sum();
+    let mut best = sum;
+    for start in 1..n {
+        sum = sum + u64::from(x_acc[(start + width - 1) % n]) - u64::from(x_acc[start - 1]);
+        best = best.max(sum);
+    }
+    let mut sorted = x_acc.to_vec();
+    sorted.sort_unstable();
+    let median = f64::from(sorted[n / 2]);
+    let peak = best as f64 / width as f64;
+    ((peak - median) / num_lines as f64).clamp(0.0, 1.0) as f32
+}
+
 /// Convert a falling-edge `xmax` (post-slip-wrap) to skip seconds,
 /// applying the mode's sync-position offset. Pure arithmetic — no
 /// global state. The raw `s_secs` is computed assuming the falling
@@ -599,6 +643,45 @@ mod tests {
             }
         }
         track
+    }
+
+    #[test]
+    fn sync_quality_is_high_for_a_clean_track_and_low_for_noise() {
+        let spec = modespec::for_mode(modespec::SstvMode::Robot36);
+        let rate = f64::from(WORKING_SAMPLE_RATE_HZ);
+        let mut scratch = FindSyncScratch::new();
+        let clean = find_sync(&synth_has_sync(spec, rate), rate, spec, &mut scratch);
+        assert!(clean.sync_quality > 0.9, "clean: {}", clean.sync_quality);
+        // Noise: sync-band hits scattered at random (LCG, ~30 % density).
+        let mut seed = 0xACE1_u32;
+        let random_track: Vec<bool> = (0..synth_has_sync(spec, rate).len())
+            .map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                seed >> 24 < 77
+            })
+            .collect();
+        let noise = find_sync(&random_track, rate, spec, &mut scratch);
+        assert!(noise.sync_quality < 0.1, "noise: {}", noise.sync_quality);
+        let empty = find_sync(&[], rate, spec, &mut scratch);
+        assert!(
+            empty.sync_quality.abs() < f32::EPSILON,
+            "empty: {}",
+            empty.sync_quality
+        );
+    }
+
+    #[test]
+    fn sync_quality_handles_a_pulse_straddling_the_line_edge() {
+        // The pulse column window wraps (Scottie's sync sits mid-line, and a
+        // skewed capture can put any mode's pulse at the edge).
+        let spec = modespec::for_mode(modespec::SstvMode::Robot36);
+        let mut x_acc = vec![0_u32; X_ACC_BINS];
+        let lines = spec.image_lines as usize;
+        // 20 columns at the end of the line plus 22 at the start.
+        x_acc[X_ACC_BINS - 20..].fill(spec.image_lines);
+        x_acc[..22].fill(spec.image_lines);
+        let q = sync_quality(&x_acc, spec, lines);
+        assert!(q > 0.9, "wrapped pulse: {q}");
     }
 
     #[test]

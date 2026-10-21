@@ -16,7 +16,7 @@
 //! (see `clone-slowrx.sh`); verified at audit #94 (2026-05-15).
 
 use crate::error::Result;
-use crate::image::SstvImage;
+use crate::image::{SstvImage, SyncQuality};
 use crate::modespec::SstvMode;
 use crate::resample::Resampler;
 use crate::sync::{find_sync, SyncTracker, SYNC_PROBE_STRIDE};
@@ -106,6 +106,10 @@ pub enum SstvEvent {
     ImageComplete {
         /// Final pixel buffer.
         image: SstvImage,
+        /// How clearly the image's line-sync pulses showed up. Low scores
+        /// ([`SyncQuality::looks_like_noise`]) mean the "image" is noise —
+        /// e.g. a VIS whose transmission then faded or ended.
+        sync_quality: SyncQuality,
         /// Reserved for future mid-image VIS handling. V1 always sets this
         /// to `false`. See the deferred mid-image VIS TODO in
         /// [`SstvDecoder::process`] for details.
@@ -690,6 +694,7 @@ impl SstvDecoder {
         // into the event without a fresh black-image realloc.
         out.push(SstvEvent::ImageComplete {
             image: d.image,
+            sync_quality: SyncQuality::new(result.sync_quality),
             partial: false,
         });
     }

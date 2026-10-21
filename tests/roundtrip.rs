@@ -57,8 +57,19 @@ fn run_roundtrip(mode: SstvMode) {
         .find_map(|e| match e {
             SstvEvent::ImageComplete {
                 image,
+                sync_quality,
                 partial: false,
-            } => Some(image.clone()),
+            } => {
+                // Every clean synthetic image must score as a real picture
+                // (covers the quality metric for each mode family, incl.
+                // Scottie's mid-line sync).
+                assert!(
+                    !sync_quality.looks_like_noise(),
+                    "{mode:?}: clean round-trip sync quality {}",
+                    sync_quality.value()
+                );
+                Some(image.clone())
+            }
             _ => None,
         })
         .expect("ImageComplete event");
@@ -145,8 +156,19 @@ fn run_robot_roundtrip(mode: SstvMode) {
         .find_map(|e| match e {
             SstvEvent::ImageComplete {
                 image,
+                sync_quality,
                 partial: false,
-            } => Some(image.clone()),
+            } => {
+                // Every clean synthetic image must score as a real picture
+                // (covers the quality metric for each mode family, incl.
+                // Scottie's mid-line sync).
+                assert!(
+                    !sync_quality.looks_like_noise(),
+                    "{mode:?}: clean round-trip sync quality {}",
+                    sync_quality.value()
+                );
+                Some(image.clone())
+            }
             _ => None,
         })
         .expect("ImageComplete event");
@@ -258,8 +280,19 @@ fn run_scottie_roundtrip(mode: SstvMode) {
         .find_map(|e| match e {
             SstvEvent::ImageComplete {
                 image,
+                sync_quality,
                 partial: false,
-            } => Some(image.clone()),
+            } => {
+                // Every clean synthetic image must score as a real picture
+                // (covers the quality metric for each mode family, incl.
+                // Scottie's mid-line sync).
+                assert!(
+                    !sync_quality.looks_like_noise(),
+                    "{mode:?}: clean round-trip sync quality {}",
+                    sync_quality.value()
+                );
+                Some(image.clone())
+            }
             _ => None,
         })
         .expect("ImageComplete event");

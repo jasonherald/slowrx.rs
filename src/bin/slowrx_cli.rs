@@ -46,6 +46,12 @@ struct Args {
     /// default. See `SstvDecoder::set_fallback_mode`.
     #[arg(long, value_name = "MODE", value_parser = parse_mode)]
     fallback_mode: Option<SstvMode>,
+
+    /// Don't write images whose line-sync quality says they are noise
+    /// (`SyncQuality::looks_like_noise`, e.g. a VIS followed by a faded or
+    /// ended transmission). They are still reported on stderr.
+    #[arg(long)]
+    drop_noise: bool,
 }
 
 /// Resolve a mode by its `ModeSpec::short_name` (case-insensitive).
@@ -127,70 +133,107 @@ fn run(args: &Args) -> Result<u32> {
         eprintln!("decoding {} samples (streaming)...", reader.duration());
     }
 
-    let mut image_count: u32 = 0;
-    let mut vis_count: u32 = 0;
-    let mut fallback_count: u32 = 0;
-    let mut line_count: u32 = 0;
-
-    let mut on_event = |event: SstvEvent| -> Result<()> {
-        match event {
-            SstvEvent::VisDetected {
-                mode,
-                sample_offset,
-                hedr_shift_hz,
-            } => {
-                vis_count += 1;
-                if !args.quiet {
-                    eprintln!(
-                        "  VIS: mode={mode:?} at sample {sample_offset} (hedr_shift {hedr_shift_hz:+.1} Hz)"
-                    );
-                }
-            }
-            SstvEvent::VisFallback {
-                mode,
-                sample_offset,
-                hedr_shift_hz,
-            } => {
-                vis_count += 1;
-                fallback_count += 1;
-                if !args.quiet {
-                    eprintln!(
-                        "  VIS lost, assuming fallback: mode={mode:?} image from sample {sample_offset} (hedr_shift {hedr_shift_hz:+.1} Hz)"
-                    );
-                }
-            }
-            SstvEvent::LineDecoded { .. } => {
-                line_count += 1;
-            }
-            SstvEvent::ImageComplete { image, .. } => {
-                image_count += 1;
-                let path = args.output.join(format!(
-                    "img-{image_count:03}-{}.png",
-                    slowrx::modespec::for_mode(image.mode).short_name
-                ));
-                save_image(&image, &path)?;
-                if !args.quiet {
-                    eprintln!(
-                        "  ImageComplete: {} x {} → {}",
-                        image.width,
-                        image.height,
-                        path.display()
-                    );
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    };
-
+    let mut tally = Tally::default();
+    let mut on_event = |event: SstvEvent| on_event(args, &mut tally, event);
     stream_decode(&mut reader, spec, channels, &mut decoder, &mut on_event)?;
 
     if !args.quiet {
         eprintln!(
-            "done: {vis_count} VIS ({fallback_count} assumed), {line_count} lines, {image_count} image(s)"
+            "done: {} VIS ({} assumed), {} lines, {} image(s), {} dropped as noise",
+            tally.vis, tally.fallback, tally.lines, tally.images, tally.dropped
         );
     }
-    Ok(image_count)
+    Ok(tally.images)
+}
+
+/// Running counts for the end-of-run summary.
+#[derive(Default)]
+struct Tally {
+    images: u32,
+    vis: u32,
+    fallback: u32,
+    dropped: u32,
+    lines: u32,
+}
+
+/// Handle one decoder event: count it, report it, and write completed
+/// images (unless `--drop-noise` says the image is noise).
+fn on_event(args: &Args, tally: &mut Tally, event: SstvEvent) -> Result<()> {
+    match event {
+        SstvEvent::VisDetected {
+            mode,
+            sample_offset,
+            hedr_shift_hz,
+        } => {
+            tally.vis += 1;
+            if !args.quiet {
+                eprintln!(
+                    "  VIS: mode={mode:?} at sample {sample_offset} (hedr_shift {hedr_shift_hz:+.1} Hz)"
+                );
+            }
+        }
+        SstvEvent::VisFallback {
+            mode,
+            sample_offset,
+            hedr_shift_hz,
+        } => {
+            tally.vis += 1;
+            tally.fallback += 1;
+            if !args.quiet {
+                eprintln!(
+                    "  VIS lost, assuming fallback: mode={mode:?} image from sample {sample_offset} (hedr_shift {hedr_shift_hz:+.1} Hz)"
+                );
+            }
+        }
+        SstvEvent::LineDecoded { .. } => tally.lines += 1,
+        SstvEvent::ImageComplete {
+            image,
+            sync_quality,
+            ..
+        } => on_image(args, tally, &image, sync_quality)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Write (or, with `--drop-noise`, skip) one completed image.
+fn on_image(
+    args: &Args,
+    tally: &mut Tally,
+    image: &SstvImage,
+    sync_quality: slowrx::SyncQuality,
+) -> Result<()> {
+    let noise = sync_quality.looks_like_noise();
+    if args.drop_noise && noise {
+        tally.dropped += 1;
+        if !args.quiet {
+            eprintln!(
+                "  ImageComplete: {} x {} dropped (sync quality {:.2} looks like noise)",
+                image.width,
+                image.height,
+                sync_quality.value()
+            );
+        }
+        return Ok(());
+    }
+    tally.images += 1;
+    let path = args.output.join(format!(
+        "img-{:03}-{}.png",
+        tally.images,
+        slowrx::modespec::for_mode(image.mode).short_name
+    ));
+    save_image(image, &path)?;
+    if !args.quiet {
+        eprintln!(
+            "  ImageComplete: {} x {} (sync quality {:.2}{}) → {}",
+            image.width,
+            image.height,
+            sync_quality.value(),
+            if noise { ", looks like noise" } else { "" },
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 /// Frames per streaming chunk. 4096 frames at 16 kHz mono = ~256 ms of

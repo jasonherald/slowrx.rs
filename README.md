@@ -91,6 +91,11 @@ decoder.set_fallback_mode(Some(SstvMode::Robot36)); // emits SstvEvent::VisFallb
 
 The CLI equivalent is `slowrx-cli --fallback-mode robot36 …`.
 
+Each `SstvEvent::ImageComplete` also carries a `sync_quality` score. On
+weak signals, a VIS can be followed by noise, and the decoder still returns
+a full-size "image" of it; `sync_quality.looks_like_noise()` flags those
+so you can skip them (`slowrx-cli --drop-noise`).
+
 ## Why a Rust port?
 
 Several mature C/C++ SSTV decoders exist (slowrx, QSSTV, MMSSTV) but no

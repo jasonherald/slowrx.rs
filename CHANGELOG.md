@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Image sync-quality score** (#116): `SstvEvent::ImageComplete` carries
+  `sync_quality: SyncQuality`, which says how clearly the mode's sync pulses
+  lined up across the image. `SyncQuality::looks_like_noise()` flags
+  "images" that are just noise (a VIS whose transmission faded or ended, or
+  a chance VIS match in noise). On nine real ISS passes this separates all
+  three junk images (0.03–0.10) from every legible one (0.43–0.95).
+  `slowrx-cli --drop-noise` skips writing them, and the CLI now prints each
+  image's score.
+
+### Changed
+
+- **Breaking:** `SstvEvent::ImageComplete` has a new `sync_quality` field,
+  so patterns that list its fields without `..` need updating.
+
 ## [0.6.0] - 2026-10-21
 
 ### Added

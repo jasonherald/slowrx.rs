@@ -203,6 +203,41 @@ separately), which would subsume this for most cases.
 
 ---
 
+## Image sync-quality score (additive; no slowrx counterpart)
+
+### What slowrx does
+
+Once a VIS is accepted, slowrx decodes the following image-length of
+audio no matter what it contains. A VIS whose transmission then fades or
+ends, or a VIS matched by chance in noise, still produces a full-size
+"image", which is just noise.
+
+### What we do
+
+Decoding is unchanged. `find_sync` additionally scores how clearly the
+mode's sync pulses lined up across the image, from its column accumulator
+`x_acc`: (best pulse-wide window mean − median) ÷ lines, clamped to `[0, 1]`.
+`SstvEvent::ImageComplete` carries the score as `sync_quality: SyncQuality`,
+and `SyncQuality::looks_like_noise()` flags scores below `NOISE_THRESHOLD`
+(0.2). `slowrx-cli --drop-noise` skips writing those images.
+
+### Why we deviated
+
+Junk images were showing up on about a third of weak ISS passes, and users
+were deleting them by hand (#116). On nine 2026-10 passes, legible images
+scored 0.43–0.95 and the three junk images 0.03–0.10. The 12 ARISS Fram2
+slides all score ~0.955, and every synthetic round-trip mode scores well
+above the threshold. Emitting the score rather than dropping images keeps
+the decoder's output complete; callers decide what to keep.
+
+### When to revisit
+
+If a mode or signal condition shows real images scoring near 0.2. The
+threshold is a constant, and the score is exposed for callers who want
+their own cut-off.
+
+---
+
 ## Synthetic round-trip max_diff tolerance
 
 **Files:** `tests/roundtrip.rs`.
