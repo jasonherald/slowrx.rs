@@ -248,3 +248,37 @@ fn a_synthetic_pd120_wav_decodes_to_a_named_png() {
     assert_eq!(pngs_in(&out), [out.join("img-001-pd120.png")]);
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// Robot 12 B/W sends 120 lines that slowrx shows twice each
+/// (`ModeSpec::line_height` = 2): the PNG is written 320 × 240 so it keeps
+/// the picture's aspect, like slowrx's saved images.
+#[cfg(feature = "test-support")]
+#[test]
+#[allow(clippy::cast_possible_truncation)]
+fn a_robot12bw_png_is_stretched_to_its_line_height() {
+    use slowrx::SstvMode;
+    let spec = slowrx::for_mode(SstvMode::Robot12Bw);
+    let ycrcb = vec![[200_u8, 128, 128]; (spec.line_pixels * spec.image_lines) as usize];
+    let mut audio = slowrx::__test_support::vis::synth_vis(spec.vis_code, 0.0);
+    audio.extend(slowrx::__test_support::mode_robot::encode_robot(
+        SstvMode::Robot12Bw,
+        &ycrcb,
+    ));
+    audio.extend(std::iter::repeat_n(0.0_f32, 8192));
+    let mono: Vec<i16> = audio
+        .iter()
+        .map(|&s| (s.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16)
+        .collect();
+    let dir = scratch("r12bw");
+    let input = dir.join("r12bw.wav");
+    write_wav(&input, 1, &mono);
+    let out = dir.join("out");
+    run(&input, &out).code(0);
+    let png = out.join("img-001-robot12bw.png");
+    assert_eq!(
+        image::image_dimensions(&png).expect("png"),
+        (320, 240),
+        "120 lines × line_height 2"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
