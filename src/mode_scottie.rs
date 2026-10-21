@@ -56,9 +56,49 @@
 // SC-2) and `spec.color_encoding` (the colour order) rather than file
 // boundaries.
 
+use crate::decoder::ModeDecoder;
 use crate::demod::{ChannelDecodeCtx, DemodState};
 use crate::image::SstvImage;
 use crate::modespec::{ModeSpec, SyncPosition};
+
+/// [`ModeDecoder`] for [`crate::modespec::ChannelLayout::RgbSequential`]
+/// (Scottie, Martin, Wraase SC-2): one image row per radio line
+/// ([`decode_line`]). Mid-line sync handling and the colour order live
+/// inside [`decode_line`]. No `chroma_planes` — RGB is composed in-place
+/// per line (no deferred chroma like R36/R24).
+#[derive(Debug)]
+pub(crate) struct RgbSequentialDecoder {
+    image_lines: u32,
+}
+
+impl RgbSequentialDecoder {
+    /// The decoder for one image of RGB-sequential mode `spec`.
+    pub(crate) fn new(spec: ModeSpec) -> Self {
+        Self {
+            image_lines: spec.image_lines,
+        }
+    }
+}
+
+impl ModeDecoder for RgbSequentialDecoder {
+    fn radio_lines(&self) -> u32 {
+        self.image_lines
+    }
+
+    fn image_rows(&self, index: u32) -> std::ops::Range<u32> {
+        index..index + 1
+    }
+
+    fn decode_radio_line(
+        &mut self,
+        ctx: &ChannelDecodeCtx<'_>,
+        index: u32,
+        image: &mut SstvImage,
+        state: &mut DemodState<'_>,
+    ) {
+        decode_line(ctx, index, image, state);
+    }
+}
 
 /// Decode one RGB-sequential radio line (Scottie, Martin or Wraase SC-2)
 /// into image row `line_index`. Per-channel start times come from

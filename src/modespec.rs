@@ -133,7 +133,7 @@ pub enum ChannelLayout {
     /// alternating Cr/Cb per radio line with each chroma sample
     /// duplicated to the next image row; R72 carries Y/U/V sequentially
     /// per line. The shape difference is mode-internal — see
-    /// `mode_robot::decode_line` for the per-mode dispatch.
+    /// `mode_robot::RobotYuvDecoder` for the per-mode dispatch.
     RobotYuv,
     /// Sequential single-line RGB layout — three channels per radio
     /// line. Used by Scottie (G→B→R, sync mid-line), Martin (G→B→R,

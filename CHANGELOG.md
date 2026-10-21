@@ -21,6 +21,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   audit A4: with no window state, the per-channel cold start never
   reaches a pixel.
 
+### Internal
+
+- **One `ModeDecoder` per mode family** (#125, audit B12). PD, colour
+  Robot, RGB-sequential (Scottie / Martin / Wraase SC-2) and Robot B/W
+  each implement a small internal trait: how many radio lines an image
+  has, which image rows each one writes (two for PD, one for the rest),
+  and how to decode one. The decoder now runs every mode through one loop
+  instead of four per-layout arms; the Robot 24 / 36 chroma planes moved
+  from the decoder state onto the Robot decoder; and the PD and colour
+  Robot line decoders take the shared decode context, dropping from 10–12
+  parameters to 4–5. Output is byte-identical: every mode's synthetic
+  decode, and the Fram2 and ISS real-radio decodes with both demods.
+
 ## [0.8.0] - 2026-10-21
 
 ### Added
