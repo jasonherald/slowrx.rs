@@ -47,6 +47,11 @@ const PULSED_RUN: usize = 2;
 /// least this fraction of the pulse length.
 const PULSE_RUN_FRACTION: f64 = 0.5;
 
+/// ... capped at this many probes (3.6 ms): noise essentially never trips
+/// the probe this many times in a row, and a long pulse (PD's 20 ms) that
+/// noise has fragmented on a weak signal still passes.
+const PULSE_RUN_CAP_PROBES: f64 = 10.0;
+
 /// Probes searched either side of a line's expected pulse.
 const PULSE_SEARCH_SLACK_PROBES: f64 = 4.0;
 
@@ -227,8 +232,11 @@ impl SyncStartDetector {
         }
         let width = sync_pulse_columns(self.spec, X_ACC_BINS);
         let (column, _) = best_pulse_window(&x_acc, width);
+        // No start yet if a narrow pulse has no clean first line; the
+        // streak holds, so the next evaluation (more image) tries again.
+        let start_sample = self.locate_start(first, column, width)?;
         Some(SyncStart {
-            start_sample: self.locate_start(first, column, width),
+            start_sample,
             quality,
         })
     }
@@ -241,8 +249,8 @@ impl SyncStartDetector {
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
     )]
-    fn locate_start(&self, first: usize, column: usize, width: usize) -> u64 {
-        let first_line = self.first_pulsed_line(first, column, width);
+    fn locate_start(&self, first: usize, column: usize, width: usize) -> Option<u64> {
+        let first_line = self.first_pulsed_line(first, column, width)?;
         let pulse =
             (first_line as f64 + column as f64 / X_ACC_BINS as f64) * self.spec.line_seconds;
         let window_start = (self.probe_origin + (first * SYNC_PROBE_STRIDE) as u64) as f64;
@@ -252,7 +260,7 @@ impl SyncStartDetector {
             line_start -= self.line_samples();
         }
         let start = line_start - START_LEAD_SYNC_PULSES * self.spec.sync_seconds * rate;
-        start.max(self.audio_origin as f64).round() as u64
+        Some(start.max(self.audio_origin as f64).round() as u64)
     }
 
     /// The first window line of the image. A wide pulse (Robot, PD: 20+ of
@@ -261,11 +269,12 @@ impl SyncStartDetector {
     /// ~8 columns, Martin's ~8, Scottie DX's ~6) can be: a noise line hits
     /// half of 8 columns by chance. Those modes need [`PULSED_RUN`]
     /// consecutive lines carrying an unbroken run of hits
-    /// ([`Self::line_is_pulsed`]). The run test isn't used for wide pulses:
+    /// ([`Self::line_is_pulsed`]); if no pair passes yet, there's no first
+    /// line (`None`) rather than a guess. The run test isn't used for wide pulses:
     /// on weak real signals noise fragments the pulse, and it found real
     /// Robot 36 images 4–10 lines late.
     #[allow(clippy::cast_precision_loss)]
-    fn first_pulsed_line(&self, first: usize, column: usize, width: usize) -> usize {
+    fn first_pulsed_line(&self, first: usize, column: usize, width: usize) -> Option<usize> {
         if width >= WIDE_PULSE_COLUMNS {
             let n = X_ACC_BINS as f64;
             return (0..self.window_lines)
@@ -275,16 +284,16 @@ impl SyncStartDetector {
                         .count();
                     2 * hits >= width
                 })
-                .unwrap_or(0);
+                .or(Some(0));
         }
         (0..self.window_lines.saturating_sub(PULSED_RUN - 1))
             .find(|&y| (y..y + PULSED_RUN).all(|l| self.line_is_pulsed(first, l, column)))
-            .unwrap_or(0)
     }
 
     /// Whether window line `y` carries the sync pulse whose start sits at
     /// `column`: the longest unbroken run of sync-band hits around it covers
-    /// at least [`PULSE_RUN_FRACTION`] of the pulse. A real pulse is one
+    /// at least [`PULSE_RUN_FRACTION`] of the pulse (at most
+    /// [`PULSE_RUN_CAP_PROBES`] probes). A real pulse is one
     /// contiguous run of hits as long as the pulse; noise trips the probe in
     /// short, scattered bursts — and with a narrow pulse (SC-2's 5.5 ms is
     /// ~8 of 700 columns, Scottie DX's ~6) a column count alone is easy for
@@ -312,7 +321,7 @@ impl SyncStartDetector {
                 run = 0;
             }
         }
-        longest as f64 >= PULSE_RUN_FRACTION * pulse_probes
+        longest as f64 >= (PULSE_RUN_FRACTION * pulse_probes).min(PULSE_RUN_CAP_PROBES)
     }
 
     /// Robot 24/36 decode `Cr` or `Cb` by line-index parity, so an image
@@ -496,21 +505,35 @@ mod tests {
         assert!(err.abs() < 30.0, "start off by {err:.0} samples");
     }
 
-    /// Narrow-pulse modes — SC-2's 5.5 ms pulse is ~8 of 700 columns on its
-    /// 475 ms line, Martin 1's ~8, Scottie DX's ~6 — let a noise line fake
+    /// Narrow-pulse modes (every mode under `WIDE_PULSE_COLUMNS`) — SC-2's
+    /// 5.5 ms pulse is ~8 of 700 columns on its 475 ms line, Martin 1's ~8,
+    /// Scottie DX's ~6 — let a noise line fake
     /// "half the pulse columns hit", so the first line must stand out from
     /// its own background on consecutive lines (#128 review). A noise line
     /// fakes it only by chance, so many seeds are tried per mode.
     #[test]
     fn narrow_pulse_modes_start_at_their_first_line_not_on_noise() {
         let lead = RATE;
-        for mode in [SstvMode::Wraase120, SstvMode::Martin1, SstvMode::ScottieDx] {
-            let spec = for_mode(mode);
-            let rgb = vec![[128_u8, 64, 200]; (spec.line_pixels * spec.image_lines) as usize];
-            let mut image = crate::scottie_test_encoder::encode_scottie(mode, &rgb);
+        let narrow: Vec<ModeSpec> = crate::modespec::ALL_SPECS
+            .into_iter()
+            .filter(|s| sync_pulse_columns(*s, X_ACC_BINS) < WIDE_PULSE_COLUMNS)
+            .collect();
+        // PD180/240, Scottie 1/DX, Martin 1/2 and Wraase SC-2 120/180 today.
+        assert_eq!(narrow.len(), 8, "narrow-pulse modes changed: {narrow:?}");
+        // Fewer seeds in debug, where the fast CI job runs this.
+        let seeds: u32 = if cfg!(debug_assertions) { 4 } else { 12 };
+        for spec in narrow {
+            let mode = spec.mode;
+            let pixels = vec![[128_u8, 64, 200]; (spec.line_pixels * spec.image_lines) as usize];
+            let mut image = match spec.channel_layout {
+                crate::modespec::ChannelLayout::PdYcbcr => {
+                    crate::pd_test_encoder::encode_pd(mode, &pixels)
+                }
+                _ => crate::scottie_test_encoder::encode_scottie(mode, &pixels),
+            };
             // The detector needs ~8 lines; keep 12.
             image.truncate((12.0 * spec.line_seconds * RATE as f64) as usize);
-            let misplaced: Vec<(u32, f64)> = (0..16_u32)
+            let misplaced: Vec<(u32, f64)> = (0..seeds)
                 .filter_map(|seed| {
                     let mut audio = noise(lead, 1000 + seed);
                     audio.extend(&image);
@@ -525,6 +548,43 @@ mod tests {
                 "{mode:?} (seed, samples off): {misplaced:?}"
             );
         }
+    }
+
+    /// A probe track for `spec` whose pulse (at `column`) is present from
+    /// window line `from` on: solid runs when `solid`, else hits on every
+    /// other probe (fragmented — column counts look fine, runs don't).
+    fn pulse_track(spec: ModeSpec, column: usize, from: usize, solid: bool) -> Vec<bool> {
+        let det = SyncStartDetector::new(spec);
+        let line = det.line_samples() / SYNC_PROBE_STRIDE as f64;
+        let pulse = (spec.sync_seconds * RATE as f64 / SYNC_PROBE_STRIDE as f64) as usize;
+        let mut probes = vec![false; det.window_probes()];
+        for y in from..det.window_lines {
+            let start = ((y as f64 + column as f64 / X_ACC_BINS as f64) * line) as usize;
+            for (k, p) in probes.iter_mut().skip(start).take(pulse).enumerate() {
+                *p = solid || k % 2 == 0;
+            }
+        }
+        probes
+    }
+
+    #[test]
+    fn a_narrow_pulse_image_starts_at_its_first_solidly_pulsed_line() {
+        let spec = for_mode(SstvMode::Wraase120);
+        let mut det = SyncStartDetector::new(spec);
+        det.probes = pulse_track(spec, 100, 2, true);
+        assert_eq!(det.first_pulsed_line(0, 100, 8), Some(2));
+    }
+
+    /// The quality gate counts column hits, so a track of fragmented pulses
+    /// can pass it with no line pair carrying an unbroken run. Rather than
+    /// guess window line 0 (possibly noise), report no start yet (#131
+    /// review); a later evaluation sees more of the image.
+    #[test]
+    fn fragmented_narrow_pulses_report_no_first_line() {
+        let spec = for_mode(SstvMode::Wraase120);
+        let mut det = SyncStartDetector::new(spec);
+        det.probes = pulse_track(spec, 100, 0, false);
+        assert_eq!(det.first_pulsed_line(0, 100, 8), None);
     }
 
     #[test]
