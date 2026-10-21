@@ -1,5 +1,5 @@
 //! Synthetic encode → decode round-trip for every mode family: PD, Robot
-//! (colour and B/W), Scottie and Martin.
+//! (colour and B/W), Scottie, Martin and Wraase SC-2.
 
 #![cfg(feature = "test-support")]
 #![allow(clippy::expect_used, clippy::cast_possible_truncation)]
@@ -289,6 +289,8 @@ fn run_scottie_roundtrip(mode: SstvMode) {
         SstvMode::ScottieDx => 0x4C,
         SstvMode::Martin1 => 0x2C,
         SstvMode::Martin2 => 0x28,
+        SstvMode::Wraase120 => 0x3F,
+        SstvMode::Wraase180 => 0x37,
         _ => unreachable!(),
     };
     let mut audio = slowrx::__test_support::vis::synth_vis(vis_code, 0.0);
@@ -347,4 +349,19 @@ fn martin1_roundtrip() {
 #[test]
 fn martin2_roundtrip() {
     run_scottie_roundtrip(SstvMode::Martin2);
+}
+
+/// Wraase SC-2 sends R, G, B (slowrx `ColorEnc = RGB`) where Martin sends
+/// G, B, R: the red gradient and the offset green / blue stripes catch a
+/// channel landing in the wrong colour.
+#[test]
+fn wraase120_roundtrip() {
+    run_scottie_roundtrip(SstvMode::Wraase120);
+}
+
+/// SC-2 180's sync + porch + pixels (711.17 ms) overrun its 711.0225 ms
+/// line; the encoder keeps lines on the line clock, as a transmitter does.
+#[test]
+fn wraase180_roundtrip() {
+    run_scottie_roundtrip(SstvMode::Wraase180);
 }

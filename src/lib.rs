@@ -8,12 +8,12 @@
 //! ## Status
 //!
 //! PD120 / PD180 / PD240, Robot 24 / 36 / 72, Robot 24 / 12 / 8 B/W,
-//! Scottie 1 / 2 / DX, and Martin 1 / 2 decode from raw audio. PD120 and
-//! PD180 are validated against the ARISS Dec-2017 capture set; Robot 36
-//! is validated against the ARISS Fram2 corpus (see
-//! [`tests/ariss_fram2_validation.md`][fram2]). The Scottie, Martin and
-//! Robot B/W modes are synthetic round-trip-validated only — no reference
-//! WAVs are available for them. The public API is
+//! Scottie 1 / 2 / DX, Martin 1 / 2, and Wraase SC-2 120 / 180 decode from
+//! raw audio. PD120 and PD180 are validated against the ARISS Dec-2017
+//! capture set; Robot 36 is validated against the ARISS Fram2 corpus (see
+//! [`tests/ariss_fram2_validation.md`][fram2]). The Scottie, Martin,
+//! Wraase SC-2 and Robot B/W modes are synthetic round-trip-validated only
+//! — no reference WAVs are available for them. The public API is
 //! `#[non_exhaustive]`-protected for additive growth. See
 //! <https://github.com/jasonherald/slowrx.rs/issues/9> for the
 //! roadmap.
@@ -73,7 +73,7 @@ pub use crate::decoder::{SstvDecoder, SstvEvent};
 pub use crate::error::{Error, Result};
 pub use crate::image::{SstvImage, SyncQuality};
 pub use crate::modespec::{
-    for_mode, lookup as lookup_vis, ChannelLayout, ModeSpec, SstvMode, SyncPosition,
+    for_mode, lookup as lookup_vis, ChannelLayout, ColorEncoding, ModeSpec, SstvMode, SyncPosition,
 };
 pub use crate::resample::{Resampler, MAX_INPUT_SAMPLE_RATE_HZ, WORKING_SAMPLE_RATE_HZ};
 
@@ -131,7 +131,7 @@ pub mod __test_support {
     pub mod mode_scottie {
         /// Thin wrapper around the now-`pub(crate)` `crate::scottie_test_encoder::encode_scottie`.
         /// `__test_support` is the sole consumer-facing path for the synthetic
-        /// Scottie/Martin encoder (#86 B10).
+        /// Scottie/Martin/Wraase SC-2 encoder (#86 B10).
         #[doc(hidden)]
         #[must_use]
         pub fn encode_scottie(mode: crate::modespec::SstvMode, rgb: &[[u8; 3]]) -> Vec<f32> {

@@ -5,7 +5,7 @@
 //! `crate::sync::find_sync` once to recover the slant-corrected
 //! rate + line-zero `Skip` → burst-decode every row (via
 //! `crate::demod::decode_one_channel_into` in the per-mode glue
-//! for PD/Robot/Scottie/Martin) → emit `LineDecoded` events and a
+//! for PD/Robot/Scottie/Martin/Wraase) → emit `LineDecoded` events and a
 //! final `ImageComplete`. Multi-image streaming is supported in one
 //! `process()` call (issue #90).
 //!
@@ -338,31 +338,26 @@ impl DecodingState {
         }
     }
 
-    /// [`ChannelLayout::RgbSequential`] (Scottie / Martin): one image row
-    /// per radio line.
+    /// [`ChannelLayout::RgbSequential`] (Scottie / Martin / Wraase SC-2):
+    /// one image row per radio line.
     fn decode_rgb_lines(
         &mut self,
         sync: &SyncResult,
         state: &mut crate::demod::DemodState<'_>,
         out: &mut Vec<SstvEvent>,
     ) {
-        // Mid-line sync handling lives inside mode_scottie::decode_line.
-        // No chroma_planes — RGB is composed in-place per line (no
-        // deferred chroma like R36/R24).
+        // Mid-line sync handling and the colour order live inside
+        // mode_scottie::decode_line. No chroma_planes — RGB is composed
+        // in-place per line (no deferred chroma like R36/R24).
+        let ctx = crate::demod::ChannelDecodeCtx {
+            audio: &self.audio,
+            skip_samples: sync.skip_samples,
+            rate_hz: sync.adjusted_rate_hz,
+            hedr_shift_hz: self.hedr_shift_hz,
+            spec: self.spec,
+        };
         for line in 0..self.spec.image_lines {
-            let line_seconds_offset = f64::from(line) * self.spec.line_seconds;
-            crate::mode_scottie::decode_line(
-                self.spec,
-                line,
-                &self.audio,
-                sync.skip_samples,
-                line_seconds_offset,
-                sync.adjusted_rate_hz,
-                &mut self.image,
-                state.demod,
-                state.snr_est,
-                self.hedr_shift_hz,
-            );
+            crate::mode_scottie::decode_line(&ctx, line, &mut self.image, state);
             self.push_row(line, out);
         }
     }
@@ -1145,6 +1140,18 @@ mod tests {
     #[test]
     fn process_emits_vis_detected_for_robot8bw_burst() {
         assert_burst_detected_as(0x02, SstvMode::Robot8Bw);
+    }
+
+    /// slowrx `VISmap` `0x3F` → W2120 (`modespec.c:379`).
+    #[test]
+    fn process_emits_vis_detected_for_wraase120_burst() {
+        assert_burst_detected_as(0x3F, SstvMode::Wraase120);
+    }
+
+    /// slowrx `VISmap` `0x37` → W2180 (`modespec.c:379`).
+    #[test]
+    fn process_emits_vis_detected_for_wraase180_burst() {
+        assert_burst_detected_as(0x37, SstvMode::Wraase180);
     }
 
     #[test]

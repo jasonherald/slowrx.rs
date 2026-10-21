@@ -5,14 +5,17 @@
 //!
 //! Implemented modes: PD120, PD180, PD240, Robot 24, Robot 36, Robot 72,
 //! Robot 8 / 12 / 24 B/W, Scottie 1, Scottie 2, Scottie DX, Martin 1,
-//! Martin 2. All RGB-sequential modes (Scottie + Martin) share a single
-//! decode path; the per-line offsets branch on [`SyncPosition`].
+//! Martin 2, Wraase SC-2 120, Wraase SC-2 180. All RGB-sequential modes
+//! (Scottie, Martin, Wraase SC-2) share a single decode path; the per-line
+//! offsets branch on [`SyncPosition`] and the channel order on
+//! [`ColorEncoding`].
 
 /// SSTV operating mode. Implemented: [`SstvMode::Pd120`], [`SstvMode::Pd180`],
 /// [`SstvMode::Pd240`], [`SstvMode::Robot24`], [`SstvMode::Robot36`],
 /// [`SstvMode::Robot72`], [`SstvMode::Robot24Bw`], [`SstvMode::Robot12Bw`],
 /// [`SstvMode::Robot8Bw`], [`SstvMode::Scottie1`], [`SstvMode::Scottie2`],
-/// [`SstvMode::ScottieDx`], [`SstvMode::Martin1`], [`SstvMode::Martin2`].
+/// [`SstvMode::ScottieDx`], [`SstvMode::Martin1`], [`SstvMode::Martin2`],
+/// [`SstvMode::Wraase120`], [`SstvMode::Wraase180`].
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SstvMode {
@@ -47,6 +50,10 @@ pub enum SstvMode {
     Martin1,
     /// Martin 2. VIS `0x28`.
     Martin2,
+    /// Wraase SC-2 120. VIS `0x3F`.
+    Wraase120,
+    /// Wraase SC-2 180. VIS `0x37`.
+    Wraase180,
 }
 
 /// Mode timing + layout table entry.
@@ -90,8 +97,9 @@ pub struct ModeSpec {
     /// Per-pixel duration within a colour channel, seconds.
     pub pixel_seconds: f64,
     /// Channel separator pulse duration, seconds. Translated from slowrx's
-    /// `SeptrTime` field (`modespec.c`). Zero for all PD-family modes; non-zero
-    /// for Robot, Martin, and Scottie modes (V2). Stored here so the
+    /// `SeptrTime` field (`modespec.c`). Zero for the PD-family, Robot B/W
+    /// and Wraase SC-2 modes; non-zero for colour Robot, Martin, and Scottie
+    /// modes (V2). Stored here so the
     /// `chan_starts_sec` formula in `mode_pd::decode_pd_line_pair` matches
     /// slowrx's `video.c:88-92` term-for-term and won't silently break when
     /// non-PD modes are added.
@@ -102,12 +110,18 @@ pub struct ModeSpec {
     /// for the rationale (V2 carve-out forcing mid-line sync to be
     /// explicit when V2.3 Scottie lands).
     pub sync_position: SyncPosition,
+    /// How the line's channels make an RGB pixel: slowrx's `ColorEnc`
+    /// column (`modespec.c`), applied by its pixel switch
+    /// (`video.c:432-455`). For the RGB-sequential modes it is the channel
+    /// order: Martin and Scottie send G, B, R ([`ColorEncoding::Gbr`]),
+    /// Wraase SC-2 sends R, G, B ([`ColorEncoding::Rgb`]).
+    pub color_encoding: ColorEncoding,
 }
 
 /// Per-mode channel arrangement. PD-family modes use
 /// [`ChannelLayout::PdYcbcr`]; the colour Robot modes use
 /// [`ChannelLayout::RobotYuv`] and the Robot B/W modes
-/// [`ChannelLayout::Monochrome`]; Scottie and Martin use
+/// [`ChannelLayout::Monochrome`]; Scottie, Martin and Wraase SC-2 use
 /// [`ChannelLayout::RgbSequential`].
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -122,8 +136,10 @@ pub enum ChannelLayout {
     /// `mode_robot::decode_line` for the per-mode dispatch.
     RobotYuv,
     /// Sequential single-line RGB layout — three channels per radio
-    /// line. Used by Scottie (G→B→R, sync mid-line) and Martin (G→B→R,
-    /// sync at line start).
+    /// line. Used by Scottie (G→B→R, sync mid-line), Martin (G→B→R,
+    /// sync at line start) and Wraase SC-2 (R→G→B, sync at line start, no
+    /// separator). The channel order is the mode's
+    /// [`ModeSpec::color_encoding`].
     RgbSequential,
     /// One luminance channel per radio line, one image row per radio line,
     /// shown as grey (`R = G = B = Y`). Robot 24 / 12 / 8 B/W — slowrx's
@@ -132,9 +148,43 @@ pub enum ChannelLayout {
     Monochrome,
 }
 
+/// How a radio line's channels become an RGB pixel — slowrx's `ColorEnc`
+/// (`GBR`, `RGB`, `YUV`, `BW`; `common.h:105-107`), one per mode in
+/// `modespec.c` and applied by the pixel switch at `video.c:432-455`.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ColorEncoding {
+    /// Three colour channels sent green, blue, red. Martin, Scottie.
+    Gbr,
+    /// Three colour channels sent red, green, blue. Wraase SC-2.
+    Rgb,
+    /// Luminance and colour difference, converted with slowrx's `Y'CbCr`
+    /// formula. PD, colour Robot.
+    Yuv,
+    /// One luminance channel, shown grey. Robot B/W.
+    Bw,
+}
+
+impl ColorEncoding {
+    /// The RGB pixel for one column, from slowrx's three stored channel
+    /// values `Image[tx][y][0..3]` (`video.c:432-455`): the channels in
+    /// transmit order for [`Self::Gbr`] / [`Self::Rgb`], `[Y, Cr, Cb]` for
+    /// [`Self::Yuv`], and only `[0]` read for [`Self::Bw`].
+    #[must_use]
+    pub(crate) fn to_rgb(self, stored: [u8; 3]) -> [u8; 3] {
+        let [c0, c1, c2] = stored;
+        match self {
+            Self::Rgb => [c0, c1, c2],
+            Self::Gbr => [c2, c0, c1],
+            Self::Yuv => crate::demod::ycbcr_to_rgb(c0, c1, c2),
+            Self::Bw => [c0; 3],
+        }
+    }
+}
+
 /// Where the sync pulse sits within a radio line.
 ///
-/// PD/Robot/Martin all place sync at line start (the standard SSTV
+/// PD/Robot/Martin/Wraase all place sync at line start (the standard SSTV
 /// convention). Scottie modes are the exception — sync sits between B
 /// and R channels, not at line start. Stored here so future mode
 /// decoders are forced to make their sync placement explicit at dispatch
@@ -143,7 +193,8 @@ pub enum ChannelLayout {
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SyncPosition {
-    /// Sync pulse at the start of each radio line. PD, Robot, Martin.
+    /// Sync pulse at the start of each radio line. PD, Robot, Martin,
+    /// Wraase SC-2.
     /// Scottie family uses [`SyncPosition::Scottie`] instead.
     LineStart,
     /// Sync pulse between B and R within each radio line. Scottie family.
@@ -154,8 +205,8 @@ impl ModeSpec {
     /// Radio lines per image — the `line_seconds` periods the decoder
     /// buffers, each starting with one sync pulse. PD packs two image rows
     /// into each radio line (`image_lines / 2`); Robot (colour and B/W),
-    /// Scottie and Martin send one row per radio line. Mirrors slowrx
-    /// `video.c:251-254`.
+    /// Scottie, Martin and Wraase SC-2 send one row per radio line. Mirrors
+    /// slowrx `video.c:251-254`.
     /// Requires an even `image_lines` for PD (true of every PD mode; pinned
     /// by a test).
     #[must_use]
@@ -230,14 +281,17 @@ pub fn for_mode(mode: SstvMode) -> ModeSpec {
         SstvMode::ScottieDx => SCOTTIE_DX,
         SstvMode::Martin1 => MARTIN1,
         SstvMode::Martin2 => MARTIN2,
+        SstvMode::Wraase120 => WRAASE120,
+        SstvMode::Wraase180 => WRAASE180,
     }
 }
 
 // Mode timing constants — translated row-for-row from slowrx's
 // modespec.c (PD120 lines 260-271, PD180 lines 286-297, PD240 lines 299-310,
 // R72 lines 130-141, R36 lines 143-154, R24 lines 156-167, R24BW lines
-// 169-180, R12BW lines 182-193, R8BW lines 195-206). `line_height` is
-// slowrx's `LineHeight` column.
+// 169-180, R12BW lines 182-193, R8BW lines 195-206, W2120 lines 208-219,
+// W2180 lines 221-232). `line_height` is slowrx's `LineHeight` column,
+// `color_encoding` its `ColorEnc`.
 
 const PD120: ModeSpec = ModeSpec {
     mode: SstvMode::Pd120,
@@ -254,6 +308,7 @@ const PD120: ModeSpec = ModeSpec {
     septr_seconds: 0.0, // modespec.c: SeptrTime = 0e-3 for PD-family
     channel_layout: ChannelLayout::PdYcbcr,
     sync_position: SyncPosition::LineStart,
+    color_encoding: ColorEncoding::Yuv, // modespec.c:271 ColorEnc = YUV
 };
 
 const PD180: ModeSpec = ModeSpec {
@@ -271,6 +326,7 @@ const PD180: ModeSpec = ModeSpec {
     septr_seconds: 0.0, // modespec.c: SeptrTime = 0e-3 for PD-family
     channel_layout: ChannelLayout::PdYcbcr,
     sync_position: SyncPosition::LineStart,
+    color_encoding: ColorEncoding::Yuv, // modespec.c:297 ColorEnc = YUV
 };
 
 const PD240: ModeSpec = ModeSpec {
@@ -290,6 +346,7 @@ const PD240: ModeSpec = ModeSpec {
     septr_seconds: 0.0, // modespec.c: SeptrTime = 0e-3 for PD-family
     channel_layout: ChannelLayout::PdYcbcr,
     sync_position: SyncPosition::LineStart,
+    color_encoding: ColorEncoding::Yuv, // modespec.c:310 ColorEnc = YUV
 };
 
 const ROBOT24: ModeSpec = ModeSpec {
@@ -310,6 +367,7 @@ const ROBOT24: ModeSpec = ModeSpec {
     septr_seconds: 0.006,
     channel_layout: ChannelLayout::RobotYuv,
     sync_position: SyncPosition::LineStart,
+    color_encoding: ColorEncoding::Yuv, // modespec.c:167 ColorEnc = YUV
 };
 
 const ROBOT36: ModeSpec = ModeSpec {
@@ -330,6 +388,7 @@ const ROBOT36: ModeSpec = ModeSpec {
     septr_seconds: 0.006,
     channel_layout: ChannelLayout::RobotYuv,
     sync_position: SyncPosition::LineStart,
+    color_encoding: ColorEncoding::Yuv, // modespec.c:154 ColorEnc = YUV
 };
 
 const ROBOT72: ModeSpec = ModeSpec {
@@ -350,6 +409,7 @@ const ROBOT72: ModeSpec = ModeSpec {
     septr_seconds: 0.0047,
     channel_layout: ChannelLayout::RobotYuv,
     sync_position: SyncPosition::LineStart,
+    color_encoding: ColorEncoding::Yuv, // modespec.c:141 ColorEnc = YUV
 };
 
 const SCOTTIE1: ModeSpec = ModeSpec {
@@ -370,6 +430,7 @@ const SCOTTIE1: ModeSpec = ModeSpec {
     septr_seconds: 0.001_5,
     channel_layout: ChannelLayout::RgbSequential,
     sync_position: SyncPosition::Scottie,
+    color_encoding: ColorEncoding::Gbr, // modespec.c:102 ColorEnc = GBR
 };
 
 const SCOTTIE2: ModeSpec = ModeSpec {
@@ -390,6 +451,7 @@ const SCOTTIE2: ModeSpec = ModeSpec {
     septr_seconds: 0.001_5,
     channel_layout: ChannelLayout::RgbSequential,
     sync_position: SyncPosition::Scottie,
+    color_encoding: ColorEncoding::Gbr, // modespec.c:115 ColorEnc = GBR
 };
 
 const SCOTTIE_DX: ModeSpec = ModeSpec {
@@ -410,6 +472,7 @@ const SCOTTIE_DX: ModeSpec = ModeSpec {
     septr_seconds: 0.001_5,
     channel_layout: ChannelLayout::RgbSequential,
     sync_position: SyncPosition::Scottie,
+    color_encoding: ColorEncoding::Gbr, // modespec.c:128 ColorEnc = GBR
 };
 
 /// Robot 24 B/W. slowrx `modespec.c:169-180`.
@@ -431,6 +494,7 @@ const ROBOT24_BW: ModeSpec = ModeSpec {
     septr_seconds: 0.0,
     channel_layout: ChannelLayout::Monochrome,
     sync_position: SyncPosition::LineStart,
+    color_encoding: ColorEncoding::Bw, // modespec.c:180 ColorEnc = BW
 };
 
 /// Robot 12 B/W. slowrx `modespec.c:182-193`. Its VIS parity bit is
@@ -453,6 +517,7 @@ pub(crate) const ROBOT12_BW: ModeSpec = ModeSpec {
     septr_seconds: 0.0,
     channel_layout: ChannelLayout::Monochrome,
     sync_position: SyncPosition::LineStart,
+    color_encoding: ColorEncoding::Bw, // modespec.c:193 ColorEnc = BW
 };
 
 /// Robot 8 B/W. slowrx `modespec.c:195-206`.
@@ -474,6 +539,7 @@ const ROBOT8_BW: ModeSpec = ModeSpec {
     septr_seconds: 0.0,
     channel_layout: ChannelLayout::Monochrome,
     sync_position: SyncPosition::LineStart,
+    color_encoding: ColorEncoding::Bw, // modespec.c:206 ColorEnc = BW
 };
 
 /// Martin 1. slowrx `modespec.c:39-50`.
@@ -495,6 +561,7 @@ const MARTIN1: ModeSpec = ModeSpec {
     septr_seconds: 0.000_572,
     channel_layout: ChannelLayout::RgbSequential,
     sync_position: SyncPosition::LineStart,
+    color_encoding: ColorEncoding::Gbr, // modespec.c:50 ColorEnc = GBR
 };
 
 /// Martin 2. slowrx `modespec.c:52-63`.
@@ -516,6 +583,51 @@ const MARTIN2: ModeSpec = ModeSpec {
     septr_seconds: 0.000_572,
     channel_layout: ChannelLayout::RgbSequential,
     sync_position: SyncPosition::LineStart,
+    color_encoding: ColorEncoding::Gbr, // modespec.c:63 ColorEnc = GBR
+};
+
+/// Wraase SC-2 120. slowrx `modespec.c:208-219`.
+const WRAASE120: ModeSpec = ModeSpec {
+    mode: SstvMode::Wraase120,
+    short_name: "wraase120",
+    name: "Wraase SC-2 120",
+    vis_code: 0x3F,
+    line_pixels: 320,
+    image_lines: 256,
+    line_height: 1,
+    // slowrx modespec.c:208-219 — W2120 LineTime = 475.530018e-3,
+    // PixelTime = 0.489039081e-3, SyncTime = 5.5225e-3,
+    // PorchTime = 0.5e-3, SeptrTime = 0e-3.
+    line_seconds: 0.475_530_018,
+    sync_seconds: 0.005_522_5,
+    porch_seconds: 0.000_5,
+    pixel_seconds: 0.000_489_039_081,
+    septr_seconds: 0.0,
+    channel_layout: ChannelLayout::RgbSequential,
+    sync_position: SyncPosition::LineStart,
+    color_encoding: ColorEncoding::Rgb, // modespec.c:219 ColorEnc = RGB
+};
+
+/// Wraase SC-2 180. slowrx `modespec.c:221-232`.
+const WRAASE180: ModeSpec = ModeSpec {
+    mode: SstvMode::Wraase180,
+    short_name: "wraase180",
+    name: "Wraase SC-2 180",
+    vis_code: 0x37,
+    line_pixels: 320,
+    image_lines: 256,
+    line_height: 1,
+    // slowrx modespec.c:221-232 — W2180 LineTime = 711.0225e-3,
+    // PixelTime = 0.734532e-3, SyncTime = 5.5225e-3,
+    // PorchTime = 0.5e-3, SeptrTime = 0e-3.
+    line_seconds: 0.711_022_5,
+    sync_seconds: 0.005_522_5,
+    porch_seconds: 0.000_5,
+    pixel_seconds: 0.000_734_532,
+    septr_seconds: 0.0,
+    channel_layout: ChannelLayout::RgbSequential,
+    sync_position: SyncPosition::LineStart,
+    color_encoding: ColorEncoding::Rgb, // modespec.c:232 ColorEnc = RGB
 };
 
 /// All implemented mode specs. Single source of truth — [`lookup`] is
@@ -526,9 +638,9 @@ const MARTIN2: ModeSpec = ModeSpec {
 /// The F8 round-trip test (`all_specs_roundtrip`) verifies every
 /// entry's `(mode, vis_code, short_name, name)` quadruple is unique
 /// and that `lookup` and `for_mode` agree with the table.
-pub(crate) const ALL_SPECS: [ModeSpec; 14] = [
+pub(crate) const ALL_SPECS: [ModeSpec; 16] = [
     PD120, PD180, PD240, ROBOT24, ROBOT36, ROBOT72, ROBOT24_BW, ROBOT12_BW, ROBOT8_BW, SCOTTIE1,
-    SCOTTIE2, SCOTTIE_DX, MARTIN1, MARTIN2,
+    SCOTTIE2, SCOTTIE_DX, MARTIN1, MARTIN2, WRAASE120, WRAASE180,
 ];
 
 #[cfg(test)]
@@ -598,6 +710,8 @@ mod tests {
             SstvMode::Robot24Bw,
             SstvMode::Robot12Bw,
             SstvMode::Robot8Bw,
+            SstvMode::Wraase120,
+            SstvMode::Wraase180,
         ] {
             let spec = for_mode(mode);
             assert_eq!(spec.sync_position, SyncPosition::LineStart);
@@ -827,6 +941,122 @@ mod tests {
         assert_eq!(lookup(0x0A).expect("R24BW").mode, SstvMode::Robot24Bw);
     }
 
+    /// The timing both Wraase SC-2 modes share (slowrx `modespec.c:208-232`):
+    /// 5.5225 ms sync, 0.5 ms porch, no separator, 320 × 256 at
+    /// `LineHeight` 1, three RGB channels per line-start-synced radio line.
+    fn assert_wraase_common(spec: ModeSpec) {
+        assert_eq!(spec.line_pixels, 320, "{:?}", spec.mode);
+        assert_eq!(spec.image_lines, 256, "{:?}", spec.mode);
+        assert_eq!(spec.line_height, 1, "{:?}", spec.mode);
+        assert_eq!(spec.sync_seconds, 5.5225e-3, "{:?}", spec.mode);
+        assert_eq!(spec.porch_seconds, 0.5e-3, "{:?}", spec.mode);
+        assert_eq!(spec.septr_seconds, 0.0, "{:?}", spec.mode);
+        assert_eq!(spec.channel_layout, ChannelLayout::RgbSequential);
+        assert_eq!(spec.sync_position, SyncPosition::LineStart);
+        assert_eq!(spec.color_encoding, ColorEncoding::Rgb);
+    }
+
+    /// slowrx `modespec.c:208-219` (`W2120`), compared against its literals.
+    #[test]
+    fn wraase120_modespec() {
+        let spec = for_mode(SstvMode::Wraase120);
+        assert_wraase_common(spec);
+        assert_eq!(spec.mode, SstvMode::Wraase120);
+        assert_eq!(spec.vis_code, 0x3F);
+        assert_eq!(spec.short_name, "wraase120");
+        assert_eq!(spec.name, "Wraase SC-2 120");
+        assert_eq!(spec.pixel_seconds, 0.489_039_081e-3);
+        assert_eq!(spec.line_seconds, 475.530_018e-3);
+    }
+
+    /// slowrx `modespec.c:221-232` (`W2180`), compared against its literals.
+    #[test]
+    fn wraase180_modespec() {
+        let spec = for_mode(SstvMode::Wraase180);
+        assert_wraase_common(spec);
+        assert_eq!(spec.mode, SstvMode::Wraase180);
+        assert_eq!(spec.vis_code, 0x37);
+        assert_eq!(spec.short_name, "wraase180");
+        assert_eq!(spec.name, "Wraase SC-2 180");
+        assert_eq!(spec.pixel_seconds, 0.734_532e-3);
+        assert_eq!(spec.line_seconds, 711.022_5e-3);
+    }
+
+    /// slowrx `VISmap` row `0x30` (`modespec.c:379`): `0x37` W2180,
+    /// `0x3F` W2120.
+    #[test]
+    fn wraase_vis_codes_resolve() {
+        assert_eq!(lookup(0x37).expect("W2180").mode, SstvMode::Wraase180);
+        assert_eq!(lookup(0x3F).expect("W2120").mode, SstvMode::Wraase120);
+    }
+
+    /// Every spec carries its slowrx `ColorEnc` (`modespec.c`, one line per
+    /// mode). Listed per mode, not `_`, so a new mode must state its own.
+    #[test]
+    fn color_encoding_matches_slowrx() {
+        for spec in ALL_SPECS {
+            let expected = match spec.mode {
+                // PD-120 / 180 / 240: modespec.c:271, 297, 310.
+                // R24 / R36 / R72: modespec.c:167, 154, 141.
+                SstvMode::Pd120
+                | SstvMode::Pd180
+                | SstvMode::Pd240
+                | SstvMode::Robot24
+                | SstvMode::Robot36
+                | SstvMode::Robot72 => ColorEncoding::Yuv,
+                // R24BW / R12BW / R8BW: modespec.c:180, 193, 206.
+                SstvMode::Robot24Bw | SstvMode::Robot12Bw | SstvMode::Robot8Bw => ColorEncoding::Bw,
+                // S1 / S2 / SDX: modespec.c:102, 115, 128. M1 / M2: :50, :63.
+                SstvMode::Scottie1
+                | SstvMode::Scottie2
+                | SstvMode::ScottieDx
+                | SstvMode::Martin1
+                | SstvMode::Martin2 => ColorEncoding::Gbr,
+                // W2120 / W2180: modespec.c:219, 232.
+                SstvMode::Wraase120 | SstvMode::Wraase180 => ColorEncoding::Rgb,
+            };
+            assert_eq!(spec.color_encoding, expected, "{:?}", spec.mode);
+        }
+    }
+
+    /// The colour encoding and the channel layout describe the same lines:
+    /// the RGB-sequential decoder sees only `Gbr` / `Rgb`, the luma-chroma
+    /// layouts only `Yuv`, the one-channel layout only `Bw`.
+    #[test]
+    fn color_encoding_agrees_with_channel_layout() {
+        for spec in ALL_SPECS {
+            let ok = match spec.channel_layout {
+                ChannelLayout::RgbSequential => {
+                    matches!(spec.color_encoding, ColorEncoding::Gbr | ColorEncoding::Rgb)
+                }
+                ChannelLayout::PdYcbcr | ChannelLayout::RobotYuv => {
+                    spec.color_encoding == ColorEncoding::Yuv
+                }
+                ChannelLayout::Monochrome => spec.color_encoding == ColorEncoding::Bw,
+            };
+            assert!(ok, "{:?}: {:?}", spec.mode, spec.color_encoding);
+        }
+    }
+
+    /// slowrx's pixel switch (`video.c:432-455`), from a row's three stored
+    /// channels (`Image[tx][y][0..3]`, in transmit order) to the RGB pixel.
+    #[test]
+    fn color_encoding_to_rgb_follows_slowrx() {
+        let stored = [10_u8, 120, 230];
+        // RGB: p[i] = Image[i] (video.c:434-437).
+        assert_eq!(ColorEncoding::Rgb.to_rgb(stored), [10, 120, 230]);
+        // GBR: p[0] = Image[2], p[1] = Image[0], p[2] = Image[1]
+        // (video.c:440-443) — Martin / Scottie send G, B, R.
+        assert_eq!(ColorEncoding::Gbr.to_rgb(stored), [230, 10, 120]);
+        // YUV: the video.c:446-450 conversion.
+        assert_eq!(
+            ColorEncoding::Yuv.to_rgb(stored),
+            crate::demod::ycbcr_to_rgb(10, 120, 230)
+        );
+        // BW: p[0] = p[1] = p[2] = Image[0] (video.c:453).
+        assert_eq!(ColorEncoding::Bw.to_rgb(stored), [10, 10, 10]);
+    }
+
     /// `LineHeight` is 2 only for the two 120-line B/W modes; every other
     /// mode shows each decoded row once (slowrx `modespec.c`).
     #[test]
@@ -874,6 +1104,8 @@ mod tests {
             SstvMode::Robot8Bw,
             SstvMode::Martin1,
             SstvMode::Martin2,
+            SstvMode::Wraase120,
+            SstvMode::Wraase180,
         ] {
             let spec = for_mode(mode);
             assert_eq!(
@@ -904,8 +1136,8 @@ mod tests {
 
     /// F8 (#91). Every entry in `ALL_SPECS` round-trips cleanly
     /// through `lookup` (VIS code → spec) and `for_mode` (mode →
-    /// spec); the table has exactly 14 unique modes, 14 unique VIS
-    /// codes, 14 unique `short_names`; every `name` and `short_name`
+    /// spec); the table has exactly 16 unique modes, 16 unique VIS
+    /// codes, 16 unique `short_names`; every `name` and `short_name`
     /// is non-empty.
     ///
     /// Subsumes the per-mode `vis_code_resolves` tests as a

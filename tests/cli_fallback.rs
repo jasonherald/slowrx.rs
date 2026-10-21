@@ -176,6 +176,27 @@ fn both_mode_flags_accept_the_robot_bw_names() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// Both Wraase SC-2 names are accepted by both mode flags (exit 2 on
+/// silence: decoded, no image), as for the Robot B/W names above.
+#[test]
+fn both_mode_flags_accept_the_wraase_names() {
+    let dir = scratch("wraase-names");
+    let wav = dir.join("silence.wav");
+    write_wav(&wav, &vec![0.0_f32; WORKING_SAMPLE_RATE_HZ as usize]);
+    for name in ["wraase120", "wraase180", "WRAASE180"] {
+        for flag in ["--mode", "--fallback-mode"] {
+            cli()
+                .args(["--quiet", flag, name, "--input"])
+                .arg(&wav)
+                .arg("--output")
+                .arg(dir.join("out"))
+                .assert()
+                .code(2);
+        }
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// A clean Robot 36 VIS followed by 40 s of noise: the decoder produces a
 /// full-size image of noise.
 fn write_vis_then_noise_wav(path: &Path) {

@@ -21,14 +21,15 @@ fixtures decode to images visually matching the reference JPGs),
 Robot 36 against the ARISS Fram2 corpus (all 12 fixtures decode to
 images visually matching the reference JPGs — see
 [`tests/ariss_fram2_validation.md`](https://github.com/jasonherald/slowrx.rs/blob/main/tests/ariss_fram2_validation.md)). PD240, Robot 24, Robot 72,
-Robot 24/12/8 B/W, Scottie 1/2/DX, and Martin 1/2 ship with synthetic
-round-trip coverage only — real-radio fixtures for those modes are
-pending. Robot 24
+Robot 24/12/8 B/W, Scottie 1/2/DX, Martin 1/2, and Wraase SC-2 120/180
+ship with synthetic round-trip coverage only — real-radio fixtures for
+those modes are pending. Robot 24
 inherits Robot 36's real-radio evidence by structural identity (same
-decoder code path, only LineTime differs). Scottie + Martin share an
-RGB-sequential decoder dispatched on `SyncPosition` (Scottie sync
-sits mid-line; Martin sync at line start, the standard SSTV
-convention).
+decoder code path, only LineTime differs). Scottie, Martin and Wraase
+SC-2 share an RGB-sequential decoder dispatched on `SyncPosition`
+(Scottie sync sits mid-line; Martin and SC-2 sync at line start, the
+standard SSTV convention) and on `ColorEncoding` for the colour order
+(Scottie and Martin send G, B, R; SC-2 sends R, G, B).
 
 ## Install
 
@@ -81,6 +82,7 @@ samples. Mode coverage:
 | **Robot B/W** | Robot 24 B/W, Robot 12 B/W, Robot 8 B/W |
 | **Scottie** | Scottie 1, Scottie 2, Scottie DX |
 | **Martin** | Martin 1, Martin 2 |
+| **Wraase SC-2** | Wraase SC-2 120, Wraase SC-2 180 |
 
 VIS header detection is automatic — feed the decoder audio, get images
 out as they complete.

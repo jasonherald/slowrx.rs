@@ -274,3 +274,58 @@ fn forced_mode_round_trips_through_the_accessor_and_survives_reset() {
     d.set_forced_mode(None);
     assert_eq!(d.forced_mode(), None);
 }
+
+/// A forced Wraase SC-2 mode starts a header-less SC-2 transmission from
+/// its sync rhythm (SC-2's line is ~0.5 s, so the 8-line window is ~3.8 s)
+/// and decodes its R, G, B channels in order.
+#[test]
+fn a_forced_wraase_mode_decodes_a_headerless_sc2_image() {
+    let spec = slowrx::for_mode(SstvMode::Wraase120);
+    let (w, h) = (spec.line_pixels as usize, spec.image_lines as usize);
+    // A horizontal red ramp over vertical green/blue bands.
+    let rgb: Vec<[u8; 3]> = (0..h)
+        .flat_map(|_| {
+            (0..w).map(move |x| {
+                let band = (x / 40) % 2 == 0;
+                [
+                    (x * 255 / w) as u8,
+                    if band { 200 } else { 40 },
+                    if band { 40 } else { 200 },
+                ]
+            })
+        })
+        .collect();
+    let mut audio = noise(1000, 31);
+    audio.extend(slowrx::__test_support::mode_scottie::encode_scottie(
+        SstvMode::Wraase120,
+        &rgb,
+    ));
+    let events = decode(audio, |d| d.set_forced_mode(Some(SstvMode::Wraase120)));
+    assert_eq!(
+        count(&events, |e| matches!(
+            e,
+            SstvEvent::SyncStart {
+                mode: SstvMode::Wraase120,
+                ..
+            }
+        )),
+        1
+    );
+    let imgs = images(&events);
+    assert_eq!(imgs.len(), 1);
+    let img = imgs[0];
+    // Compare RGB away from the edge columns, whose pixel windows straddle
+    // the channel boundaries.
+    let (mut sum, mut n) = (0_u64, 0_u64);
+    for y in 0..h {
+        for x in 1..w - 1 {
+            let (want, got) = (rgb[y * w + x], img.pixels[y * w + x]);
+            for c in 0..3 {
+                sum += u64::from(want[c].abs_diff(got[c]));
+                n += 1;
+            }
+        }
+    }
+    let err = sum as f64 / n as f64;
+    assert!(err < 5.0, "headerless SC-2 mean error {err:.2}");
+}

@@ -20,6 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   saves them. `slowrx-cli --mode` / `--fallback-mode` accept `robot24bw`,
   `robot12bw` and `robot8bw`. Validated by synthetic round-trips only — no
   real-radio B/W recording is available.
+- **Wraase SC-2 120 / 180** (#118): both Wraase SC-2 modes now decode
+  (`SstvMode::Wraase120` / `Wraase180`, VIS `0x3F` / `0x37`), with slowrx's
+  timings (5.5225 ms sync, 0.5 ms porch, no separator, 320×256; pixel
+  0.489039081 / 0.734532 ms, line 475.530018 / 711.0225 ms). Like Martin they
+  are RGB-sequential with the sync at line start, but they send the colours
+  R, G, B instead of G, B, R. The new `ModeSpec::color_encoding` field
+  (slowrx's `ColorEnc`: `ColorEncoding::Gbr` / `Rgb` / `Yuv` / `Bw`) gives
+  each mode's colour order, and the Scottie / Martin / SC-2 decoder builds
+  pixels from it. `slowrx-cli --mode` / `--fallback-mode` accept `wraase120`
+  and `wraase180`. Validated by synthetic round-trips only — no real-radio
+  SC-2 recording is available.
 
 ### Internal
 

@@ -109,7 +109,9 @@ pub(crate) fn decode_line(
         | SstvMode::Scottie2
         | SstvMode::ScottieDx
         | SstvMode::Martin1
-        | SstvMode::Martin2 => {
+        | SstvMode::Martin2
+        | SstvMode::Wraase120
+        | SstvMode::Wraase180 => {
             unreachable!("decode_line called with non-Robot mode {mode:?}");
         }
     }
