@@ -191,11 +191,47 @@ fn write_baseline(rows: &[(String, Score)]) {
     std::fs::write(baseline_path(), out).expect("write baseline");
 }
 
+/// `false` when none of the 12 WAV + JPG pairs are present (skip); panics
+/// on a partial set, which would silently compare fewer slides than the
+/// baseline.
+fn fixtures_present(dir: &Path) -> bool {
+    let expected: Vec<PathBuf> = (1..=12)
+        .flat_map(|n| {
+            let slide = format!("Slide{n:02}");
+            [
+                dir.join(format!("{slide}.wav")),
+                dir.join(format!("{slide}-Robot-36-Color.jpg")),
+            ]
+        })
+        .collect();
+    let missing: Vec<&PathBuf> = expected.iter().filter(|p| !p.is_file()).collect();
+    if missing.len() == expected.len() {
+        return false;
+    }
+    assert!(
+        missing.is_empty(),
+        "incomplete Fram2 fixture set: {missing:?}"
+    );
+    true
+}
+
+fn print_table(rows: &[(String, Score)]) {
+    eprintln!("slide    mae     p99  max  shift");
+    for (slide, s) in rows {
+        eprintln!(
+            "{slide}  {:6.3}  {:3}  {:3}  ({:+},{:+})",
+            s.mae, s.p99, s.max, s.dx, s.dy
+        );
+    }
+    let mean_mae = rows.iter().map(|(_, s)| s.mae).sum::<f64>() / rows.len() as f64;
+    eprintln!("mean     {mean_mae:6.3}");
+}
+
 #[test]
 #[ignore = "needs the gitignored ARISS Fram2 fixtures; run with --ignored"]
 fn fram2_slides_match_their_reference_jpgs() {
     let dir = fixtures_dir();
-    if !dir.join("Slide01.wav").is_file() {
+    if !fixtures_present(&dir) {
         eprintln!("skipping: no Fram2 fixtures in {}", dir.display());
         return;
     }
@@ -207,15 +243,7 @@ fn fram2_slides_match_their_reference_jpgs() {
             (slide, score(&decoded, &reference))
         })
         .collect();
-    eprintln!("slide    mae     p99  max  shift");
-    for (slide, s) in &rows {
-        eprintln!(
-            "{slide}  {:6.3}  {:3}  {:3}  ({:+},{:+})",
-            s.mae, s.p99, s.max, s.dx, s.dy
-        );
-    }
-    let mean_mae = rows.iter().map(|(_, s)| s.mae).sum::<f64>() / rows.len() as f64;
-    eprintln!("mean     {mean_mae:6.3}");
+    print_table(&rows);
     if std::env::var_os("SLOWRX_FRAM2_BLESS").is_some() {
         write_baseline(&rows);
         return;
@@ -296,4 +324,26 @@ fn a_uniform_error_is_its_own_mean_p99_and_max() {
     let s = score(&decoded, &reference);
     assert!((s.mae - 10.0).abs() < 1e-12, "{s:?}");
     assert_eq!((s.p99, s.max), (10, 10));
+}
+
+fn scratch_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("slowrx-fram2-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    dir
+}
+
+#[test]
+fn no_fixtures_means_skip() {
+    let dir = scratch_dir("none");
+    assert!(!fixtures_present(&dir));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[should_panic(expected = "incomplete Fram2 fixture set")]
+fn a_partial_fixture_set_fails_instead_of_skipping() {
+    let dir = scratch_dir("partial");
+    std::fs::write(dir.join("Slide01.wav"), b"").expect("touch");
+    fixtures_present(&dir);
 }
