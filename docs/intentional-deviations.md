@@ -423,30 +423,19 @@ search and interpolation are unchanged.
 The port follows slowrx by default. This is a change to slowrx's demod
 algorithm, so library users choose it. rtl-sdr turns it on.
 
-### Still open
-
-Audit A4: slowrx keeps its SNR estimate and window index sticky across
-the whole image. `decode_one_channel_into` starts each channel sweep cold
-(SNR 0, with the window index ratcheting down from the longest window).
-The sweep begins half an FFT (512 samples) before pixel 0, so the
-cold-start window selection and the first SNR re-estimate happen before
-any output pixel. Early pixels therefore use an SNR estimate centred in
-that margin rather than slowrx's image-wide value; the estimator's
-1024-sample input can overlap pixel 0. This is tracked separately (#130)
-as a fidelity fix to judge with the #119 metric.
-
 ---
 
-## SNR hysteresis on adaptive Hann window selection
+## SNR-adaptive window: as slowrx since #130 (resolved)
 
-**Files:** `src/snr.rs::window_idx_for_snr_with_hysteresis` ↔ slowrx `video.c:354-367`.
-**Tracking issue:** [#71](https://github.com/jasonherald/slowrx.rs/issues/71).
-**Shipped in:** 0.3.2.
+**Files:** `src/demod.rs::window_idx_for_snr` / `pixel_window` ↔ slowrx
+`video.c:354-367`.
+**Tracking issues:** [#71](https://github.com/jasonherald/slowrx.rs/issues/71),
+[#130](https://github.com/jasonherald/slowrx.rs/issues/130).
 
 ### What slowrx does
 
-slowrx C selects the per-pixel Hann window length using pure-threshold
-logic on the SNR estimate (`video.c:354-367`):
+slowrx picks each pixel FFT's Hann window from the current SNR estimate
+by pure thresholds (`video.c:354-367`), with Scottie DX one step longer:
 
 ```c
 if      (!Adaptive)  WinIdx = 0;
@@ -459,72 +448,41 @@ else if (SNR >= -10) WinIdx = 5;
 else                 WinIdx = 6;
 ```
 
-No hysteresis. When SNR fluctuates near a threshold (e.g., real-radio
-SNR oscillating ±0.5 dB across the 9 dB boundary between `WinIdx=2` and
-`WinIdx=3`), the selector flips every SNR re-estimation cadence (5.8 ms
-wall-clock).
+The SNR itself is sticky across the whole image and re-estimated every
+256 samples at 44.1 kHz (`video.c:302-343`).
 
 ### What we do
 
-We use the same threshold table but apply a 1 dB hysteresis band at
-each transition. The function `window_idx_for_snr_with_hysteresis(snr_db,
-prev_idx)` ratchets one band per call toward
-`window_idx_for_snr(snr_db)`, applying a 0.5 dB hysteresis at the
-adjacent boundary:
+The same, since #130. Releases 0.3.2 to 0.8.0 added a 1 dB hysteresis
+band at each threshold (`window_idx_for_snr_with_hysteresis`): the window
+moved one band per FFT from the one the previous FFT used, and only once
+the SNR was 0.5 dB past the threshold. It was meant to stop the faint
+vertical "squiggles" in the Fram2 decodes, on the theory that the window
+flip-flopped while the SNR hovered near a threshold. #71 later traced the
+squiggles to the real signal's negative-frequency mirror instead (see the
+analytic-demod entry above). That was this entry's own first trigger to
+revisit: the hysteresis wasn't the root cause.
 
-1. Compute `baseline = window_idx_for_snr(snr_db)`. If it equals
-   `prev_idx` the SNR is in `prev_idx`'s band — return immediately.
-2. Pick `target_idx` one band closer to `baseline` than `prev_idx`.
-3. Re-evaluate `window_idx_for_snr` at `snr_db ± 0.5` (away from
-   `target_idx`).
-4. If the shifted lookup confirms the SNR is past `target_idx`'s side
-   of the boundary, accept `target_idx`. Otherwise stay at `prev_idx`.
+Audit A4 (#130) asked a related question. slowrx keeps the SNR and window
+index across the whole image, while each channel sweep here starts cold.
+The cold SNR never reaches a pixel: the sweep starts half an FFT (512
+samples) before pixel 0 and re-estimates the SNR within 64 samples. Only
+the hysteresis carried state from one FFT to the next, and it restarted at
+the longest window in every channel. Carrying it across the image instead
+changed no Fram2 pixel and 0.18% of the pixels on 13 ISS passes. Either
+way, the window used for output pixels differed from slowrx's on 3.4% of
+FFTs, and that gap was the hysteresis itself.
 
-Per-pixel FFTs converge in O(`n_bands`) calls. Ratcheting one step at
-a time (rather than jumping straight to `baseline`) keeps the selector
-convergent even when `prev_idx` is far from `baseline` — e.g.
-cold-start at idx 6 with a strong signal — without breaking the 1 dB
-hysteresis guarantee at any individual boundary.
+### Effect
 
-### Why we deviated
-
-V2.2 Phase 5 visual validation against the 12 ARISS Fram2 R36 reference
-WAVs revealed faint vertical squiggle artifacts every ~20–30 pixels in
-the decoded PNGs. The squiggle period (5.8 ms of audio at R36 Y's
-0.275 ms/pixel cadence ≈ 21 px) matches the SNR re-estimation cadence
-exactly. A code-only audit (#71) found the DSP otherwise arithmetically
-equivalent to slowrx C. Hypothesis: real-radio SNR fluctuates near a
-window-selection threshold, the selector flip-flops, and that produces
-periodic vertical banding.
-
-slowrx C exhibits the same algorithmic property (no hysteresis) and
-would in principle produce the same artifact at its 5.8 ms cadence.
-The reference JPGs ARISS published were almost certainly decoded by a
-different tool (MMSSTV or RX-SSTV in the ARISS community) that either
-uses a fixed window or has hysteresis.
-
-The 1 dB band is small enough that real SNR changes still propagate
-quickly (≥ 0.5 dB past threshold = one cadence delay max), and large
-enough that typical real-radio fluctuation (0.5–1.5 dB) doesn't cause
-flip-flop.
-
-### When to revisit
-
-Three triggers would prompt revisiting:
-
-1. **Empirical Fram2 validation shows the squiggles persist or worsen
-   after this hysteresis lands.** Re-run the procedure at
-   [`tests/ariss_fram2_validation.md`](https://github.com/jasonherald/slowrx.rs/blob/main/tests/ariss_fram2_validation.md)
-   and compare visually against the V2.2 baseline. Persistence means
-   hysteresis isn't the root cause; move on to other paths in #71
-   (sub-pixel FFT interpolation, resampler quality).
-2. **Decode quality regresses at SNR edges** (e.g., images with
-   alternating bands of high and low SNR show banding at the band
-   boundaries because hysteresis is filtering legitimate SNR changes).
-   Tune the band size or switch to a debouncer/smoother strategy.
-3. **A future audit cross-validates pixel-by-pixel against slowrx C
-   output on the same WAV** and finds slowrx's pure-threshold behavior
-   matters in some specific way. Unlikely but possible.
+Removing the hysteresis lowers the Fram2 error on all 12 slides with both
+demods: the mean goes from 8.375 to 8.361 with the real-signal demod and
+from 6.864 to 6.851 with the analytic one (#119). On 13 ISS passes with
+the analytic demod, image starts and sync quality are unchanged and about
+13% of pixels change. There is no banding, and impulse speckle (pixels
+more than 60 levels from their 3×3 median) drops 0.3%, with fewer in 16
+of 21 images. The window choice now has no state, so the per-channel cold
+start doesn't matter.
 
 ---
 
@@ -563,8 +521,8 @@ The bump produces two coupled DSP changes:
    second, real deviation that comes "for free" with the FFT_LEN
    bump and is desirable: the longer integration produces a cleaner
    SNR estimate, which in turn reduces flip-flop in the
-   adaptive-Hann selector beyond what the 0.3.2 hysteresis already
-   delivers.
+   adaptive-Hann selector. (The 0.3.2 hysteresis also targeted that
+   flip-flop; #130 removed it.)
 
 Both effects were validated together on the parallel experiment
 branch and contribute to the "WAY clearer" visual finding on the
@@ -857,7 +815,7 @@ integration is empty (no signal in the video band).
 #### What we do
 
 We return `-20.0` dB — the minimum meaningful value from slowrx's own
-floor (`video.c:340-341`) — so the hysteresis selector lands at the
+floor (`video.c:340-341`) — so the window selector lands at the
 longest Hann window (`window_idx_for_snr(-20) == 6`). Both fallback
 paths (`noise_only_bins == 0` and `p_noise <= 0.0 || p_signal/p_noise < 0.01`)
 return `-20.0`.

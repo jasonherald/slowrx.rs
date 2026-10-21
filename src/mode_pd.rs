@@ -30,13 +30,8 @@ use crate::demod::ChannelDemod;
 /// inner loop. [`crate::snr::SnrEstimator`] is recomputed every
 /// [`crate::demod::SNR_REESTIMATE_STRIDE`] samples (`video.c:302-343`).
 ///
-/// **Deviations from slowrx (deliberate):**
-/// - Per-pixel Hann window length is SNR-adaptive (slowrx
-///   `video.c:354-367`) plus a 1 dB hysteresis band at each threshold
-///   to prevent flip-flop on real-radio SNR fluctuations near boundary
-///   values. See [`crate::demod::window_idx_for_snr_with_hysteresis`]
-///   and the `SNR hysteresis on adaptive Hann window selection` entry
-///   in `docs/intentional-deviations.md`.
+/// The per-pixel Hann window length is SNR-adaptive, as in slowrx
+/// (`video.c:354-367`; [`crate::demod::window_idx_for_snr`]).
 ///
 /// `skip_samples` is the absolute sample index inside `audio` where
 /// pair zero's sync pulse begins; `pair_seconds` is `pair_index *
@@ -50,7 +45,8 @@ use crate::demod::ChannelDemod;
 //   #24 — time-base alignment: single-round formula, pair_seconds folded
 //          in here rather than pre-rounded by caller (closed).
 //   #44 — SNR-adaptive Hann window lifted with 1 dB hysteresis band
-//          (0.3.2 deliberate deviation; see intentional-deviations.md).
+//          (0.3.2 deviation); hysteresis removed in #130, back to
+//          slowrx's pure thresholds (see intentional-deviations.md).
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,

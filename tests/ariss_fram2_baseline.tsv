@@ -1,15 +1,15 @@
 # Fram2 decode vs reference JPG: mean absolute error (0-255) at the best shift.
 # Written by `SLOWRX_FRAM2_BLESS=1 cargo test --release --features cli --test fram2_pixel_diff -- --ignored`.
 # slide	mae	p99	max	dx	dy
-Slide01	8.765	50	147	-2	0
-Slide02	8.024	48	143	-1	0
-Slide03	7.802	50	128	-2	0
-Slide04	8.432	52	148	-2	0
-Slide05	8.778	53	145	-1	0
-Slide06	8.500	54	138	-1	0
-Slide07	8.852	54	143	-2	0
-Slide08	7.071	50	143	-2	0
-Slide09	9.275	54	146	-2	0
-Slide10	8.455	52	142	-1	0
-Slide11	7.891	57	147	-2	0
-Slide12	8.658	56	153	-2	0
+Slide01	8.751	50	147	-2	0
+Slide02	8.002	48	143	-1	0
+Slide03	7.798	50	128	-2	0
+Slide04	8.409	52	148	-2	0
+Slide05	8.766	53	145	-1	0
+Slide06	8.491	54	138	-1	0
+Slide07	8.839	54	143	-2	0
+Slide08	7.054	50	143	-2	0
+Slide09	9.262	54	146	-2	0
+Slide10	8.440	52	142	-1	0
+Slide11	7.875	56	147	-2	0
+Slide12	8.646	56	153	-2	0
