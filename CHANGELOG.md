@@ -39,8 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   convert into the caller's error type. This was the `slowrx-cli` binary's
   private reading code; the binary and the `decode_wav` example now share
   it (the example previously read 16-bit mono only). New `Error` variants, also
-  `cli`-only: `UnsupportedBitDepth`, `UnsupportedSampleLayout`,
-  `WavEndedMidFrame`, `WavRead`. docs.rs now builds with `cli` so these
+  `cli`-only: `NoAudioChannels`, `UnsupportedBitDepth`,
+  `UnsupportedSampleLayout`, `WavEndedMidFrame`, `WavRead`. docs.rs now builds with `cli` so these
   are documented.
 
 ### Changed

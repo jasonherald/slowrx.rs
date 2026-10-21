@@ -34,6 +34,13 @@ pub enum Error {
         float: bool,
     },
 
+    /// The WAV declares no audio channels. `hound` refuses to open such
+    /// files, so this only guards [`crate::wav::check_spec`] against a spec
+    /// built by hand. (`cli` feature.)
+    #[cfg(feature = "cli")]
+    #[error("WAV has no audio channels")]
+    NoAudioChannels,
+
     /// The WAV's bit depth is supported but its samples are padded into a
     /// wider container (e.g. 16-bit samples in 4-byte slots), which
     /// `hound` can't read. (`cli` feature.)

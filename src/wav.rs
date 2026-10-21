@@ -49,8 +49,12 @@ const CHUNK_FRAMES: usize = 4096;
 ///
 /// # Errors
 ///
+/// [`Error::NoAudioChannels`] for a zero-channel spec;
 /// [`Error::UnsupportedBitDepth`] for any other bit depth.
 pub fn check_spec(spec: hound::WavSpec) -> Result<()> {
+    if spec.channels == 0 {
+        return Err(Error::NoAudioChannels);
+    }
     let float = spec.sample_format == hound::SampleFormat::Float;
     let supported = if float {
         spec.bits_per_sample == 32
@@ -96,7 +100,8 @@ pub fn fold_to_mono(frame: &[f32]) -> f32 {
 ///
 /// # Errors
 ///
-/// - [`Error::UnsupportedBitDepth`]: see [`check_spec`].
+/// - [`Error::NoAudioChannels`] / [`Error::UnsupportedBitDepth`]: see
+///   [`check_spec`].
 /// - [`Error::UnsupportedSampleLayout`]: the samples are padded into a
 ///   wider container than `hound` can read (e.g. 16-bit samples in
 ///   4-byte slots).
@@ -359,6 +364,17 @@ mod tests {
                 bits: 64,
                 float: true
             }
+        ));
+    }
+
+    /// `hound` refuses to open a zero-channel file, but `check_spec` is
+    /// public and takes any spec; an empty frame must not read as a clean
+    /// end of stream (review of #123).
+    #[test]
+    fn check_spec_rejects_a_spec_with_no_channels() {
+        assert!(matches!(
+            check_spec(spec(0, 16, Int)),
+            Err(Error::NoAudioChannels)
         ));
     }
 
