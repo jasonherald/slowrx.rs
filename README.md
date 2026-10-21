@@ -13,7 +13,7 @@
 
 ## Status
 
-🛰️ **0.7.0** starts images from a mode's line-sync rhythm when no header is heard, adds a forced-mode option and a per-image sync-quality score that flags images decoded from noise; **0.6.0** added the opt-in lost-VIS fallback (see below). All on top of **V2.4**: PD120, PD180, PD240, Robot 24, Robot 36, Robot 72, Scottie 1, Scottie 2, Scottie DX, Martin 1, and Martin 2 decoding from raw audio. All four V2 mode families landed; the [V2 roadmap](https://github.com/jasonherald/slowrx.rs/issues/9) is closed. Post-V2.4 cleanup (code-review audit backlog, [epic #97](https://github.com/jasonherald/slowrx.rs/issues/97)) is in progress.
+🛰️ **0.8.0** adds Robot 24/12/8 B/W and Wraase SC-2 120/180, and an opt-in analytic-signal pixel demod that removes the diagonal cross-hatch in dark areas; **0.7.0** started images from a mode's line-sync rhythm when no header is heard, and added a forced-mode option and a per-image sync-quality score that flags images decoded from noise; **0.6.0** added the opt-in lost-VIS fallback (see below). All on top of **V2.4**: PD120, PD180, PD240, Robot 24, Robot 36, Robot 72, Scottie 1, Scottie 2, Scottie DX, Martin 1, and Martin 2 decoding from raw audio. All four V2 mode families landed; the [V2 roadmap](https://github.com/jasonherald/slowrx.rs/issues/9) is closed. Post-V2.4 cleanup (code-review audit backlog, [epic #97](https://github.com/jasonherald/slowrx.rs/issues/97)) is in progress.
 
 PD120, PD180, and Robot 36 are validated end-to-end against real-radio
 captures: PD120/PD180 against the ARISS Dec-2017 corpus (6 of 7
