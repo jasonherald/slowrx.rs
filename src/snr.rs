@@ -165,12 +165,21 @@ impl SnrEstimator {
         let p_signal = p_video_plus_noise
             - p_noise_only * (video_plus_noise_bins as f64) / (noise_only_bins as f64);
 
-        let ratio = p_signal / p_noise;
-        if p_noise <= 0.0 || ratio.is_nan() || ratio < 0.01 {
-            SNR_FLOOR_DB
-        } else {
-            (10.0 * ratio.log10()).min(SNR_CEILING_DB)
-        }
+        snr_db_from_powers(p_signal, p_noise)
+    }
+}
+
+/// slowrx's SNR from the bandwidth-corrected powers (`video.c:340-341`:
+/// `Psignal / Pnoise < .01 ? -20 : 10·log10(Psignal / Pnoise)`), clamped to
+/// [`SNR_CEILING_DB`]. Zero noise with real signal divides to `+∞` there —
+/// the ceiling here; `0 / 0` is NaN, which slowrx's window thresholds treat
+/// like the floor, so it maps to [`SNR_FLOOR_DB`].
+fn snr_db_from_powers(p_signal: f64, p_noise: f64) -> f64 {
+    let ratio = p_signal / p_noise;
+    if ratio.is_nan() || ratio < 0.01 {
+        SNR_FLOOR_DB
+    } else {
+        (10.0 * ratio.log10()).min(SNR_CEILING_DB)
     }
 }
 
@@ -225,6 +234,22 @@ mod tests {
             (snr - -20.0).abs() < 1e-9,
             "silence should floor at -20 dB, got {snr}"
         );
+    }
+
+    /// slowrx `video.c:341`: `Psignal / Pnoise < .01 ? -20 : 10·log10(…)`.
+    /// Zero noise with real signal is `+∞` there (the shortest window), so
+    /// it maps to the ceiling here, not the floor (review of #123).
+    #[test]
+    fn snr_db_from_powers_follows_slowrx_and_clamps() {
+        assert!((snr_db_from_powers(10.0, 1.0) - 10.0).abs() < 1e-12);
+        assert!((snr_db_from_powers(1.0, 0.0) - SNR_CEILING_DB).abs() < 1e-12);
+        assert!((snr_db_from_powers(1e9, 1.0) - SNR_CEILING_DB).abs() < 1e-12);
+        for (signal, noise) in [(0.0, 0.0), (-1.0, 1.0), (0.001, 1.0), (-1.0, 0.0)] {
+            assert!(
+                (snr_db_from_powers(signal, noise) - SNR_FLOOR_DB).abs() < 1e-12,
+                "({signal}, {noise})"
+            );
+        }
     }
 
     #[test]

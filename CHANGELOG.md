@@ -81,9 +81,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Every mode's line decoder reuses one set of hoisted line buffers instead
   of allocating two to four `Vec`s per radio line (Robot, Scottie, Martin;
   PD already did). (#93)
-- The SNR estimate stays within its documented range (-20 to 60 dB); a
-  numerically empty noise band used to divide to `+∞`. Every window
-  threshold is ≤ 20 dB, so no decode changes. (#96 A9)
+- The SNR estimate stays within its documented range (-20 to 60 dB): a
+  numerically empty noise band now reads as the ceiling, as slowrx's `+∞`
+  does (it used to read as the floor, and other near-empty bands divided
+  to `+∞`). Every window threshold is ≤ 20 dB. (#96 A9)
 - Audit tidy-ups (#96): PD's even image height is pinned by a test (A5); a
   comment on why `pixel_freq`'s band clamps never bind (A10); one
   `probe_index` helper instead of two closures with a dead guard (C16);
