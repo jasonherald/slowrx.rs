@@ -89,7 +89,19 @@ pub(crate) fn decode_line(
                 hedr_shift_hz,
             );
         }
-        _ => unreachable!("decode_line must be called with a Robot variant"),
+        // Listed, not `_`: inside this crate `#[non_exhaustive]` doesn't
+        // apply, so a new mode forces a decision here at compile time
+        // instead of landing on a runtime panic (audit C17).
+        SstvMode::Pd120
+        | SstvMode::Pd180
+        | SstvMode::Pd240
+        | SstvMode::Scottie1
+        | SstvMode::Scottie2
+        | SstvMode::ScottieDx
+        | SstvMode::Martin1
+        | SstvMode::Martin2 => {
+            unreachable!("decode_line called with non-Robot mode {mode:?}");
+        }
     }
 }
 

@@ -291,7 +291,9 @@ pub(crate) fn find_sync(
         / SYNC_PROBE_STRIDE as f64)
         .ceil() as usize;
     let has_sync = &has_sync[..has_sync.len().min(image_probes)];
-    let line_width: usize = ((spec.line_seconds / spec.sync_seconds) * 4.0) as usize;
+    // ≥ 4 for every mode (a line is longer than its sync pulse); `.max(1)`
+    // is cheap insurance for the `/ line_width` divisions below (audit C16).
+    let line_width: usize = (((spec.line_seconds / spec.sync_seconds) * 4.0) as usize).max(1);
     let num_lines = spec.image_lines as usize;
     let mut rate = initial_rate_hz;
     let mut slant_deg_detected: Option<f64> = None;
@@ -370,14 +372,7 @@ fn hough_detect_slant(
     // shape). Vote increments scan q-inner.
     let lines_idx = |d: usize, q: usize| d * n_slant_bins + q;
 
-    let probe_index = |t: f64| -> usize {
-        let raw = t * rate_hz / (SYNC_PROBE_STRIDE as f64);
-        if raw < 0.0 {
-            0
-        } else {
-            raw as usize
-        }
-    };
+    let probe_index = |t: f64| probe_index(t, rate_hz);
 
     // Reset the hoisted scratch buffers (was: fresh Vec allocations).
     scratch.sync_img.fill(false);
@@ -486,14 +481,7 @@ fn find_falling_edge(
     num_lines: usize,
     scratch: &mut FindSyncScratch,
 ) -> i32 {
-    let probe_index = |t: f64| -> usize {
-        let raw = t * rate_hz / (SYNC_PROBE_STRIDE as f64);
-        if raw < 0.0 {
-            0
-        } else {
-            raw as usize
-        }
-    };
+    let probe_index = |t: f64| probe_index(t, rate_hz);
 
     scratch.x_acc.fill(0);
     for y in 0..num_lines {
@@ -508,6 +496,18 @@ fn find_falling_edge(
     }
 
     falling_edge_from_x_acc(&scratch.x_acc)
+}
+
+/// Index of the sync probe covering time `t` (seconds) at `rate_hz`.
+/// `as` saturates a negative or NaN product to 0, so no explicit guard is
+/// needed (audit C16; `t` is never negative here anyway).
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn probe_index(t: f64, rate_hz: f64) -> usize {
+    (t * rate_hz / SYNC_PROBE_STRIDE as f64) as usize
 }
 
 /// Line-sync quality of a decoded image from the column accumulator
@@ -758,6 +758,15 @@ mod tests {
         x_acc[..22].fill(spec.image_lines);
         let q = sync_quality(&x_acc, spec, lines);
         assert!(q > 0.9, "wrapped pulse: {q}");
+    }
+
+    #[test]
+    fn probe_index_maps_time_to_stride_and_saturates_below_zero() {
+        let rate = f64::from(WORKING_SAMPLE_RATE_HZ);
+        assert_eq!(probe_index(0.0, rate), 0);
+        assert_eq!(probe_index(1.0, rate), 11_025 / SYNC_PROBE_STRIDE);
+        assert_eq!(probe_index(-0.5, rate), 0);
+        assert_eq!(probe_index(f64::NAN, rate), 0);
     }
 
     #[test]

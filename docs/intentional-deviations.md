@@ -442,6 +442,15 @@ The investigation paths in #71 cover SNR-adaptive Hann selector
 re-engagement (V1 deferral #44), slowrx C cross-validation, and per-
 pixel sub-bin interpolation.
 
+A known divergence to evaluate there (audit A4): slowrx sweeps the whole
+image once, so its SNR estimate and window index stay sticky across
+channels and lines. `decode_one_channel_into` starts each channel cold
+(SNR 0, window index ramping 6 → 5 → 4), so the first pixels of every
+channel use a longer window than slowrx would. Threading the state
+image-wide is the faithful fix, but it changes pixels. Judge it with the
+numerical comparison against the Fram2 reference JPGs (#119) rather than
+by eye.
+
 ---
 
 ## SNR hysteresis on adaptive Hann window selection

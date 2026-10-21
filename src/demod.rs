@@ -192,13 +192,12 @@ pub(crate) fn window_idx_for_snr_with_hysteresis(snr_db: f64, prev_idx: usize) -
 ///
 /// `3.1372549 = (2300 - 1500) / 255`.
 #[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub(crate) fn freq_to_luminance(freq_hz: f64, hedr_shift_hz: f64) -> u8 {
     let v = (freq_hz - 1500.0 - hedr_shift_hz) / 3.137_254_9;
     // Round-to-nearest before casting, matching slowrx's `(guchar)round(a)`
     // in `common.c::clip()`.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let lum = v.clamp(0.0, 255.0).round() as u8;
-    lum
+    v.clamp(0.0, 255.0).round() as u8
 }
 
 /// Convert a single PD-family `[Y, Cr, Cb]` triple to `[R, G, B]`.
@@ -369,6 +368,12 @@ impl ChannelDemod {
         let bin_for = |hz: f64| -> usize {
             crate::dsp::get_bin(hz, FFT_LEN, crate::resample::WORKING_SAMPLE_RATE_HZ)
         };
+        // `.max(1)` / `.min(FFT_LEN / 2 - 1)` keep `max_bin ± 1` in bounds
+        // for the interpolation below; slowrx has no such clamp. They only
+        // bind when `hedr_shift_hz` drags the band to within one bin of DC
+        // or Nyquist (a shift of over -1450 Hz or +3200 Hz, far past any
+        // header the VIS detector accepts), so slowrx's guard below is
+        // unchanged in practice (audit A10).
         let lo = bin_for(1500.0 + hedr_shift_hz).saturating_sub(1).max(1);
         let hi = bin_for(2300.0 + hedr_shift_hz)
             .saturating_add(1)
