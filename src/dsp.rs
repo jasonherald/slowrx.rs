@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn build_hann_zero_and_one_length_safe() {
-        assert!(build_hann(0).is_empty());
+        assert_eq!(build_hann(0), [] as [f32; 0]);
         let one = build_hann(1);
         assert_eq!(one.len(), 1);
         assert_eq!(one[0], 0.0);

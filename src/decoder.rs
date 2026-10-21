@@ -753,7 +753,7 @@ mod tests {
         let mut d = SstvDecoder::new(11_025).expect("decoder");
         // Silence produces no VIS match.
         let events = d.process(&[0.5_f32; 512]);
-        assert!(events.is_empty());
+        assert_eq!(events, [] as [SstvEvent; 0]);
     }
 
     #[test]
