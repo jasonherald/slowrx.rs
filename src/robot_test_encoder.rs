@@ -11,7 +11,7 @@
 //! duplicates each chroma sample to the neighbor row (slowrx
 //! `video.c:424-425`). Source images that violate this constraint cannot
 //! round-trip losslessly. R72 has no such constraint (full per-line
-//! chroma).
+//! chroma). The B/W modes (R24BW / R12BW / R8BW) send only `Y`.
 
 #![allow(
     clippy::cast_precision_loss,
@@ -20,21 +20,22 @@
     clippy::cast_possible_wrap
 )]
 
-use crate::modespec::SstvMode;
+use crate::modespec::{ModeSpec, SstvMode};
 use crate::resample::WORKING_SAMPLE_RATE_HZ;
 use crate::test_tone::{lum_to_freq, ToneWriter, PORCH_HZ, SEPTR_HZ, SYNC_HZ};
 
 /// R36/R24 porch between the even/odd separator tone and the chroma.
 const ROBOT_CHROMA_PORCH_HZ: f64 = 1900.0;
 
-/// Encode an image as Robot 24 / 36 / 72 audio. `ycrcb` is row-major
-/// `[Y, Cr, Cb]` triples of length `width * height`.
+/// Encode an image as Robot 24 / 36 / 72 or Robot 24 / 12 / 8 B/W audio.
+/// `ycrcb` is row-major `[Y, Cr, Cb]` triples of length `width * height`.
 ///
 /// R72: emits Y / U / V sequentially per radio line, with septr between.
 /// R36/R24: emits Y / (Cr if y%2==0 else Cb) per radio line, with septr
 /// between Y and chroma. The decoder duplicates the chroma sample to
 /// the neighbor row, so the source ycrcb buffer must have adjacent rows
-/// share chroma (see file-level doc).
+/// share chroma (see file-level doc). B/W: emits Y only (see
+/// [`encode_bw`]).
 #[must_use]
 #[allow(dead_code)]
 pub(crate) fn encode_robot(mode: SstvMode, ycrcb: &[[u8; 3]]) -> Vec<f32> {
@@ -57,11 +58,18 @@ pub(crate) fn encode_robot(mode: SstvMode, ycrcb: &[[u8; 3]]) -> Vec<f32> {
         SstvMode::Robot24 | SstvMode::Robot36 => {
             encode_r36_or_r24(&mut tone, &mut t, advance, &spec, ycrcb);
         }
-        // `SstvMode` has variants beyond the three Robot ones (PD, Scottie,
-        // Martin) so the wildcard arm is structurally required by the
-        // exhaustiveness check — `encode_robot` is only meant to handle the
-        // three Robot variants matched above. (audit C17)
-        _ => unreachable!("encode_robot called with non-Robot mode {mode:?}"),
+        SstvMode::Robot24Bw | SstvMode::Robot12Bw | SstvMode::Robot8Bw => {
+            encode_bw(&mut tone, &spec, ycrcb);
+        }
+        // Listed, not `_`, so a new mode is a compile error here (audit C17).
+        SstvMode::Pd120
+        | SstvMode::Pd180
+        | SstvMode::Pd240
+        | SstvMode::Scottie1
+        | SstvMode::Scottie2
+        | SstvMode::ScottieDx
+        | SstvMode::Martin1
+        | SstvMode::Martin2 => unreachable!("encode_robot called with non-Robot mode {mode:?}"),
     }
 
     tone.into_vec()
@@ -188,6 +196,37 @@ fn encode_r36_or_r24(
     }
 }
 
+/// Robot 24 / 12 / 8 B/W: per radio line, the sync pulse and then the one
+/// luminance channel of slowrx's `default:` layout (`video.c:95-100`, with
+/// `NumChans = 1` from `video.c:103-109`) — channel start = sync + porch
+/// (the porch is zero for these modes), one tone per pixel for
+/// `pixel_seconds`. Only `Y` of each `ycrcb` triple is sent.
+///
+/// Each line is pinned to `y × line_seconds`, the decoder's timing model.
+/// R8BW's sync + pixels fill its 66.9 ms exactly; R24BW / R12BW's come to
+/// 100.12 ms against a 100 ms line — slowrx's 0.291 ms `PixelTime` is
+/// 93 ms / 320 = 0.290625 ms rounded — so the last pixel is cut at the
+/// line end instead of every later line slipping 0.12 ms. A line that ends
+/// early is padded with `PORCH_HZ`, as in `encode_r72`.
+fn encode_bw(tone: &mut ToneWriter, spec: &ModeSpec, ycrcb: &[[u8; 3]]) {
+    let sr = f64::from(WORKING_SAMPLE_RATE_HZ);
+    let at = |secs: f64| (secs * sr).round() as usize;
+    let w = spec.line_pixels;
+    for y in 0..spec.image_lines {
+        let line_end = f64::from(y + 1) * spec.line_seconds;
+        let mut t = f64::from(y) * spec.line_seconds + spec.sync_seconds;
+        tone.fill_to(SYNC_HZ, at(t));
+        t += spec.porch_seconds;
+        tone.fill_to(PORCH_HZ, at(t));
+        for x in 0..w {
+            t = (t + spec.pixel_seconds).min(line_end);
+            let lum = ycrcb[(y * w + x) as usize][0];
+            tone.fill_to(lum_to_freq(lum), at(t));
+        }
+        tone.fill_to(PORCH_HZ, at(line_end));
+    }
+}
+
 /// The standard synthetic Robot test image (`Y'CbCr`): a horizontal luma
 /// gradient with Cr and Cb stripes offset by a row, so adjacent rows share
 /// chroma as the R36/R24 round-trip constraint above requires (harmless for
@@ -264,6 +303,33 @@ mod tests {
                 odd > even,
                 line % 2 == 1,
                 "line {line}: even {even:.1}, odd {odd:.1}"
+            );
+        }
+    }
+
+    /// Every B/W line opens with the 1200 Hz sync exactly on the
+    /// `line_seconds` clock — including R24BW / R12BW, whose sync + pixels
+    /// (100.12 ms) overrun their 100 ms line; unpinned, their last line
+    /// would start ~29 ms late — and the audio is exactly
+    /// `image_lines × line_seconds` long.
+    #[test]
+    fn encode_robot_bw_lines_stay_on_the_line_clock() {
+        let rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
+        for mode in [SstvMode::Robot24Bw, SstvMode::Robot12Bw, SstvMode::Robot8Bw] {
+            let spec = for_mode(mode);
+            // White pixels: sync and video are easy to tell apart.
+            let img = vec![[255_u8, 0, 0]; (spec.line_pixels * spec.image_lines) as usize];
+            let audio = encode_robot(mode, &img);
+            let h = f64::from(spec.image_lines);
+            let expected = (h * spec.line_seconds * rate).round() as usize;
+            assert_eq!(audio.len(), expected, "{mode:?}: audio length");
+            let last_line = ((h - 1.0) * spec.line_seconds * rate).round() as usize;
+            let seg = &audio[last_line..last_line + (spec.sync_seconds * rate) as usize];
+            let p_sync = crate::dsp::goertzel_power(seg, SYNC_HZ);
+            let p_white = crate::dsp::goertzel_power(seg, crate::test_tone::WHITE_HZ);
+            assert!(
+                p_sync > 10.0 * p_white,
+                "{mode:?}: last line starts with sync (p_sync={p_sync}, p_white={p_white})"
             );
         }
     }

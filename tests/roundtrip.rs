@@ -1,9 +1,10 @@
-//! Synthetic encode → decode round-trip for PD-family modes (PD120, PD180, PD240).
+//! Synthetic encode → decode round-trip for every mode family: PD, Robot
+//! (colour and B/W), Scottie and Martin.
 
 #![cfg(feature = "test-support")]
 #![allow(clippy::expect_used, clippy::cast_possible_truncation)]
 
-use slowrx::{SstvDecoder, SstvEvent, SstvImage, SstvMode, WORKING_SAMPLE_RATE_HZ};
+use slowrx::{ChannelLayout, SstvDecoder, SstvEvent, SstvImage, SstvMode, WORKING_SAMPLE_RATE_HZ};
 
 /// The completed image from a clean round-trip. Every clean synthetic
 /// image must score well above the noise threshold (≥ 0.87 across modes;
@@ -117,14 +118,31 @@ fn run_roundtrip(mode: SstvMode) {
 }
 
 /// The shared synthetic Robot test image (see
-/// `__test_support::mode_robot::synthetic_ycrcb`) with its dimensions.
+/// `__test_support::mode_robot::synthetic_ycrcb`) with its dimensions. B/W
+/// modes send only its luma gradient, and have no chroma stripes to show a
+/// row slip, so for them the gradient is reversed on every other 4-row band.
 fn test_robot_image(mode: SstvMode) -> (u32, u32, Vec<[u8; 3]>) {
     let spec = slowrx::for_mode(mode);
-    (
-        spec.line_pixels,
-        spec.image_lines,
-        slowrx::__test_support::mode_robot::synthetic_ycrcb(mode),
-    )
+    let mut ycrcb = slowrx::__test_support::mode_robot::synthetic_ycrcb(mode);
+    if spec.channel_layout == ChannelLayout::Monochrome {
+        let w = spec.line_pixels as usize;
+        for (i, px) in ycrcb.iter_mut().enumerate() {
+            if (i / w / 4) % 2 == 1 {
+                px[0] = 255 - px[0];
+            }
+        }
+    }
+    (spec.line_pixels, spec.image_lines, ycrcb)
+}
+
+/// The RGB a decoded Robot pixel should have: grey `Y` for B/W (slowrx
+/// `video.c:453`), else the `Y'CbCr` → RGB conversion.
+fn robot_expected_rgb(layout: ChannelLayout, src: [u8; 3]) -> [u8; 3] {
+    if layout == ChannelLayout::Monochrome {
+        [src[0]; 3]
+    } else {
+        slowrx::__test_support::mode_pd::ycbcr_to_rgb(src[0], src[1], src[2])
+    }
 }
 
 #[allow(
@@ -139,6 +157,9 @@ fn run_robot_roundtrip(mode: SstvMode) {
         SstvMode::Robot24 => 0x04,
         SstvMode::Robot36 => 0x08,
         SstvMode::Robot72 => 0x0C,
+        SstvMode::Robot24Bw => 0x0A,
+        SstvMode::Robot12Bw => 0x06,
+        SstvMode::Robot8Bw => 0x02,
         _ => unreachable!(),
     };
     let mut audio = slowrx::__test_support::vis::synth_vis(vis_code, 0.0);
@@ -163,11 +184,12 @@ fn run_robot_roundtrip(mode: SstvMode) {
     assert_eq!(img.width, w);
     assert_eq!(img.height, h);
 
+    let layout = slowrx::for_mode(mode).channel_layout;
     let mut max_diff = 0_u8;
     let mut sum_diff: u64 = 0;
     let mut n: u64 = 0;
     for (i, src) in ycrcb.iter().enumerate() {
-        let src_rgb = slowrx::__test_support::mode_pd::ycbcr_to_rgb(src[0], src[1], src[2]);
+        let src_rgb = robot_expected_rgb(layout, *src);
         let dec = img.pixels[i];
         for ch in 0..3 {
             let d = (i32::from(src_rgb[ch]) - i32::from(dec[ch])).unsigned_abs() as u8;
@@ -210,6 +232,23 @@ fn robot36_roundtrip() {
 #[test]
 fn robot24_roundtrip() {
     run_robot_roundtrip(SstvMode::Robot24);
+}
+
+#[test]
+fn robot24bw_roundtrip() {
+    run_robot_roundtrip(SstvMode::Robot24Bw);
+}
+
+/// R12BW's VIS parity bit is inverted (slowrx `vis.c:116`) — the header
+/// must still start the image.
+#[test]
+fn robot12bw_roundtrip() {
+    run_robot_roundtrip(SstvMode::Robot12Bw);
+}
+
+#[test]
+fn robot8bw_roundtrip() {
+    run_robot_roundtrip(SstvMode::Robot8Bw);
 }
 
 /// Build a synthetic RGB image for Scottie round-trip tests:

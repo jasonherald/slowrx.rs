@@ -150,10 +150,10 @@ quirk documented above, which we also deliberately diverge from).
 
 ### When to revisit
 
-If R12BW (or any other currently-unimplemented mode) gains a `ModeSpec`, it
-becomes "known" automatically (the predicate is `lookup(...).is_some()`), and
-bursts for it stop surfacing as `UnknownVis` and start decoding. Nothing else
-to change.
+If a currently-unimplemented mode gains a `ModeSpec`, it becomes "known"
+automatically (the predicate is `lookup(...).is_some()`), and bursts for it
+stop surfacing as `UnknownVis` and start decoding. Nothing else to change —
+that is how R12BW (with its inverted parity bit) became decodable in #117.
 
 ---
 
@@ -360,7 +360,10 @@ The two forms differ by **1 pixel-time** in the per-pixel sampling offset.
 
 The Rust port reuses `mode_pd::decode_one_channel_into` for both PD and Robot 72.
 That helper uses the PD `(x + 0.5)` formula. So Robot 72 in slowrx.rs samples each
-pixel `1 * pixel_seconds` later than slowrx C would.
+pixel `1 * pixel_seconds` later than slowrx C would. The same holds for every
+other non-PD mode, which all decode through that helper — including the Robot
+24 / 12 / 8 B/W modes (#117), whose single channel uses slowrx's `default:`
+layout exactly as R72's channels do.
 
 ### Why we deviated
 

@@ -7,13 +7,13 @@
 //!
 //! ## Status
 //!
-//! PD120 / PD180 / PD240, Robot 24 / 36 / 72, Scottie 1 / 2 / DX, and
-//! Martin 1 / 2 decode from raw audio. PD120 and PD180 are validated
-//! against the ARISS Dec-2017 capture set; Robot 36 is validated
-//! against the ARISS Fram2 corpus (see
-//! [`tests/ariss_fram2_validation.md`][fram2]). Scottie and Martin families
-//! are synthetic round-trip-validated only — no Scottie or Martin
-//! reference WAVs are available. The public API is
+//! PD120 / PD180 / PD240, Robot 24 / 36 / 72, Robot 24 / 12 / 8 B/W,
+//! Scottie 1 / 2 / DX, and Martin 1 / 2 decode from raw audio. PD120 and
+//! PD180 are validated against the ARISS Dec-2017 capture set; Robot 36
+//! is validated against the ARISS Fram2 corpus (see
+//! [`tests/ariss_fram2_validation.md`][fram2]). The Scottie, Martin and
+//! Robot B/W modes are synthetic round-trip-validated only — no reference
+//! WAVs are available for them. The public API is
 //! `#[non_exhaustive]`-protected for additive growth. See
 //! <https://github.com/jasonherald/slowrx.rs/issues/9> for the
 //! roadmap.
@@ -112,7 +112,8 @@ pub mod __test_support {
     pub mod mode_robot {
         /// Thin wrapper around the now-`pub(crate)` `crate::robot_test_encoder::encode_robot`.
         /// `__test_support` is the sole consumer-facing path for the synthetic
-        /// Robot encoder (#86 B10).
+        /// Robot encoder (#86 B10). Covers the colour Robot modes and
+        /// Robot 24 / 12 / 8 B/W (which send only the `Y` of each triple).
         #[doc(hidden)]
         #[must_use]
         pub fn encode_robot(mode: crate::modespec::SstvMode, ycrcb: &[[u8; 3]]) -> Vec<f32> {
