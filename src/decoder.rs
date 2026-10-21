@@ -17,9 +17,10 @@
 
 use crate::error::Result;
 use crate::image::{SstvImage, SyncQuality};
-use crate::modespec::SstvMode;
+use crate::modespec::{ModeSpec, SstvMode};
 use crate::resample::Resampler;
 use crate::sync::{find_sync, SyncTracker, SYNC_PROBE_STRIDE};
+use crate::sync_start::SyncStartDetector;
 
 /// One observable event emitted by [`SstvDecoder::process`].
 #[derive(Clone, Debug, PartialEq)]
@@ -56,6 +57,22 @@ pub enum SstvEvent {
         /// (`observed_leader_hz - 1900`), as for
         /// [`SstvEvent::VisDetected`].
         hedr_shift_hz: f64,
+    },
+    /// No VIS was heard, but the line-sync pulses of the expected mode — the
+    /// forced mode ([`SstvDecoder::set_forced_mode`]), else the fallback
+    /// ([`SstvDecoder::set_fallback_mode`]) — lined up for about two
+    /// seconds, so the decoder started the image at the first synced line.
+    /// This recovers images whose whole header faded and transmissions
+    /// joined mid-image (row 0 is then the first line heard). Image
+    /// decoding then proceeds exactly as after [`SstvEvent::VisDetected`],
+    /// with no measured mistuning (a 0 Hz header shift). There is no slowrx
+    /// counterpart — see `docs/intentional-deviations.md`.
+    SyncStart {
+        /// The mode whose sync rhythm was recognised.
+        mode: SstvMode,
+        /// Working-rate (11025 Hz) sample offset where the image audio
+        /// starts.
+        sample_offset: u64,
     },
     /// A VIS header parsed and passed parity, but its 7-bit code maps to no
     /// SSTV mode this build can decode (reserved / undefined, or a mode not
@@ -193,6 +210,54 @@ struct DecodingState {
     chroma_planes: Option<[Vec<u8>; 2]>,
 }
 
+impl DecodingState {
+    /// Start decoding `spec` from `audio` — the image's leading audio (VIS
+    /// residue or the sync-start buffer) — with radio mistuning
+    /// `hedr_shift_hz`.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    fn new(spec: ModeSpec, mut audio: Vec<f32>, hedr_shift_hz: f64) -> Self {
+        let work_rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
+        // Audio duration is one `line_seconds` per radio line — half the
+        // image rows for PD (slowrx video.c:251-254); see
+        // `ModeSpec::radio_lines`.
+        let nominal_samples =
+            (f64::from(spec.radio_lines()) * spec.line_seconds * work_rate) as usize;
+        let target = ((nominal_samples as f64) * FINDSYNC_AUDIO_HEADROOM) as usize;
+        // D6.1: keep the leading audio's allocation and pre-reserve the
+        // rest — no copy, and no Vec growth reallocs over the burst.
+        audio.reserve(target.saturating_sub(audio.len()));
+        Self {
+            mode: spec.mode,
+            spec,
+            image: SstvImage::new(spec.mode, spec.line_pixels, spec.image_lines),
+            audio,
+            has_sync: Vec::with_capacity(target / SYNC_PROBE_STRIDE),
+            next_probe_sample: 0,
+            sync_tracker: SyncTracker::new(hedr_shift_hz),
+            hedr_shift_hz,
+            target_audio_samples: target,
+            chroma_planes: match spec.mode {
+                SstvMode::Robot24 | SstvMode::Robot36 => {
+                    let n = (spec.image_lines as usize) * (spec.line_pixels as usize);
+                    Some([vec![0_u8; n], vec![0_u8; n]])
+                }
+                // PD modes compose RGB per-pair in place. Robot 72 and
+                // Scottie 1/2/DX also compose RGB in-place per radio line
+                // (see mode_robot::decode_r72_line, mode_scottie::decode_line);
+                // only the R36/R24 chroma-alternation + duplication path
+                // requires the side buffer. SstvMode is #[non_exhaustive], so
+                // the wildcard arm is required; future modes with cross-line
+                // chroma state would need to opt in here.
+                _ => None,
+            },
+        }
+    }
+}
+
 /// Headroom factor on the buffered audio length before [`find_sync`]
 /// runs. 1.00 = exactly the nominal image length. The Hough transform
 /// re-anchors the rate against whatever sync pulses are present, so
@@ -271,6 +336,13 @@ pub struct SstvDecoder {
     /// Mode assumed when a VIS header's bits are lost; `None` (the default)
     /// keeps slowrx's behaviour of decoding nothing without a VIS.
     fallback_mode: Option<SstvMode>,
+    /// Mode every image is decoded in, whatever its VIS says (#113);
+    /// `None` (the default) decodes each image in its header's mode.
+    forced_mode: Option<SstvMode>,
+    /// Sync-rhythm image-start detector (#115) for the expected mode — the
+    /// forced mode, else the fallback. Fed only while awaiting an image;
+    /// rebuilt after each image.
+    sync_start: Option<SyncStartDetector>,
 }
 
 impl SstvDecoder {
@@ -290,6 +362,8 @@ impl SstvDecoder {
             samples_processed: 0,
             working_samples_emitted: 0,
             fallback_mode: None,
+            forced_mode: None,
+            sync_start: None,
         })
     }
 
@@ -302,11 +376,16 @@ impl SstvDecoder {
     /// last used (e.g. the mode of the previous `VisDetected` from the same
     /// station); a wrong one decodes a garbled image rather than nothing.
     ///
+    /// With a fallback set, the decoder also starts an image with no header
+    /// at all once the fallback mode's line-sync pulses line up for about
+    /// two seconds ([`SstvEvent::SyncStart`]) — a fully faded header, or a
+    /// transmission joined mid-image.
+    ///
     /// Takes effect for the next VIS search; it persists across
-    /// [`Self::reset`].
+    /// [`Self::reset`]. [`Self::set_forced_mode`] overrides it.
     pub fn set_fallback_mode(&mut self, mode: Option<SstvMode>) {
         self.fallback_mode = mode;
-        self.vis.set_fallback_code(Self::fallback_code(mode));
+        self.apply_expected_mode();
     }
 
     /// The current fallback mode (see [`Self::set_fallback_mode`]).
@@ -315,22 +394,51 @@ impl SstvDecoder {
         self.fallback_mode
     }
 
+    /// Decode every image as `mode`, whatever its VIS header says — for a
+    /// recording or station whose mode is known (#113). Headers still mark
+    /// where images start, but their mode bits are ignored:
+    /// [`SstvEvent::VisDetected`] reports `mode`, and a header with an
+    /// unknown code is decoded rather than reported as
+    /// [`SstvEvent::UnknownVis`]. Images without a usable header start from
+    /// the lost-VIS fallback or the mode's sync rhythm, exactly as with
+    /// [`Self::set_fallback_mode`], which a forced mode overrides. `None`
+    /// (the default) decodes each image in its header's mode.
+    ///
+    /// Takes effect for the next image; it persists across [`Self::reset`].
+    pub fn set_forced_mode(&mut self, mode: Option<SstvMode>) {
+        self.forced_mode = mode;
+        self.apply_expected_mode();
+    }
+
+    /// The current forced mode (see [`Self::set_forced_mode`]).
+    #[must_use]
+    pub fn forced_mode(&self) -> Option<SstvMode> {
+        self.forced_mode
+    }
+
+    /// The mode a header-less image is assumed to be: the forced mode, else
+    /// the fallback.
+    fn expected_mode(&self) -> Option<SstvMode> {
+        self.forced_mode.or(self.fallback_mode)
+    }
+
     fn fallback_code(mode: Option<SstvMode>) -> Option<u8> {
         mode.map(|m| crate::modespec::for_mode(m).vis_code)
+    }
+
+    /// Point the lost-VIS fallback and the sync-rhythm detector at
+    /// [`Self::expected_mode`] (a detector for an unchanged mode is kept).
+    fn apply_expected_mode(&mut self) {
+        let mode = self.expected_mode();
+        self.vis.set_fallback_code(Self::fallback_code(mode));
+        if self.sync_start.as_ref().map(|d| d.spec().mode) != mode {
+            self.sync_start = mode.map(|m| SyncStartDetector::new(crate::modespec::for_mode(m)));
+        }
     }
 
     /// Process a chunk of mono `f32` audio samples in caller's rate.
     ///
     /// Returns events produced during this call's processing window.
-    // `too_many_lines`: `process` is the decoder's state-machine loop; splitting
-    // it (e.g. extracting `DecodingState::new`) is tracked in the code-review
-    // audit (B14, epic #97).
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::too_many_lines
-    )]
     pub fn process(&mut self, audio: &[f32]) -> Vec<SstvEvent> {
         let working = self.resampler.process(audio);
         self.samples_processed = self.samples_processed.saturating_add(audio.len() as u64);
@@ -343,94 +451,10 @@ impl SstvDecoder {
         loop {
             match &mut self.state {
                 State::AwaitingVis => {
-                    self.vis.process(remaining, self.working_samples_emitted);
+                    let reiterate = self.await_image(remaining, &mut out);
                     remaining = &[];
-                    if let Some(detected) = self.vis.take_detected() {
-                        if let Some(spec) = crate::modespec::lookup(detected.code) {
-                            out.push(if detected.assumed {
-                                SstvEvent::VisFallback {
-                                    mode: spec.mode,
-                                    sample_offset: detected.end_sample,
-                                    hedr_shift_hz: detected.hedr_shift_hz,
-                                }
-                            } else {
-                                SstvEvent::VisDetected {
-                                    mode: spec.mode,
-                                    sample_offset: detected.end_sample,
-                                    hedr_shift_hz: detected.hedr_shift_hz,
-                                }
-                            });
-                            let image =
-                                SstvImage::new(spec.mode, spec.line_pixels, spec.image_lines);
-                            // Recover any post-stop-bit audio that the VIS
-                            // detector buffered but did not consume — it is
-                            // the leading edge of the image data.
-                            let residual = self.vis.take_residual_buffer();
-                            let work_rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
-                            // Audio duration is one `line_seconds` per radio
-                            // line — half the image rows for PD (slowrx
-                            // video.c:251-254); see `ModeSpec::radio_lines`.
-                            let nominal_samples =
-                                (f64::from(spec.radio_lines()) * spec.line_seconds * work_rate)
-                                    as usize;
-                            let target =
-                                ((nominal_samples as f64) * FINDSYNC_AUDIO_HEADROOM) as usize;
-                            self.state = State::Decoding(Box::new(DecodingState {
-                                mode: spec.mode,
-                                spec,
-                                image,
-                                audio: {
-                                    // D6.1: keep the residual move + pre-reserve
-                                    // the remaining capacity. Avoids copying
-                                    // residual bytes AND avoids Vec growth
-                                    // reallocs over the burst.
-                                    let mut v = residual;
-                                    v.reserve(target.saturating_sub(v.len()));
-                                    v
-                                },
-                                has_sync: Vec::with_capacity(target / SYNC_PROBE_STRIDE),
-                                next_probe_sample: 0,
-                                sync_tracker: SyncTracker::new(detected.hedr_shift_hz),
-                                hedr_shift_hz: detected.hedr_shift_hz,
-                                target_audio_samples: target,
-                                chroma_planes: match spec.mode {
-                                    SstvMode::Robot24 | SstvMode::Robot36 => {
-                                        let n = (spec.image_lines as usize)
-                                            * (spec.line_pixels as usize);
-                                        Some([vec![0_u8; n], vec![0_u8; n]])
-                                    }
-                                    // PD modes compose RGB per-pair in place. Robot 72 and Scottie
-                                    // 1/2/DX also compose RGB in-place per radio line (see
-                                    // mode_robot::decode_r72_line, mode_scottie::decode_line); only
-                                    // the R36/R24 chroma-alternation + duplication path requires the
-                                    // side buffer. SstvMode is #[non_exhaustive], so the wildcard arm
-                                    // is required; future modes with cross-line chroma state would
-                                    // need to opt in here.
-                                    _ => None,
-                                },
-                            }));
-                            continue; // re-enter loop to process leftover audio
-                        }
-                        // Unknown VIS code: surface it so stream-monitoring
-                        // callers know a burst arrived, then reseed the
-                        // detector (the `#40` re-anchor contract) on the
-                        // post-stop-bit residue and re-enter the loop — a
-                        // back-to-back VIS in the residue then surfaces in
-                        // this same `process` call. Mirrors the known-code
-                        // branch's `continue`.
-                        out.push(SstvEvent::UnknownVis {
-                            code: detected.code,
-                            hedr_shift_hz: detected.hedr_shift_hz,
-                            sample_offset: detected.end_sample,
-                        });
-                        let residual = self.vis.take_residual_buffer();
-                        Self::restart_vis_detection(
-                            &mut self.vis,
-                            self.working_samples_emitted,
-                            &residual,
-                            Self::fallback_code(self.fallback_mode),
-                        );
-                        continue;
+                    if reiterate {
+                        continue; // decode the image (or reseeded VIS) in this call
                     }
                     break;
                 }
@@ -467,59 +491,161 @@ impl SstvDecoder {
                         break;
                     }
 
-                    // Buffer is full → run FindSync once, then per-pair decode.
-                    // Capture carryback parameters + the tail audio slice
-                    // BEFORE moving `d` into `run_findsync_and_decode` (which
-                    // consumes it by value so `d.image` can move directly into
-                    // the `ImageComplete` event without a fresh black-image
-                    // realloc — Audit #93 D6.2).
-                    let work_rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
-                    let carryback = (f64::from(MULTI_IMAGE_CARRYBACK_LINES)
-                        * d.spec.line_seconds
-                        * work_rate) as usize;
-                    let carry_from = d.target_audio_samples.saturating_sub(carryback);
-                    let carry_audio: Vec<f32> = d.audio[carry_from..].to_vec();
-                    // Now extract the Box<DecodingState> by value. The
-                    // `mem::replace` swap leaves `self.state` as `AwaitingVis`
-                    // so the next loop iteration re-enters the AwaitingVis arm
-                    // (no explicit assignment needed below).
-                    let State::Decoding(d_box) =
-                        std::mem::replace(&mut self.state, State::AwaitingVis)
-                    else {
-                        unreachable!("outer match arm is Decoding");
-                    };
-                    Self::run_findsync_and_decode(
-                        *d_box,
-                        &mut self.channel_demod,
-                        &mut self.snr_est,
-                        &mut self.find_sync_scratch,
-                        &mut out,
-                    );
-
-                    // Image complete. Re-arm VIS detection in place (no
-                    // `break`! — the loop re-iterates into `AwaitingVis`) — a
-                    // back-to-back transmission's VIS leader starts right after
-                    // this image's last line, so feed the fresh detector only
-                    // the tail of the image audio (a few lines, to absorb a
-                    // fast TX clock) plus everything past it; the rest is
-                    // decoded video tones a VIS burst can't hide in. Falling
-                    // through (vs the old `break`) means that next VIS — and
-                    // the image after it — surface in this same `process()`
-                    // call, mirroring the known/unknown-code branches above.
-                    // Closes #31; #90 (A2 + D4). The fresh detector anchors on
-                    // the carry-forward audio's absolute position, so its
-                    // detections still report absolute `sample_offset`s (#99).
-                    Self::restart_vis_detection(
-                        &mut self.vis,
-                        self.working_samples_emitted,
-                        &carry_audio,
-                        Self::fallback_code(self.fallback_mode),
-                    );
-                    remaining = &[]; // already folded into d.audio → now inside the fresh detector
+                    // Buffer is full → find sync, decode, re-arm the detectors.
+                    self.complete_image(&mut out);
+                    remaining = &[]; // already folded into d.audio → now inside the fresh detectors
                 }
             }
         }
         out
+    }
+
+    /// The image's audio is buffered: run [`find_sync`] once, decode every
+    /// line (pushing `LineDecoded`s and `ImageComplete` into `out`), and
+    /// re-arm the image-start detectors on the image's tail. Leaves the
+    /// state `AwaitingVis`.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    fn complete_image(&mut self, out: &mut Vec<SstvEvent>) {
+        // Take the Box<DecodingState> by value; the `mem::replace` swap
+        // leaves `self.state` as `AwaitingVis`, so the caller's next loop
+        // iteration re-enters the AwaitingVis arm.
+        let State::Decoding(d) = std::mem::replace(&mut self.state, State::AwaitingVis) else {
+            unreachable!("complete_image is only called from the Decoding arm");
+        };
+        // Capture the carry-back tail BEFORE moving `d` into
+        // `run_findsync_and_decode`, which consumes it by value so `d.image`
+        // can move directly into the `ImageComplete` event without a fresh
+        // black-image realloc (Audit #93 D6.2).
+        let work_rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
+        let carryback =
+            (f64::from(MULTI_IMAGE_CARRYBACK_LINES) * d.spec.line_seconds * work_rate) as usize;
+        let carry_from = d.target_audio_samples.saturating_sub(carryback);
+        let carry_audio: Vec<f32> = d.audio[carry_from..].to_vec();
+        Self::run_findsync_and_decode(
+            *d,
+            &mut self.channel_demod,
+            &mut self.snr_est,
+            &mut self.find_sync_scratch,
+            out,
+        );
+        // Image complete. Re-arm VIS detection in place (the caller's loop
+        // re-iterates into `AwaitingVis`) — a back-to-back transmission's
+        // VIS leader starts right after this image's last line, so feed the
+        // fresh detectors only the tail of the image audio (a few lines, to
+        // absorb a fast TX clock) plus everything past it; the rest is
+        // decoded video tones a VIS burst can't hide in. That next VIS — and
+        // the image after it — surface in this same `process()` call.
+        // Closes #31; #90 (A2 + D4). The fresh detectors anchor on the
+        // carry-forward audio's absolute position, so their detections still
+        // report absolute `sample_offset`s (#99).
+        self.restart_detectors(&carry_audio);
+    }
+
+    /// Feed `audio` to the image-start detectors — the VIS detector and,
+    /// with a forced or fallback mode, the sync-rhythm detector — and act on
+    /// a detection. Returns `true` when the state machine should re-iterate
+    /// (an image started, or an unknown VIS reseeded the detector).
+    fn await_image(&mut self, audio: &[f32], out: &mut Vec<SstvEvent>) -> bool {
+        self.vis.process(audio, self.working_samples_emitted);
+        if let Some(det) = self.sync_start.as_mut() {
+            det.process(audio, self.working_samples_emitted);
+        }
+        // A header always wins: it is heard long before the ~2 s of pulses
+        // the sync-rhythm detector needs.
+        if let Some(detected) = self.vis.take_detected() {
+            self.on_vis(&detected, out);
+            return true;
+        }
+        let Some(det) = self.sync_start.as_mut() else {
+            return false;
+        };
+        let Some(start) = det.take_start() else {
+            return false;
+        };
+        let spec = det.spec();
+        let audio = det.take_audio_from(start.start_sample);
+        out.push(SstvEvent::SyncStart {
+            mode: spec.mode,
+            sample_offset: start.start_sample,
+        });
+        self.begin_decoding(spec, audio, 0.0);
+        true
+    }
+
+    /// Act on a parsed VIS: start the image in its header's mode (or the
+    /// forced mode), or report an unknown code and reseed the detector.
+    fn on_vis(&mut self, detected: &crate::vis::DetectedVis, out: &mut Vec<SstvEvent>) {
+        // The post-stop-bit audio the VIS detector buffered but did not
+        // consume — the leading edge of the image data.
+        let residual = self.vis.take_residual_buffer();
+        let spec = match self.forced_mode {
+            Some(mode) => Some(crate::modespec::for_mode(mode)),
+            None => crate::modespec::lookup(detected.code),
+        };
+        let Some(spec) = spec else {
+            // Unknown VIS code: surface it so stream-monitoring callers know
+            // a burst arrived, then reseed the detector (the `#40` re-anchor
+            // contract) on the post-stop-bit residue; the caller re-enters
+            // the loop, so a back-to-back VIS in the residue surfaces in this
+            // same `process` call.
+            out.push(SstvEvent::UnknownVis {
+                code: detected.code,
+                hedr_shift_hz: detected.hedr_shift_hz,
+                sample_offset: detected.end_sample,
+            });
+            let fallback_code = Self::fallback_code(self.expected_mode());
+            Self::restart_vis_detection(
+                &mut self.vis,
+                self.working_samples_emitted,
+                &residual,
+                fallback_code,
+            );
+            return;
+        };
+        let (mode, sample_offset, hedr_shift_hz) =
+            (spec.mode, detected.end_sample, detected.hedr_shift_hz);
+        out.push(if detected.assumed {
+            SstvEvent::VisFallback {
+                mode,
+                sample_offset,
+                hedr_shift_hz,
+            }
+        } else {
+            SstvEvent::VisDetected {
+                mode,
+                sample_offset,
+                hedr_shift_hz,
+            }
+        });
+        self.begin_decoding(spec, residual, hedr_shift_hz);
+    }
+
+    /// Enter `Decoding`. The sync-rhythm detector is dropped and rebuilt
+    /// once the image completes ([`Self::restart_detectors`]).
+    fn begin_decoding(&mut self, spec: ModeSpec, audio: Vec<f32>, hedr_shift_hz: f64) {
+        self.state = State::Decoding(Box::new(DecodingState::new(spec, audio, hedr_shift_hz)));
+        self.sync_start = None;
+    }
+
+    /// After an image: fresh VIS and sync-rhythm detectors, fed the image's
+    /// tail (`carry_audio`) so a back-to-back transmission is caught.
+    fn restart_detectors(&mut self, carry_audio: &[f32]) {
+        let expected = self.expected_mode();
+        Self::restart_vis_detection(
+            &mut self.vis,
+            self.working_samples_emitted,
+            carry_audio,
+            Self::fallback_code(expected),
+        );
+        self.sync_start = expected.map(|m| {
+            let mut det = SyncStartDetector::new(crate::modespec::for_mode(m));
+            det.process(carry_audio, self.working_samples_emitted);
+            det
+        });
     }
 
     /// Discard `vis` and start a fresh detector on `leftover_audio`
@@ -690,14 +816,14 @@ impl SstvDecoder {
     }
 
     /// Reset to `AwaitingVis`; discard any in-flight image. Configuration
-    /// ([`Self::set_fallback_mode`]) is kept.
+    /// ([`Self::set_fallback_mode`], [`Self::set_forced_mode`]) is kept.
     pub fn reset(&mut self) {
         self.state = State::AwaitingVis;
         self.samples_processed = 0;
         self.working_samples_emitted = 0;
         self.vis = crate::vis::VisDetector::new(IS_KNOWN_VIS);
-        self.vis
-            .set_fallback_code(Self::fallback_code(self.fallback_mode));
+        self.sync_start = None;
+        self.apply_expected_mode();
         self.resampler.reset_state();
         self.channel_demod = crate::demod::ChannelDemod::new();
         self.snr_est = crate::snr::SnrEstimator::new();
@@ -717,6 +843,8 @@ impl std::fmt::Debug for SstvDecoder {
             .field("state", &self.state)
             .field("samples_processed", &self.samples_processed)
             .field("working_samples_emitted", &self.working_samples_emitted)
+            .field("fallback_mode", &self.fallback_mode)
+            .field("forced_mode", &self.forced_mode)
             .finish_non_exhaustive()
     }
 }

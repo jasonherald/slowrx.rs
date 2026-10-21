@@ -17,11 +17,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   three junk images (0.03–0.10) from every legible one (0.43–0.95).
   `slowrx-cli --drop-noise` skips writing them, and the CLI now prints each
   image's score.
+- **Start images from the line-sync rhythm** (#115): with a fallback (or
+  forced) mode set, the decoder recognises that mode's sync pulses directly.
+  Once they line up for about two seconds it starts the image at the first
+  synced line and emits the new `SstvEvent::SyncStart`. That recovers
+  images whose whole header faded, and transmissions joined mid-image; for
+  Robot 24/36 the start lands on an even line, read from the separator
+  tone, so the chroma doesn't swap. Replaying 13 ISS passes recovered three
+  images the decoder used to miss, one of them a complete, legible slide.
+  Every header-started image and all 12 ARISS Fram2 slides are unchanged.
+- **Forced mode** (#113): `SstvDecoder::set_forced_mode` / `forced_mode`
+  decode every image in one mode whatever its VIS says. Headers still mark
+  image starts, and an unknown code is decoded instead of reported.
+  `slowrx-cli --mode <MODE>` exposes it.
 
 ### Changed
 
 - **Breaking:** `SstvEvent::ImageComplete` has a new `sync_quality` field,
   so patterns that list its fields without `..` need updating.
+- `set_fallback_mode` now also enables the sync-rhythm start above (it
+  stays opt-in: with no fallback or forced mode, nothing changes).
+- The synthetic Robot 24/36 test encoder now sends the standard even/odd
+  separator tone (1500 Hz before `Cr`, 2300 Hz before `Cb`).
 
 ## [0.6.0] - 2026-10-21
 
