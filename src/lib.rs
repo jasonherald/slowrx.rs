@@ -54,6 +54,8 @@ pub(crate) mod snr;
 pub(crate) mod sync;
 pub(crate) mod sync_start;
 pub mod vis;
+#[cfg(feature = "cli")]
+pub mod wav;
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_tone;

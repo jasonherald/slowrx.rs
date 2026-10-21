@@ -30,6 +30,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decode every image in one mode whatever its VIS says. Headers still mark
   image starts, and an unknown code is decoded instead of reported.
   `slowrx-cli --mode <MODE>` exposes it.
+- **`slowrx::wav`** (`cli` feature, #95): `decode_wav_stream` streams a
+  `hound::WavReader` through an `SstvDecoder` in fixed-size chunks:
+  8/16/24/32-bit integer or 32-bit float samples, any channel count folded
+  to mono (`fold_to_mono`), the bit-depth gate as `check_spec`. Errors
+  convert into the caller's error type. This was the `slowrx-cli` binary's
+  private reading code; the binary and the `decode_wav` example now share
+  it (the example previously read 16-bit mono only). New `Error` variants, also
+  `cli`-only: `UnsupportedBitDepth`, `UnsupportedSampleLayout`,
+  `WavEndedMidFrame`, `WavRead`. docs.rs now builds with `cli` so these
+  are documented.
 
 ### Changed
 
@@ -39,6 +49,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stays opt-in: with no fallback or forced mode, nothing changes).
 - The synthetic Robot 24/36 test encoder now sends the standard even/odd
   separator tone (1500 Hz before `Cr`, 2300 Hz before `Cb`).
+- **Breaking (scripts):** `slowrx-cli` exit status is now `0` = at least
+  one image written, `2` = the input decoded but no image was written
+  (previously `1`), `1` = any error, including bad arguments (previously
+  clap's `2`). Documented in `--help` and the binary's docs; `--output`
+  help now says "(must be a directory)". The `decode_wav` example follows
+  the same codes. (#95)
+- `slowrx-cli` reports WAVs whose samples are padded into a wider container
+  (e.g. 16-bit samples in 4-byte slots, which pass the bit-depth check but
+  `hound` can't read) as "unsupported sample container layout" instead of a
+  generic read failure, and rejects float WAVs that aren't 32-bit up front.
+  (#95)
+
+### Internal
+
+- CI gains a fast debug-profile job (`cargo test --lib --bins` and
+  `--test no_vis`) so overflow checks and `debug_assert!`s are exercised;
+  the slow round-trips stay release-only. (#95)
+- `tests/cli.rs` now has CI-runnable cases on synthesized WAVs: each exit
+  code, a non-WAV input, an `--output` that is a regular file, unsupported
+  bit depth / container layout, `--help` text, and (with `test-support`) a
+  synthetic stereo PD120 WAV decoding to `img-001-pd120.png`. (#95)
+- Links from shipped docs to files outside the package
+  (`tests/ariss_fram2_validation.md`, `docs/audits/`, `docs/history.md`)
+  are now absolute GitHub URLs, so they resolve on docs.rs and crates.io.
+  (#95)
 
 ## [0.6.0] - 2026-10-21
 

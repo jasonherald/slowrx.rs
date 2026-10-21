@@ -22,6 +22,10 @@ include = [
     "docs/intentional-deviations.md",
 ]
 
+# Document the `cli`-gated `wav` module (and its `Error` variants) too.
+[package.metadata.docs.rs]
+features = ["cli"]
+
 [lints.rust]
 unsafe_code = "deny"
 

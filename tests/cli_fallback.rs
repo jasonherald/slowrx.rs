@@ -128,7 +128,7 @@ fn without_a_fallback_the_lost_vis_image_is_not_decoded() {
         .arg("--output")
         .arg(&out)
         .assert()
-        .failure();
+        .code(2);
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
     assert!(stderr.contains("no SSTV images"), "stderr: {stderr}");
     let _ = fs::remove_dir_all(&dir);
@@ -146,7 +146,7 @@ fn an_unknown_mode_name_is_rejected_with_the_valid_names() {
             "robot99",
         ])
         .assert()
-        .failure();
+        .code(1);
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
     assert!(
         stderr.contains("unknown mode 'robot99'") && stderr.contains("robot36"),
@@ -188,7 +188,7 @@ fn drop_noise_skips_an_image_decoded_from_noise() {
         .arg("--output")
         .arg(&dropped)
         .assert()
-        .failure();
+        .code(2);
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
     assert!(stderr.contains("looks like noise"), "stderr: {stderr}");
     assert!(!dropped.join("img-001-robot36.png").exists());
@@ -230,7 +230,7 @@ fn without_a_mode_flag_an_image_with_no_header_is_not_decoded() {
         .arg("--output")
         .arg(&out)
         .assert()
-        .failure();
+        .code(2);
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
     assert!(stderr.contains("no SSTV images"), "stderr: {stderr}");
     let _ = fs::remove_dir_all(&dir);

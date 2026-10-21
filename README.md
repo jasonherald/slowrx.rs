@@ -64,6 +64,10 @@ slowrx-cli --input recording.wav --output ./out
 # → out/img-001-pd120.png, out/img-002-robot36.png, ...
 ```
 
+Exit status: `0` = at least one image written, `2` = no images found,
+`1` = error. With the `cli` feature, the library's `slowrx::wav` module
+streams a WAV file through a decoder the same way the CLI does.
+
 ## What it does
 
 `slowrx.rs` decodes Slow-Scan Television images from a stream of audio

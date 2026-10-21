@@ -9,35 +9,58 @@
 //! Reads the WAV at `--input`, decodes every SSTV image found, and writes
 //! one PNG per `ImageComplete` event to `<output>/img-NNN-{mode}.png`
 //! (sequence-numbered starting at 001, lowercased mode tag — matches the
-//! rtl-sdr satellite-recorder naming convention).
+//! rtl-sdr satellite-recorder naming convention). WAV reading is
+//! [`slowrx::wav`]: 8/16/24/32-bit integer or 32-bit float samples, any
+//! channel count (folded to mono).
+//!
+//! # Exit status
+//!
+//! - `0` — at least one image was written.
+//! - `2` — the input decoded without error, but no image was written
+//!   (no SSTV found, or every image dropped by `--drop-noise`).
+//! - `1` — error: bad arguments, an unreadable or unsupported WAV, or an
+//!   output directory / PNG that couldn't be written.
 //!
 //! Requires the `cli` feature: `cargo install --features cli`.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use slowrx::{SstvDecoder, SstvEvent, SstvImage, SstvMode};
+
+/// Exit status: the input decoded, but no image was written.
+const EXIT_NO_IMAGES: u8 = 2;
+/// Exit status: any error, including bad arguments.
+const EXIT_ERROR: u8 = 1;
+
+/// The exit-status contract, shown at the end of `--help`.
+const EXIT_STATUS_HELP: &str = "\
+Exit status:
+  0  at least one image was written
+  2  the input decoded, but no image was written
+  1  error (bad arguments, unreadable or unsupported WAV, unwritable output)";
 
 #[derive(Parser, Debug)]
 #[command(
     name = "slowrx-cli",
     version,
-    about = "Decode SSTV recordings (WAV) to PNG images"
+    about = "Decode SSTV recordings (WAV) to PNG images",
+    after_help = EXIT_STATUS_HELP
 )]
 struct Args {
     /// Path to a mono or multi-channel WAV file containing SSTV audio.
     #[arg(short, long, value_name = "FILE")]
     input: PathBuf,
 
-    /// Output directory. Created if it does not exist. PNGs are written
-    /// here as `img-NNN-{mode}.png`.
+    /// Output directory (must be a directory). Created if it does not
+    /// exist. PNGs are written here as `img-NNN-{mode}.png`.
     #[arg(short, long, value_name = "DIR")]
     output: PathBuf,
 
-    /// Suppress per-event progress output. Errors and the final summary
-    /// still go to stderr.
+    /// Suppress progress output and the final summary. Errors and
+    /// warnings still go to stderr.
     #[arg(short, long)]
     quiet: bool,
 
@@ -79,18 +102,27 @@ fn parse_mode(name: &str) -> std::result::Result<SstvMode, String> {
 }
 
 fn main() -> ExitCode {
-    match run(&Args::parse()) {
-        Ok(image_count) => {
-            if image_count == 0 {
-                eprintln!("warning: no SSTV images decoded from input");
-                ExitCode::from(1)
+    let args = match Args::try_parse() {
+        Ok(args) => args,
+        Err(e) => {
+            // `--help` / `--version` land here too, and succeed.
+            let _ = e.print();
+            return if e.use_stderr() {
+                ExitCode::from(EXIT_ERROR)
             } else {
                 ExitCode::SUCCESS
-            }
+            };
         }
+    };
+    match run(&args) {
+        Ok(0) => {
+            eprintln!("warning: no SSTV images decoded from input");
+            ExitCode::from(EXIT_NO_IMAGES)
+        }
+        Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e:#}");
-            ExitCode::from(1)
+            ExitCode::from(EXIT_ERROR)
         }
     }
 }
@@ -111,40 +143,22 @@ fn run(args: &Args) -> Result<u32> {
             reader.duration()
         );
     }
+    slowrx::wav::check_spec(spec)?;
 
     let mut decoder =
         SstvDecoder::new(spec.sample_rate).with_context(|| "construct SstvDecoder")?;
     decoder.set_fallback_mode(args.fallback_mode);
     decoder.set_forced_mode(args.mode);
 
-    // Streaming pipeline: read in fixed-size chunks, normalize + fold to
-    // mono on the fly, push each mono chunk into the stateful decoder.
-    // This keeps peak memory at ~CHUNK_FRAMES × (channels + 1) × 4 bytes
-    // instead of the whole WAV, and lets the decoder emit events as
-    // soon as they're available rather than after a full-file read.
-    //
-    // The decoder is stateful and buffers internally — chunked input
-    // produces identical output to a single all-at-once `process` call.
-    let channels = usize::from(spec.channels);
-    if channels == 0 {
-        bail!("WAV reports zero channels");
-    }
-    if matches!(spec.sample_format, hound::SampleFormat::Int)
-        && !matches!(spec.bits_per_sample, 8 | 16 | 24 | 32)
-    {
-        bail!(
-            "unsupported integer bit depth: {}-bit",
-            spec.bits_per_sample
-        );
-    }
-
     if !args.quiet {
         eprintln!("decoding {} samples (streaming)...", reader.duration());
     }
 
+    // Streams in fixed-size chunks (flat memory, events as they come).
     let mut tally = Tally::default();
-    let mut on_event = |event: SstvEvent| on_event(args, &mut tally, event);
-    stream_decode(&mut reader, spec, channels, &mut decoder, &mut on_event)?;
+    slowrx::wav::decode_wav_stream(&mut reader, &mut decoder, |event| {
+        on_event(args, &mut tally, event)
+    })?;
 
     if !args.quiet {
         eprintln!("{}", tally.summary());
@@ -256,132 +270,6 @@ fn on_image(
         );
     }
     Ok(())
-}
-
-/// Frames per streaming chunk. 4096 frames at 16 kHz mono = ~256 ms of
-/// audio; at 16 kHz stereo = 16 KB of f32 samples. Tradeoff: smaller
-/// chunks mean lower peak memory but more loop iterations and slightly
-/// higher decoder overhead per call. 4096 is well past the per-call
-/// fixed-cost noise floor and well under any practical memory limit.
-const CHUNK_FRAMES: usize = 4096;
-
-/// Stream samples from `reader`, fold each frame to mono on the fly,
-/// push fixed-size chunks into the stateful decoder, and forward every
-/// emitted event to `on_event`. Returns when EOF is reached or any
-/// step fails.
-fn stream_decode(
-    reader: &mut hound::WavReader<std::io::BufReader<std::fs::File>>,
-    spec: hound::WavSpec,
-    channels: usize,
-    decoder: &mut SstvDecoder,
-    on_event: &mut dyn FnMut(SstvEvent) -> Result<()>,
-) -> Result<()> {
-    let mut frame_buf: Vec<f32> = vec![0.0; channels];
-    let mut mono_chunk: Vec<f32> = Vec::with_capacity(CHUNK_FRAMES);
-    #[allow(clippy::cast_precision_loss)]
-    let inv_channels = 1.0_f32 / (channels as f32);
-
-    match spec.sample_format {
-        hound::SampleFormat::Int => {
-            #[allow(clippy::cast_precision_loss)]
-            let divisor = ((1_i64 << (spec.bits_per_sample - 1)) - 1) as f32;
-            let mut samples = reader.samples::<i32>();
-            stream_loop(
-                &mut samples,
-                channels,
-                &mut frame_buf,
-                &mut mono_chunk,
-                inv_channels,
-                |s| {
-                    #[allow(clippy::cast_precision_loss)]
-                    let f = (s as f32) / divisor;
-                    f
-                },
-                decoder,
-                on_event,
-            )?;
-        }
-        hound::SampleFormat::Float => {
-            let mut samples = reader.samples::<f32>();
-            stream_loop(
-                &mut samples,
-                channels,
-                &mut frame_buf,
-                &mut mono_chunk,
-                inv_channels,
-                |s| s,
-                decoder,
-                on_event,
-            )?;
-        }
-    }
-    Ok(())
-}
-
-/// Inner loop, generic over the per-sample type and the conversion to
-/// `f32`. Reads frames (`channels` samples each) into `frame_buf`, folds
-/// to mono into `mono_chunk`, and flushes to `decoder.process()` when
-/// the chunk is full. EOF flushes any partial chunk; a partial frame at
-/// EOF is reported as a truncated WAV.
-#[allow(clippy::too_many_arguments)]
-fn stream_loop<S, I, F>(
-    samples: &mut I,
-    channels: usize,
-    frame_buf: &mut [f32],
-    mono_chunk: &mut Vec<f32>,
-    inv_channels: f32,
-    to_f32: F,
-    decoder: &mut SstvDecoder,
-    on_event: &mut dyn FnMut(SstvEvent) -> Result<()>,
-) -> Result<()>
-where
-    I: Iterator<Item = Result<S, hound::Error>>,
-    F: Fn(S) -> f32,
-{
-    loop {
-        // Try to read one full frame.
-        let mut filled = 0_usize;
-        for slot in frame_buf.iter_mut().take(channels) {
-            match samples.next() {
-                Some(Ok(s)) => {
-                    *slot = to_f32(s);
-                    filled += 1;
-                }
-                Some(Err(e)) => return Err(e).with_context(|| "WAV sample read failed"),
-                None => break,
-            }
-        }
-        if filled == 0 {
-            // Clean EOF on a frame boundary — flush any pending chunk.
-            if !mono_chunk.is_empty() {
-                for event in decoder.process(mono_chunk) {
-                    on_event(event)?;
-                }
-                mono_chunk.clear();
-            }
-            return Ok(());
-        }
-        if filled < channels {
-            return Err(anyhow!(
-                "WAV ended mid-frame: read {filled} sample(s) of a {channels}-channel frame (truncated WAV?)"
-            ));
-        }
-
-        // Average frame to mono.
-        let mono = if channels == 1 {
-            frame_buf[0]
-        } else {
-            frame_buf.iter().sum::<f32>() * inv_channels
-        };
-        mono_chunk.push(mono);
-
-        if mono_chunk.len() >= CHUNK_FRAMES {
-            for event in decoder.process(mono_chunk) {
-                on_event(event)?;
-            }
-            mono_chunk.clear();
-        }
-    }
 }
 
 fn save_image(image: &SstvImage, path: &std::path::Path) -> Result<()> {
