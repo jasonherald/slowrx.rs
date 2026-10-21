@@ -21,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `robot12bw` and `robot8bw`. Validated by synthetic round-trips only — no
   real-radio B/W recording is available.
 
+### Internal
+
+- `tests/fram2_pixel_diff.rs` compares the 12 ARISS Fram2 decodes with
+  their reference JPGs numerically (#119). It reports the mean absolute
+  error at the best ±4 px alignment, plus the 99th percentile and maximum,
+  and fails if a slide regresses past the committed baseline
+  (`tests/ariss_fram2_baseline.tsv`; 0.7.0 averages 8.375 on 0–255). It's
+  `#[ignore]`d because the fixtures are gitignored, and
+  `SLOWRX_FRAM2_BLESS=1` rewrites the baseline. This is the yardstick for
+  #71.
+
 ## [0.7.0] - 2026-10-21
 
 ### Added

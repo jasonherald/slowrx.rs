@@ -33,7 +33,30 @@ dispatch.
    cargo build --release --features cli
    ```
 
-## Run validation
+## Numerical check (#119)
+
+With the fixtures in place, one command decodes all 12 slides and compares
+each against its reference JPG:
+
+```bash
+cargo test --release --features cli --test fram2_pixel_diff -- --ignored --nocapture
+```
+
+For each slide it finds the best integer alignment (±4 px on each axis),
+then prints the mean absolute error over R, G and B (0–255), its 99th
+percentile, the maximum, and the shift. JPEG compression keeps the error
+above zero even for a perfect decode, so the test fails only when a slide's
+error rises more than 0.05 above the committed baseline,
+`tests/ariss_fram2_baseline.tsv`. After an intended change to the output,
+rewrite the baseline with `SLOWRX_FRAM2_BLESS=1` and commit it with the
+change.
+
+The baseline for 0.7.0 is a mean absolute error of 8.375, with every slide
+between 7.07 and 9.28. Every slide aligns best 2–3 px horizontally and 0 px
+vertically, a consistent sub-line offset against the reference decoder (see
+the Robot `(x + 0.5)` pixel-time deviation). This is the yardstick for #71.
+
+## Run validation (by eye)
 
 Decode all 12 WAVs and inspect each PNG against its reference JPG:
 
