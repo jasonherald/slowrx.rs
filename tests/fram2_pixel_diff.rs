@@ -215,6 +215,12 @@ fn fixtures_present(dir: &Path) -> bool {
     true
 }
 
+/// Rewrite the baseline only for `SLOWRX_FRAM2_BLESS=1` (not `=0` or any
+/// other value).
+fn bless_requested() -> bool {
+    std::env::var("SLOWRX_FRAM2_BLESS").is_ok_and(|v| v == "1")
+}
+
 fn print_table(rows: &[(String, Score)]) {
     eprintln!("slide    mae     p99  max  shift");
     for (slide, s) in rows {
@@ -244,7 +250,7 @@ fn fram2_slides_match_their_reference_jpgs() {
         })
         .collect();
     print_table(&rows);
-    if std::env::var_os("SLOWRX_FRAM2_BLESS").is_some() {
+    if bless_requested() {
         write_baseline(&rows);
         return;
     }
