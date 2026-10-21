@@ -59,6 +59,13 @@ pub(crate) struct VisDetector {
     audio_buffer: Vec<f32>,
     /// Working-rate sample index of `audio_buffer[0]`.
     audio_origin_sample: u64,
+    /// Absolute working-rate sample index of hop 0's window start, fixed
+    /// when the detector anchors on its first audio. Every hop position —
+    /// window starts and the reported `end_sample` — is
+    /// `hop_origin + hop × HOP_SAMPLES`, so a detector built mid-stream
+    /// (re-armed after an image or an unknown VIS) still reports absolute
+    /// positions (#99). Zero for a detector fed from the start of a stream.
+    hop_origin: u64,
     /// 45-entry circular frequency history (Hz) — slowrx's `HedrBuf`.
     history: [f64; HISTORY_LEN],
     /// Ring-buffer write position (slowrx's `HedrPtr`).
@@ -106,6 +113,7 @@ impl VisDetector {
             scratch: vec![Complex { re: 0.0, im: 0.0 }; scratch_len],
             audio_buffer: Vec::with_capacity(WINDOW_SAMPLES * 4),
             audio_origin_sample: 0,
+            hop_origin: 0,
             history: [0.0; HISTORY_LEN],
             history_ptr: 0,
             history_filled: 0,
@@ -124,11 +132,15 @@ impl VisDetector {
         if self.detected.is_some() {
             return;
         }
-        // Re-anchor `audio_origin_sample` lazily on first sample.
+        // Re-anchor `audio_origin_sample` lazily on first sample. The very
+        // first anchor also fixes the hop grid's origin (#99).
         if self.audio_buffer.is_empty() {
             #[allow(clippy::cast_possible_truncation)]
             let chunk_len = samples.len() as u64;
             self.audio_origin_sample = total_samples_consumed.saturating_sub(chunk_len);
+            if self.hops_completed == 0 {
+                self.hop_origin = self.audio_origin_sample;
+            }
         }
         self.audio_buffer.extend_from_slice(samples);
 
@@ -163,7 +175,7 @@ impl VisDetector {
                     // The divergence is benign: `find_sync` absorbs the 0–20 ms
                     // audio-position difference via the Skip computation.
                     let stop_end_abs =
-                        (self.hops_completed.saturating_add(i_match as u64)) * HOP_SAMPLES as u64;
+                        self.hop_abs(self.hops_completed.saturating_add(i_match as u64));
                     let drain_to_buf =
                         usize::try_from(stop_end_abs.saturating_sub(self.audio_origin_sample))
                             .unwrap_or(usize::MAX)
@@ -225,11 +237,16 @@ impl VisDetector {
         std::mem::take(&mut self.audio_buffer)
     }
 
+    /// Absolute working-rate sample index where hop `hop`'s window starts.
+    fn hop_abs(&self, hop: u64) -> u64 {
+        self.hop_origin + hop * HOP_SAMPLES as u64
+    }
+
     /// Position in `audio_buffer` where the next 20 ms window starts.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     fn next_window_start_in_buffer(&self) -> usize {
-        let next_hop_abs = self.hops_completed * HOP_SAMPLES as u64;
-        next_hop_abs.saturating_sub(self.audio_origin_sample) as usize
+        self.hop_abs(self.hops_completed)
+            .saturating_sub(self.audio_origin_sample) as usize
     }
 
     /// Run one 20 ms FFT, append its peak frequency to history. Slowrx

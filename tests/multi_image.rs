@@ -107,3 +107,46 @@ fn decoder_decodes_two_back_to_back_images() {
         }
     }
 }
+
+/// `VisDetected.sample_offset` must be an absolute working-rate stream
+/// position for *every* detection, not just the first (issue #99). Before
+/// the fix, a detector re-armed after an image counted hops from zero, so
+/// the second VIS reported an offset relative to the carry-forward audio
+/// (observed in the field as near-identical ~1.36 M offsets across
+/// unrelated passes).
+#[test]
+fn second_vis_sample_offset_is_absolute() {
+    let img = pd120_test_image();
+    let vis1 = slowrx::__test_support::vis::synth_vis(PD120_CODE, 0.0);
+    let video1 = slowrx::__test_support::mode_pd::encode_pd(SstvMode::Pd120, &img);
+    let vis2 = slowrx::__test_support::vis::synth_vis(PD120_CODE, 0.0);
+    // True stream position where VIS 2's stop bit ends.
+    let vis2_stop_end = vis1.len() + video1.len() + vis2.len();
+
+    let mut audio = vis1;
+    audio.extend(video1);
+    audio.extend(vis2);
+    audio.extend(slowrx::__test_support::mode_pd::encode_pd(
+        SstvMode::Pd120,
+        &img,
+    ));
+    audio.extend(std::iter::repeat_n(0.0_f32, 2048));
+
+    let mut decoder = SstvDecoder::new(WORKING_SAMPLE_RATE_HZ).expect("decoder");
+    let offsets: Vec<u64> = decoder
+        .process(&audio)
+        .iter()
+        .filter_map(|e| match e {
+            SstvEvent::VisDetected { sample_offset, .. } => Some(*sample_offset),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(offsets.len(), 2, "two VIS detections");
+    // Detection lands within a few 10 ms hops of the stop-bit end.
+    let tolerance = (WORKING_SAMPLE_RATE_HZ as usize) * 30 / 1000;
+    let got = offsets[1] as usize;
+    assert!(
+        got.abs_diff(vis2_stop_end) <= tolerance,
+        "second VIS sample_offset {got} should be ≈ {vis2_stop_end} (absolute)"
+    );
+}
