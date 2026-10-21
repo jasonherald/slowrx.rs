@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The pixel window follows slowrx again** (#130). Each pixel FFT's
+  Hann window comes from the current SNR by slowrx's thresholds
+  (`video.c:354-367`). The 1 dB hysteresis added in 0.3.2 is gone. It was
+  meant to stop the vertical squiggles, which #71 traced to the
+  negative-frequency mirror instead, and it made 3.4% of pixel FFTs use a
+  different window than slowrx would. The Fram2 error drops on every
+  slide with both demods: 8.375 to 8.361 with the real-signal demod and
+  6.864 to 6.851 with the analytic one (baselines re-blessed). On 13 ISS
+  passes, image starts and sync quality are unchanged. This also settles
+  audit A4: with no window state, the per-channel cold start never
+  reaches a pixel.
+
 ## [0.8.0] - 2026-10-21
 
 ### Added

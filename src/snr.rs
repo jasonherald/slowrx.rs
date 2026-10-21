@@ -3,7 +3,7 @@
 //! Translated from slowrx's `video.c` lines 302-343 (SNR-estimator FFT and
 //! bandwidth-corrected SNR formula). ISC License — see `NOTICE.md`.
 //!
-//! `HannBank` / `HANN_LENS` / `window_idx_for_snr{_with_hysteresis}` moved
+//! `HannBank` / `HANN_LENS` / `window_idx_for_snr` moved
 //! to `crate::demod` (#85).
 //!
 //! ## Working-rate scaling

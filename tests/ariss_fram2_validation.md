@@ -51,10 +51,10 @@ error rises more than 0.05 above the committed baseline,
 rewrite the baseline with `SLOWRX_FRAM2_BLESS=1` and commit it with the
 change.
 
-The default (slowrx) demod's baseline is a mean absolute error of 8.375,
-with every slide between 7.07 and 9.28. The opt-in analytic-signal demod
+The default (slowrx) demod's baseline is a mean absolute error of 8.361,
+with every slide between 7.05 and 9.26. The opt-in analytic-signal demod
 (`--analytic-demod`, #71) has its own baseline,
-`tests/ariss_fram2_baseline_analytic.tsv`, with a mean of 6.864; the
+`tests/ariss_fram2_baseline_analytic.tsv`, with a mean of 6.851; the
 `fram2_slides_match_with_analytic_demod` test checks it. Both align best
 1–2 px horizontally and 0 px vertically against the reference decoder.
 

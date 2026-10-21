@@ -5,7 +5,7 @@
 //! into pixel bytes. Consumed by `mode_pd` (PD-family), `mode_robot`
 //! (Robot-family), and `mode_scottie` (Scottie/Martin RGB-sequential).
 //!
-//! `HannBank` / `HANN_LENS` / `window_idx_for_snr{_with_hysteresis}` moved
+//! `HannBank` / `HANN_LENS` / `window_idx_for_snr` moved
 //! here from `crate::snr` (#85 B1): they're per-pixel-demod machinery, not
 //! SNR-estimation logic. The `SnrEstimator` itself stays in `crate::snr` and
 //! carries its own separate 1024-sample SNR-analysis Hann.
@@ -87,8 +87,7 @@ impl Default for HannBank {
 /// slowrx also bumps the index up by one for Scottie DX (`Mode == SDX`)
 /// when `WinIdx < 6`. The Scottie family decoder applies that bump
 /// post-hoc inside [`decode_one_channel_into`] (matching slowrx C
-/// `video.c:367` exactly), so this bare selector — and the
-/// [`window_idx_for_snr_with_hysteresis`] variant — stay mode-agnostic.
+/// `video.c:367` exactly), so this bare selector stays mode-agnostic.
 #[must_use]
 pub(crate) fn window_idx_for_snr(snr_db: f64) -> usize {
     if snr_db >= 20.0 {
@@ -105,84 +104,6 @@ pub(crate) fn window_idx_for_snr(snr_db: f64) -> usize {
         5
     } else {
         6
-    }
-}
-
-/// Hysteresis variant of [`window_idx_for_snr`]. Takes a `prev_idx`
-/// (the window index used by the previous FFT in this channel decode)
-/// and applies a 1 dB hysteresis band at every threshold to prevent
-/// flip-flop on real-radio SNR fluctuations near boundary values.
-///
-/// **Algorithm:** ratchet by at most one band toward the `baseline`
-/// lookup per call, applying a 0.5 dB hysteresis at the adjacent
-/// boundary. Concretely:
-///
-/// 1. Compute `baseline = window_idx_for_snr(snr_db)`. If it equals
-///    `prev_idx` the SNR is in `prev_idx`'s band — return immediately.
-/// 2. Pick `target_idx` one band closer to `baseline` than `prev_idx`
-///    (`prev_idx + 1` if degrading, `prev_idx - 1` if improving).
-/// 3. Re-evaluate `window_idx_for_snr` at a shifted SNR: if moving to
-///    a shorter window (lower idx) require an extra 0.5 dB headroom;
-///    if moving to a longer window require 0.5 dB more noise.
-/// 4. If the shifted lookup confirms the SNR is past `target_idx`'s
-///    side of the boundary, accept `target_idx`. Otherwise we're
-///    inside the 1 dB hysteresis band — stay at `prev_idx`.
-///
-/// Ratcheting one band per call (rather than jumping straight to
-/// `baseline`) keeps the selector convergent even when `prev_idx` is
-/// far from `baseline` — e.g. cold-start at idx 6 with a strong signal
-/// — without breaking the hysteresis guarantee at any single boundary.
-/// Per-pixel FFTs converge in O(`n_bands`) calls.
-///
-/// **Direction semantics:** `prev_idx` lower than `baseline` means SNR
-/// is degrading (longer window needed). `prev_idx` higher than
-/// `baseline` means SNR is improving (shorter window allowed).
-///
-/// **Deliberate divergence from slowrx C** (`video.c:354-367`), which
-/// uses pure-threshold logic with no hysteresis. See
-/// `docs/intentional-deviations.md` for rationale.
-#[must_use]
-pub(crate) fn window_idx_for_snr_with_hysteresis(snr_db: f64, prev_idx: usize) -> usize {
-    /// Half-band size in dB. Total hysteresis band at each threshold
-    /// is `2 * HYSTERESIS_DB_HALF` = 1.0 dB.
-    const HYSTERESIS_DB_HALF: f64 = 0.5;
-
-    let baseline = window_idx_for_snr(snr_db);
-    if baseline == prev_idx {
-        return prev_idx;
-    }
-
-    // Ratchet one band toward `baseline`. `prev_idx > 0` is guaranteed
-    // when `baseline < prev_idx` because indices are non-negative, so
-    // the subtraction below is safe.
-    let target_idx = if baseline > prev_idx {
-        prev_idx + 1
-    } else {
-        prev_idx - 1
-    };
-
-    // Hysteresis: shift SNR away from `target_idx`. If the shifted
-    // lookup still indicates we're past `target_idx`'s side of the
-    // boundary, the move is robust.
-    let shifted_snr = if target_idx < prev_idx {
-        // Moving to shorter window: require extra SNR headroom.
-        snr_db - HYSTERESIS_DB_HALF
-    } else {
-        // Moving to longer window: require extra noise.
-        snr_db + HYSTERESIS_DB_HALF
-    };
-    let shifted_idx = window_idx_for_snr(shifted_snr);
-
-    let robust = if target_idx < prev_idx {
-        shifted_idx <= target_idx
-    } else {
-        shifted_idx >= target_idx
-    };
-
-    if robust {
-        target_idx
-    } else {
-        prev_idx
     }
 }
 
@@ -265,7 +186,7 @@ pub(crate) const FFT_LEN: usize = 1024;
 
 /// Per-pixel demod context: holds an FFT plan + reusable buffers + the
 /// adaptive Hann-window bank. Construct once per decoder; reuse for many
-/// [`ChannelDemod::pixel_freq`] calls.
+/// [`ChannelDemod::pixel_freq_iq`] calls.
 pub(crate) struct ChannelDemod {
     fft: std::sync::Arc<dyn rustfft::Fft<f32>>,
     hann_bank: HannBank,
@@ -590,11 +511,8 @@ pub(crate) struct DemodState<'a> {
 /// for a single channel: an FFT every [`PIXEL_FFT_STRIDE`] samples
 /// produces the most-recent `Freq`, which fills `StoredLum` at every
 /// sample. Pixel times read out of `StoredLum`. SNR is re-estimated
-/// every [`SNR_REESTIMATE_STRIDE`] samples and feeds the SNR-adaptive
-/// Hann window selector with 1 dB hysteresis (see
-/// [`crate::mode_pd::decode_pd_line_pair`]'s
-/// `#44 lifted with hysteresis (0.3.2)` note and
-/// [`window_idx_for_snr_with_hysteresis`]).
+/// every [`SNR_REESTIMATE_STRIDE`] samples and picks each pixel FFT's
+/// Hann window from it, as slowrx does ([`window_idx_for_snr`]).
 ///
 /// `chan_start_sec` is the channel's start time relative to the radio
 /// frame; `radio_frame_offset_seconds` is the time-base offset of the
@@ -741,24 +659,15 @@ fn sweep_luminance(
     quadrature: &[f32],
     sweep_start: i64,
 ) {
-    // SNR is sticky across the sweep; slowrx initializes with `SNR = 0`
-    // (`video.c:36`) so the first `WinIdx` lookup uses index 4 (slowrx C's
-    // 256-sample Hann window; equivalently `HANN_LENS[4] = 64` samples
-    // in slowrx.rs at our 11_025 Hz working rate, applied inside a
-    // [`FFT_LEN`] = 1024 FFT with the rest zero-padded).
+    // SNR is sticky across the sweep and starts at 0, as slowrx's does
+    // (`video.c:36`). slowrx sweeps the whole image once; this sweep is
+    // one channel, so it starts cold per channel. That never reaches an
+    // output pixel: the sweep begins half an FFT (512 samples) before
+    // pixel 0, and the SNR is re-estimated within the first
+    // `SNR_REESTIMATE_STRIDE` samples. The window has no state of its
+    // own; it's re-derived from the SNR at every FFT (#130).
     let mut snr_db = 0.0_f64;
     let mut current_freq = 1500.0_f64 + ctx.hedr_shift_hz;
-    // Per-channel local state for SNR-adaptive Hann selection. The
-    // initial value is the last index of [`HANN_LENS`] — i.e. the
-    // longest, most-noise-rejecting window — which is the conservative
-    // cold-start default. The hysteresis selector ratchets one band
-    // per FFT toward `window_idx_for_snr(snr_db)`, so with
-    // `snr_db = 0.0` (baseline idx 4 — matching slowrx's
-    // pure-threshold value at SNR=0.0: ≥ -5 → 4) the cold-start
-    // convergence is 6 → 5 → 4 across the first two FFTs. Once
-    // `snr_db` updates from `SNR_REESTIMATE_STRIDE` the selector
-    // tracks the actual SNR with the same one-band-per-call ratchet.
-    let mut prev_win_idx = HANN_LENS.len() - 1;
 
     for s in sweep_start..sweep_start + scratch.len() as i64 {
         if s.rem_euclid(SNR_REESTIMATE_STRIDE) == 0 {
@@ -767,7 +676,7 @@ fn sweep_luminance(
             snr_db = state.snr_est.estimate(ctx.audio, s, ctx.hedr_shift_hz);
         }
         if s.rem_euclid(PIXEL_FFT_STRIDE) == 0 {
-            let win_idx = pixel_window(ctx.spec.mode, snr_db, &mut prev_win_idx);
+            let win_idx = pixel_window(ctx.spec.mode, snr_db);
             current_freq = state.demod.pixel_freq_iq(
                 scratch,
                 quadrature,
@@ -784,24 +693,14 @@ fn sweep_luminance(
     }
 }
 
-/// The Hann window index for the next pixel FFT.
+/// The Hann window index for the next pixel FFT: slowrx's SNR thresholds
+/// (`video.c:354-366`), re-derived from the current SNR at every FFT.
 ///
-/// SNR-adaptive window length WITH 1 dB hysteresis band. The bare
-/// `window_idx_for_snr` function flip-flops at threshold boundaries when
-/// real-radio SNR fluctuates ~0.5 dB across the SNR re-estimation cadence
-/// (5.8 ms = ~21 R36-Y pixels). The hysteresis variant requires SNR to move
-/// past the threshold by ≥ 0.5 dB in the direction of the new index before
-/// accepting a change. See [`window_idx_for_snr_with_hysteresis`] and the
-/// 0.3.2 entry in `docs/intentional-deviations.md`.
-///
-/// slowrx C video.c:367 — Scottie DX bumps `WinIdx` up by one when not already
-/// at saturation, giving SDX's 1.08 ms/pixel a longer integration window.
-/// Applied AFTER the hysteresis selector so `prev_win_idx` keeps tracking
-/// the un-bumped SNR-derived index (the bump shouldn't compound across
-/// pixels). (Audit #91 E11.)
-fn pixel_window(mode: crate::modespec::SstvMode, snr_db: f64, prev_win_idx: &mut usize) -> usize {
-    let win_idx = window_idx_for_snr_with_hysteresis(snr_db, *prev_win_idx);
-    *prev_win_idx = win_idx;
+/// Scottie DX gets one step longer when not already at the longest window
+/// (`video.c:367`), giving its 1.08 ms pixel a longer integration window.
+/// (Audit #91 E11.)
+fn pixel_window(mode: crate::modespec::SstvMode, snr_db: f64) -> usize {
+    let win_idx = window_idx_for_snr(snr_db);
     if mode == crate::modespec::SstvMode::ScottieDx && win_idx < HANN_LENS.len() - 1 {
         win_idx + 1
     } else {
@@ -869,115 +768,22 @@ mod tests {
         assert_eq!(window_idx_for_snr(-100.0), 6);
     }
 
+    /// slowrx re-derives the window from the current SNR at every pixel
+    /// FFT (`video.c:354-367`), so an SNR just past a threshold switches
+    /// windows at once, whatever the previous FFT used. Scottie DX gets
+    /// one step longer (`video.c:367`).
     #[test]
-    fn hysteresis_in_band_stays_put() {
-        // SNR 9.3, just above the 9 dB threshold (win_idx 2 boundary).
-        // Currently at prev=3. Shifted SNR (9.3 - 0.5) = 8.8 < 9, so the
-        // shifted lookup disagrees with baseline (2). Stay at prev_idx=3.
-        assert_eq!(window_idx_for_snr_with_hysteresis(9.3, 3), 3);
-    }
-
-    #[test]
-    fn hysteresis_robust_change_propagates() {
-        // SNR 9.5, comfortably above the 9 dB threshold.
-        // Currently at prev=3. Shifted SNR (9.5 - 0.5) = 9.0 still ≥ 9,
-        // shifted lookup agrees with baseline (2). Switch to 2.
-        assert_eq!(window_idx_for_snr_with_hysteresis(9.5, 3), 2);
-    }
-
-    #[test]
-    fn hysteresis_symmetric_in_band() {
-        // SNR 8.5, just below 9 dB. Currently at prev=2.
-        // Baseline says 3 (since 8.5 < 9). Shifted SNR (8.5 + 0.5) = 9.0
-        // still ≥ 9, so shifted lookup says 2 — disagrees with baseline.
-        // Stay at prev_idx=2.
-        assert_eq!(window_idx_for_snr_with_hysteresis(8.5, 2), 2);
-    }
-
-    #[test]
-    fn hysteresis_symmetric_robust() {
-        // SNR 8.0, comfortably below 9. Currently at prev=2.
-        // Baseline says 3 (8.0 < 9). Shifted SNR (8.0 + 0.5) = 8.5 < 9,
-        // shifted lookup also says 3. Both agree. Switch to 3.
-        assert_eq!(window_idx_for_snr_with_hysteresis(8.0, 2), 3);
-    }
-
-    #[test]
-    fn hysteresis_no_change_when_in_equilibrium() {
-        // SNR 15, prev=1. Baseline lookup at 15 returns 1 (≥ 10, < 20).
-        // Fast-path: baseline == prev_idx, return prev_idx without
-        // computing shifted lookup.
-        assert_eq!(window_idx_for_snr_with_hysteresis(15.0, 1), 1);
-    }
-
-    #[test]
-    fn hysteresis_at_extreme_thresholds() {
-        // High end: SNR 20.5, prev=1. Baseline 0 (≥ 20). Shifted
-        // (20.5 - 0.5) = 20.0 still ≥ 20, lookup also 0. Switch to 0.
-        assert_eq!(window_idx_for_snr_with_hysteresis(20.5, 1), 0);
-
-        // Low end: SNR -10.5, prev=5. Baseline 6 (< -10). Shifted
-        // (-10.5 + 0.5) = -10.0 still ≥ -10, lookup says 5 — disagrees.
-        // Stay at prev_idx=5.
-        assert_eq!(window_idx_for_snr_with_hysteresis(-10.5, 5), 5);
-
-        // SNR -11.0 from prev=5. Baseline 6 (-11 < -10). Shifted
-        // (-11 + 0.5) = -10.5 < -10, lookup also 6. Switch to 6.
-        assert_eq!(window_idx_for_snr_with_hysteresis(-11.0, 5), 6);
-    }
-
-    #[test]
-    fn hysteresis_ratchets_from_distant_prev_low_snr() {
-        // CodeRabbit-flagged regression case: SNR 9.2 with prev=4.
-        // Baseline 2 (≥ 9), prev=4 → target=3 (one band toward
-        // baseline). Shifted SNR (9.2 - 0.5) = 8.7 → idx 3, which is
-        // ≤ target=3, so accept the ratchet. The earlier algorithm
-        // returned `prev` because shifted (3) ≠ baseline (2),
-        // permanently stranding the selector at idx 4.
-        assert_eq!(window_idx_for_snr_with_hysteresis(9.2, 4), 3);
-    }
-
-    #[test]
-    fn hysteresis_ratchets_from_distant_prev_high_snr() {
-        // Strong improvement: SNR 20.2 with prev=4. Baseline 0 (≥ 20),
-        // prev=4 → target=3. Shifted SNR (20.2 - 0.5) = 19.7 → idx 1,
-        // 1 ≤ 3 → robust, accept target=3. The earlier algorithm
-        // returned prev=4 because shifted (1) ≠ baseline (0).
-        assert_eq!(window_idx_for_snr_with_hysteresis(20.2, 4), 3);
-    }
-
-    #[test]
-    fn hysteresis_converges_high_snr_from_cold_start() {
-        // Cold-start (prev=6, longest window) with a high SNR signal
-        // ratchets one band per call until it reaches baseline=0,
-        // then settles via the equilibrium fast-path.
-        let mut idx = 6;
-        let snr = 25.0;
-        for expected in [5, 4, 3, 2, 1, 0] {
-            idx = window_idx_for_snr_with_hysteresis(snr, idx);
+    fn pixel_window_is_slowrx_threshold_with_the_scottie_dx_bump() {
+        use crate::modespec::SstvMode;
+        for snr in [25.0, 15.0, 9.2, 8.8, 3.1, 0.0, -7.0, -15.0] {
+            let want = window_idx_for_snr(snr);
+            assert_eq!(pixel_window(SstvMode::Robot36, snr), want, "snr={snr}");
             assert_eq!(
-                idx, expected,
-                "ratchet should land at {expected}, got {idx}"
+                pixel_window(SstvMode::ScottieDx, snr),
+                (want + 1).min(HANN_LENS.len() - 1),
+                "snr={snr}"
             );
         }
-        // Settled: baseline (0) == prev (0), fast-path return.
-        assert_eq!(window_idx_for_snr_with_hysteresis(snr, idx), 0);
-    }
-
-    #[test]
-    fn hysteresis_converges_degrading_snr() {
-        // SNR collapses from a clean signal (prev=0) to deep noise
-        // (baseline=6). Ratchet one band per call.
-        let mut idx = 0;
-        let snr = -50.0;
-        for expected in [1, 2, 3, 4, 5, 6] {
-            idx = window_idx_for_snr_with_hysteresis(snr, idx);
-            assert_eq!(
-                idx, expected,
-                "ratchet should land at {expected}, got {idx}"
-            );
-        }
-        assert_eq!(window_idx_for_snr_with_hysteresis(snr, idx), 6);
     }
 
     #[test]
