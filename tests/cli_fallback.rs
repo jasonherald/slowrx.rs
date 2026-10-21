@@ -278,3 +278,27 @@ fn without_a_mode_flag_an_image_with_no_header_is_not_decoded() {
     assert!(stderr.contains("no SSTV images"), "stderr: {stderr}");
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// `--analytic-demod` (#71) is accepted and decodes the same transmission.
+#[test]
+fn analytic_demod_flag_decodes_an_image() {
+    let dir = scratch("analytic");
+    let wav = dir.join("lost.wav");
+    write_lost_vis_wav(&wav);
+    let out = dir.join("out");
+    cli()
+        .args([
+            "--quiet",
+            "--analytic-demod",
+            "--fallback-mode",
+            "robot36",
+            "--input",
+        ])
+        .arg(&wav)
+        .arg("--output")
+        .arg(&out)
+        .assert()
+        .success();
+    assert!(out.join("img-001-robot36.png").is_file(), "image written");
+    let _ = fs::remove_dir_all(&dir);
+}

@@ -16,6 +16,15 @@
 
 use rustfft::{num_complex::Complex, FftPlanner};
 
+use crate::modespec::ChannelLayout;
+
+/// A cached forward/inverse FFT pair for one length.
+type FftPair = (
+    usize,
+    std::sync::Arc<dyn rustfft::Fft<f32>>,
+    std::sync::Arc<dyn rustfft::Fft<f32>>,
+);
+
 /// Hann-window lengths at the `11_025` Hz working rate (slowrx's
 /// `[48, 64, 96, 128, 256, 512, 1024]` divided by 4). Index 6
 /// (length 256) is the "longest, lowest-SNR" window in the per-pixel
@@ -274,6 +283,15 @@ pub(crate) struct ChannelDemod {
     /// `DemodState` meanwhile — and hands them back with
     /// [`Self::restore_line_bufs`], keeping the allocations. (Audit #93 D3.)
     line_bufs: [Vec<u8>; 4],
+    /// Demodulate the analytic signal instead of the real audio (#71; see
+    /// [`Self::set_analytic`]). Off by default, as in slowrx.
+    analytic: bool,
+    /// Quadrature (Hilbert transform) of the current channel sweep when
+    /// `analytic` is on; hoisted like `scratch_audio`.
+    quadrature: Vec<f32>,
+    /// Work buffer and cached FFT plans for [`Self::hilbert_into`].
+    hilbert_buf: Vec<Complex<f32>>,
+    hilbert_plans: Option<FftPair>,
 }
 
 impl ChannelDemod {
@@ -294,20 +312,62 @@ impl ChannelDemod {
             stored_lum: Vec::new(),
             scratch_audio: Vec::new(),
             line_bufs: Default::default(),
+            analytic: false,
+            quadrature: Vec::new(),
+            hilbert_buf: Vec::new(),
+            hilbert_plans: None,
         }
     }
 
-    /// Estimate the dominant tone frequency in a Hann-windowed FFT
-    /// centered near `center_sample`. `win_idx` selects the Hann length
-    /// from [`HANN_LENS`]; the FFT length stays fixed at
-    /// [`FFT_LEN`] (= 1024), with leading/trailing zero-pad. Out-of-bounds
-    /// `audio` reads as silence. `hedr_shift_hz` shifts the peak-search
-    /// range from `[1500, 2300]` Hz to `[1500 + hedr, 2300 + hedr]` Hz to
-    /// follow a mistuned radio's pixel band.
-    ///
-    /// Translated from slowrx `video.c:369-395` (windowed FFT + bin
-    /// search + Gaussian interp).
-    #[must_use = "the demodulated frequency must be consumed; dropping it discards the per-pixel demod result"]
+    /// Demodulate each channel's analytic signal (`audio + j·Hilbert(audio)`)
+    /// instead of the real audio. A short pixel window holds under two
+    /// cycles of a 1500 Hz tone, so a real signal's FFT peak is pulled by its
+    /// own negative-frequency mirror by an amount that depends on the tone's
+    /// phase; as the window slides that bias draws a diagonal cross-hatch
+    /// in dark areas (#71). The analytic signal has no mirror. Not in slowrx;
+    /// off by default.
+    pub(crate) fn set_analytic(&mut self, on: bool) {
+        self.analytic = on;
+    }
+
+    /// Whether [`Self::set_analytic`] is on.
+    pub(crate) fn analytic(&self) -> bool {
+        self.analytic
+    }
+
+    /// The Hilbert transform of `x` (the imaginary part of its analytic
+    /// signal) into `out`, via one zero-padded FFT round trip. Padding to
+    /// twice the length keeps the circular wrap away from the middle;
+    /// callers use samples well inside the buffer (the channel sweep carries
+    /// half an FFT of margin on each side).
+    #[allow(clippy::cast_precision_loss)]
+    pub(crate) fn hilbert_into(&mut self, x: &[f32], out: &mut Vec<f32>) {
+        let n = (2 * x.len()).next_power_of_two().max(2);
+        if self.hilbert_plans.as_ref().map(|p| p.0) != Some(n) {
+            let mut planner = FftPlanner::<f32>::new();
+            self.hilbert_plans =
+                Some((n, planner.plan_fft_forward(n), planner.plan_fft_inverse(n)));
+        }
+        let Some((_, fwd, inv)) = self.hilbert_plans.as_ref() else {
+            return;
+        };
+        let buf = &mut self.hilbert_buf;
+        buf.clear();
+        buf.extend(x.iter().map(|&re| Complex { re, im: 0.0 }));
+        buf.resize(n, Complex { re: 0.0, im: 0.0 });
+        fwd.process(buf);
+        // Analytic spectrum: keep DC and Nyquist, double positive
+        // frequencies, zero negative ones.
+        for c in &mut buf[1..n / 2] {
+            *c *= 2.0;
+        }
+        buf[n / 2 + 1..].fill(Complex { re: 0.0, im: 0.0 });
+        inv.process(buf);
+        let scale = 1.0 / n as f32;
+        out.clear();
+        out.extend(buf.iter().take(x.len()).map(|c| c.im * scale));
+    }
+
     /// The four per-line channel buffers, each cleared to `width` zeros.
     /// Return them with [`Self::restore_line_bufs`] after the line.
     pub(crate) fn take_line_bufs(&mut self, width: usize) -> [Vec<u8>; 4] {
@@ -324,16 +384,46 @@ impl ChannelDemod {
         self.line_bufs = bufs;
     }
 
+    /// Test shorthand: [`Self::pixel_freq_iq`] on the real signal (no
+    /// quadrature), as slowrx demodulates.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn pixel_freq(
+        &mut self,
+        audio: &[f32],
+        center_sample: i64,
+        hedr_shift_hz: f64,
+        win_idx: usize,
+    ) -> f64 {
+        self.pixel_freq_iq(audio, &[], center_sample, hedr_shift_hz, win_idx)
+    }
+
+    /// Estimate the dominant tone frequency in a Hann-windowed FFT
+    /// centered near `center_sample`. `win_idx` selects the Hann length
+    /// from [`HANN_LENS`]; the FFT length stays fixed at
+    /// [`FFT_LEN`] (= 1024), with leading/trailing zero-pad. Out-of-bounds
+    /// `audio` reads as silence. `hedr_shift_hz` shifts the peak-search
+    /// range from `[1500, 2300]` Hz to `[1500 + hedr, 2300 + hedr]` Hz to
+    /// follow a mistuned radio's pixel band.
+    ///
+    /// Translated from slowrx `video.c:369-395` (windowed FFT + bin
+    /// search + Gaussian interp).
+    ///
+    /// The window applies to the complex signal `audio + j·quadrature`: the
+    /// analytic signal when `quadrature` is the Hilbert transform of `audio`
+    /// (#71, [`Self::set_analytic`]); an empty `quadrature` is the real
+    /// signal, as in slowrx.
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::cast_possible_wrap
     )]
-    #[must_use]
-    pub fn pixel_freq(
+    #[must_use = "the demodulated frequency must be consumed; dropping it discards the per-pixel demod result"]
+    pub(crate) fn pixel_freq_iq(
         &mut self,
         audio: &[f32],
+        quadrature: &[f32],
         center_sample: i64,
         hedr_shift_hz: f64,
         win_idx: usize,
@@ -350,18 +440,24 @@ impl ChannelDemod {
         self.fft_buf.fill(Complex { re: 0.0, im: 0.0 });
         let half = (win_len as i64) / 2;
         for (i, (&w, dst)) in hann.iter().zip(self.fft_buf.iter_mut()).enumerate() {
-            let idx = center_sample - half + i as i64;
-            let s = if idx >= 0 && (idx as usize) < audio.len() {
-                audio[idx as usize]
-            } else {
-                0.0
+            let idx = usize::try_from(center_sample - half + i as i64).ok();
+            let re = idx.and_then(|j| audio.get(j)).copied().unwrap_or(0.0);
+            let im = idx.and_then(|j| quadrature.get(j)).copied().unwrap_or(0.0);
+            *dst = Complex {
+                re: re * w,
+                im: im * w,
             };
-            *dst = Complex { re: s * w, im: 0.0 };
         }
 
         self.fft
             .process_with_scratch(&mut self.fft_buf, &mut self.scratch[..]);
+        self.peak_freq(hedr_shift_hz)
+    }
 
+    /// The video-band peak of `fft_buf` in Hz: bin search plus Gaussian
+    /// interpolation, clipped to the band edges (slowrx `video.c:378-398`).
+    #[allow(clippy::cast_precision_loss)]
+    fn peak_freq(&self, hedr_shift_hz: f64) -> f64 {
         // Search peak in bins corresponding to (1500+HedrShift)..(2300+HedrShift) Hz.
         // Use slowrx-equivalent truncation (not `.round()`) via `crate::dsp::get_bin`.
         // See `crate::dsp::get_bin` for rationale.
@@ -439,6 +535,16 @@ impl ChannelDemod {
 impl Default for ChannelDemod {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Offset of a pixel's sample time from the start of its pixel slot, in
+/// pixel times: slowrx samples PD pixels at `(x + 0.5)` (`video.c:140-142`)
+/// and every other layout at `(x − 0.5)` (`video.c:196-198`).
+pub(crate) fn pixel_centre_offset(layout: ChannelLayout) -> f64 {
+    match layout {
+        ChannelLayout::PdYcbcr => 0.5,
+        ChannelLayout::RobotYuv | ChannelLayout::RgbSequential | ChannelLayout::Monochrome => -0.5,
     }
 }
 
@@ -522,37 +628,119 @@ pub(crate) fn decode_one_channel_into(
     // Nothing panics on an unexpected f64; the worst case is a black pixel.
     // (#85 C20.)
 
-    let pixel_secs = ctx.spec.pixel_seconds;
+    plan_pixel_times(chan_start_sec, radio_frame_offset_seconds, ctx, state.demod);
     let width = ctx.spec.line_pixels as usize;
-
-    // Pixel sample times (slowrx video.c:140-142) — absolute audio indices.
-    // SINGLE `round()` over `(radio_frame_offset_seconds + chan_start_sec +
-    // (x + 0.5) * pixel_secs) * rate`; matches slowrx exactly.
-    //
-    // `radio_frame_offset_seconds` is the time-base offset of the radio
-    // frame the caller is decoding: PD passes `pair_index * line_seconds`;
-    // Robot passes `line_index * line_seconds`. The helper itself is
-    // mode-agnostic — it only sees an additive seconds offset folded
-    // inside the single `round()`.
-    state.demod.pixel_times.clear();
-    state.demod.pixel_times.reserve(width);
-    for x in 0..width {
-        let secs_in_frame = chan_start_sec + pixel_secs * (x as f64 + 0.5);
-        let abs = ctx.skip_samples
-            + ((radio_frame_offset_seconds + secs_in_frame) * ctx.rate_hz).round() as i64;
-        state.demod.pixel_times.push(abs);
-    }
-
-    let first_time = state.demod.pixel_times[0];
-    let last_time = state.demod.pixel_times[width - 1];
     let half_fft = (FFT_LEN as i64) / 2;
-    let sweep_start = first_time - half_fft;
-    let sweep_end = last_time + half_fft + 1;
+    let sweep_start = state.demod.pixel_times[0] - half_fft;
+    let sweep_end = state.demod.pixel_times[width - 1] + half_fft + 1;
 
     let sweep_len = (sweep_end - sweep_start).max(0) as usize;
     state.demod.stored_lum.clear();
     state.demod.stored_lum.resize(sweep_len, 0);
 
+    // Pre-fill a scratch buffer the FFT can index linearly. Cheaper than
+    // copying `audio[…]` per sample inside the inner loop.
+    // The backing allocation is hoisted onto `ChannelDemod::scratch_audio`
+    // (Audit #93 D3). We take it out here to satisfy the borrow checker
+    // (pixel_freq_iq takes &mut self, so we cannot pass &self.scratch_audio
+    // simultaneously); the Vec is returned at the end of the fn so the
+    // capacity is retained for the next call.
+    let mut scratch_audio = std::mem::take(&mut state.demod.scratch_audio);
+    fill_sweep(ctx.audio, sweep_start..sweep_end, &mut scratch_audio);
+    // The analytic-signal option (#71) demodulates `audio + j·quadrature`;
+    // an empty quadrature is the real signal (slowrx).
+    let mut quadrature = std::mem::take(&mut state.demod.quadrature);
+    if state.demod.analytic() {
+        state.demod.hilbert_into(&scratch_audio, &mut quadrature);
+    } else {
+        quadrature.clear();
+    }
+
+    sweep_luminance(ctx, state, &scratch_audio, &quadrature, sweep_start);
+
+    for (out_px, &pixel_time) in out.iter_mut().zip(state.demod.pixel_times.iter()) {
+        let rel = pixel_time - sweep_start;
+        let lum = if rel >= 0 && (rel as usize) < state.demod.stored_lum.len() {
+            state.demod.stored_lum[rel as usize]
+        } else {
+            0
+        };
+        *out_px = lum;
+    }
+    // Return the scratch allocations so they are retained for the next call.
+    state.demod.scratch_audio = scratch_audio;
+    state.demod.quadrature = quadrature;
+}
+
+/// Pixel sample times into `demod.pixel_times`, as absolute audio indices.
+/// SINGLE `round()` over `(radio_frame_offset_seconds + chan_start_sec +
+/// (x + offset) * pixel_secs) * rate`, with slowrx's per-layout offset:
+/// `+0.5` for PD (video.c:140-142), `-0.5` for the rest (video.c:196-198).
+///
+/// `radio_frame_offset_seconds` is the time-base offset of the radio frame
+/// the caller is decoding: PD passes `pair_index * line_seconds`; Robot
+/// passes `line_index * line_seconds`. The helper itself is mode-agnostic —
+/// it only sees an additive seconds offset folded inside the single
+/// `round()`.
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+fn plan_pixel_times(
+    chan_start_sec: f64,
+    radio_frame_offset_seconds: f64,
+    ctx: &ChannelDecodeCtx<'_>,
+    demod: &mut ChannelDemod,
+) {
+    let pixel_secs = ctx.spec.pixel_seconds;
+    let width = ctx.spec.line_pixels as usize;
+    let centre = pixel_centre_offset(ctx.spec.channel_layout);
+    demod.pixel_times.clear();
+    demod.pixel_times.reserve(width);
+    for x in 0..width {
+        let secs_in_frame = chan_start_sec + pixel_secs * (x as f64 + centre);
+        let abs = ctx.skip_samples
+            + ((radio_frame_offset_seconds + secs_in_frame) * ctx.rate_hz).round() as i64;
+        demod.pixel_times.push(abs);
+    }
+}
+
+/// Fill `out` with `audio[range]`, reading out-of-range indices as silence.
+///
+/// No channel-boundary mask: slowrx FFTs across channel boundaries
+/// (`video.c::GetVideo`); the peak search in 1500-2300 Hz still locks onto
+/// the dominant video tone even when adjacent channels' content leaks into
+/// the windowed FFT support. The previous channel-bounded mask (#45) hurt
+/// the leftmost/rightmost ~60 pixels of every channel on real radio —
+/// verified against Dec-2017 ARISS captures where the masked decode showed
+/// visible vertical banding at every channel edge.
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+fn fill_sweep(audio: &[f32], range: std::ops::Range<i64>, out: &mut Vec<f32>) {
+    out.clear();
+    out.extend(range.map(|abs_idx| {
+        if abs_idx >= 0 && (abs_idx as usize) < audio.len() {
+            audio[abs_idx as usize]
+        } else {
+            0.0
+        }
+    }));
+}
+
+/// slowrx's per-sample sweep (`video.c:300-410`): re-estimate the SNR every
+/// [`SNR_REESTIMATE_STRIDE`] samples, run a pixel FFT every
+/// [`PIXEL_FFT_STRIDE`] samples with the SNR-adaptive window, and store the
+/// luminance of every sample of the sweep in `demod.stored_lum`.
+/// `scratch` / `quadrature` hold the sweep from absolute sample
+/// `sweep_start`.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap
+)]
+fn sweep_luminance(
+    ctx: &ChannelDecodeCtx<'_>,
+    state: &mut DemodState<'_>,
+    scratch: &[f32],
+    quadrature: &[f32],
+    sweep_start: i64,
+) {
     // SNR is sticky across the sweep; slowrx initializes with `SNR = 0`
     // (`video.c:36`) so the first `WinIdx` lookup uses index 4 (slowrx C's
     // 256-sample Hann window; equivalently `HANN_LENS[4] = 64` samples
@@ -560,7 +748,6 @@ pub(crate) fn decode_one_channel_into(
     // [`FFT_LEN`] = 1024 FFT with the rest zero-padded).
     let mut snr_db = 0.0_f64;
     let mut current_freq = 1500.0_f64 + ctx.hedr_shift_hz;
-
     // Per-channel local state for SNR-adaptive Hann selection. The
     // initial value is the last index of [`HANN_LENS`] — i.e. the
     // longest, most-noise-rejecting window — which is the conservative
@@ -573,95 +760,53 @@ pub(crate) fn decode_one_channel_into(
     // tracks the actual SNR with the same one-band-per-call ratchet.
     let mut prev_win_idx = HANN_LENS.len() - 1;
 
-    // Read absolute audio with no channel-boundary mask. slowrx FFTs
-    // across channel boundaries (`video.c::GetVideo`); the peak search in
-    // 1500-2300 Hz still locks onto the dominant video tone even when
-    // adjacent channels' content leaks into the windowed FFT support.
-    // The previous channel-bounded mask (#45) hurt the leftmost/rightmost
-    // ~60 pixels of every channel on real radio — verified against
-    // Dec-2017 ARISS captures where the masked decode showed visible
-    // vertical banding at every channel edge.
-    let read_audio = |abs_idx: i64| -> f32 {
-        if abs_idx >= 0 && (abs_idx as usize) < ctx.audio.len() {
-            ctx.audio[abs_idx as usize]
-        } else {
-            0.0
-        }
-    };
-
-    // Pre-fill a scratch buffer the FFT can index linearly. Cheaper than
-    // copying `audio[…]` per sample inside the inner loop.
-    // The backing allocation is hoisted onto `ChannelDemod::scratch_audio`
-    // (Audit #93 D3). We take it out here to satisfy the borrow checker
-    // (pixel_freq takes &mut self, so we cannot pass &self.scratch_audio
-    // simultaneously); the Vec is returned at the end of the fn so the
-    // capacity is retained for the next call.
-    let mut scratch_audio = std::mem::take(&mut state.demod.scratch_audio);
-    scratch_audio.clear();
-    scratch_audio.extend((sweep_start..sweep_end).map(read_audio));
-
-    let mod_round = |s: i64, stride: i64| -> i64 { s.rem_euclid(stride) };
-
-    for s in sweep_start..sweep_end {
-        if mod_round(s, SNR_REESTIMATE_STRIDE) == 0 {
+    for s in sweep_start..sweep_start + scratch.len() as i64 {
+        if s.rem_euclid(SNR_REESTIMATE_STRIDE) == 0 {
             // SNR estimator reads the absolute audio (across channels);
             // we want the SNR of the entire signal, not just this channel.
             snr_db = state.snr_est.estimate(ctx.audio, s, ctx.hedr_shift_hz);
         }
-
-        if mod_round(s, PIXEL_FFT_STRIDE) == 0 {
-            // SNR-adaptive Hann window length WITH 1 dB hysteresis band.
-            // The bare `window_idx_for_snr` function flip-flops at threshold
-            // boundaries when real-radio SNR fluctuates ~0.5 dB across the
-            // SNR re-estimation cadence (5.8 ms = ~21 R36-Y pixels) — that
-            // produced the vertical squiggle artifact in V2.2's Fram2 output
-            // (#71). The hysteresis variant requires SNR to move past the
-            // threshold by ≥ 0.5 dB in the direction of the new index before
-            // accepting a change. See
-            // [`window_idx_for_snr_with_hysteresis`] and the 0.3.2 entry in
-            // `docs/intentional-deviations.md`.
-            let mut win_idx = window_idx_for_snr_with_hysteresis(snr_db, prev_win_idx);
-            prev_win_idx = win_idx;
-            // slowrx C video.c:367 — Scottie DX bumps WinIdx up by one when not
-            // already at saturation, giving SDX's 1.08 ms/pixel a longer
-            // integration window. Applied AFTER the hysteresis selector so
-            // `prev_win_idx` continues tracking the un-bumped SNR-derived index
-            // (the bump shouldn't compound across pixels).
-            //
-            // (Audit #91 E11: the prior doc-comment on `SstvMode::ScottieDx`
-            // mentioned this bump; moved here to live next to the actual code.)
-            if ctx.spec.mode == crate::modespec::SstvMode::ScottieDx
-                && win_idx < HANN_LENS.len() - 1
-            {
-                win_idx += 1;
-            }
-            let center_in_scratch = s - sweep_start;
-            current_freq = state.demod.pixel_freq(
-                &scratch_audio,
-                center_in_scratch,
+        if s.rem_euclid(PIXEL_FFT_STRIDE) == 0 {
+            let win_idx = pixel_window(ctx.spec.mode, snr_db, &mut prev_win_idx);
+            current_freq = state.demod.pixel_freq_iq(
+                scratch,
+                quadrature,
+                s - sweep_start,
                 ctx.hedr_shift_hz,
                 win_idx,
             );
         }
-
         let lum = freq_to_luminance(current_freq, ctx.hedr_shift_hz);
         let idx = (s - sweep_start) as usize;
         if idx < state.demod.stored_lum.len() {
             state.demod.stored_lum[idx] = lum;
         }
     }
+}
 
-    for (out_px, &pixel_time) in out.iter_mut().zip(state.demod.pixel_times.iter()) {
-        let rel = pixel_time - sweep_start;
-        let lum = if rel >= 0 && (rel as usize) < state.demod.stored_lum.len() {
-            state.demod.stored_lum[rel as usize]
-        } else {
-            0
-        };
-        *out_px = lum;
+/// The Hann window index for the next pixel FFT.
+///
+/// SNR-adaptive window length WITH 1 dB hysteresis band. The bare
+/// `window_idx_for_snr` function flip-flops at threshold boundaries when
+/// real-radio SNR fluctuates ~0.5 dB across the SNR re-estimation cadence
+/// (5.8 ms = ~21 R36-Y pixels). The hysteresis variant requires SNR to move
+/// past the threshold by ≥ 0.5 dB in the direction of the new index before
+/// accepting a change. See [`window_idx_for_snr_with_hysteresis`] and the
+/// 0.3.2 entry in `docs/intentional-deviations.md`.
+///
+/// slowrx C video.c:367 — Scottie DX bumps `WinIdx` up by one when not already
+/// at saturation, giving SDX's 1.08 ms/pixel a longer integration window.
+/// Applied AFTER the hysteresis selector so `prev_win_idx` keeps tracking
+/// the un-bumped SNR-derived index (the bump shouldn't compound across
+/// pixels). (Audit #91 E11.)
+fn pixel_window(mode: crate::modespec::SstvMode, snr_db: f64, prev_win_idx: &mut usize) -> usize {
+    let win_idx = window_idx_for_snr_with_hysteresis(snr_db, *prev_win_idx);
+    *prev_win_idx = win_idx;
+    if mode == crate::modespec::SstvMode::ScottieDx && win_idx < HANN_LENS.len() - 1 {
+        win_idx + 1
+    } else {
+        win_idx
     }
-    // Return the scratch_audio allocation so it is retained for the next call.
-    state.demod.scratch_audio = scratch_audio;
 }
 
 #[cfg(test)]
@@ -1046,6 +1191,75 @@ mod tests {
         let est = d.pixel_freq(&audio, center, 0.0, 99);
         // Falls back to the longest window (idx 6) and still recovers the tone.
         assert!((est - 1900.0).abs() < 10.0, "clamp recover got {est}");
+    }
+
+    /// Max − min of `estimates`.
+    fn spread(estimates: &[f64]) -> f64 {
+        let max = estimates.iter().copied().fold(f64::MIN, f64::max);
+        let min = estimates.iter().copied().fold(f64::MAX, f64::min);
+        max - min
+    }
+
+    /// #71 root cause. With the shortest window (12 samples, ~1.6 cycles of
+    /// 1500 Hz) a *real* tone's FFT peak is pulled by its own
+    /// negative-frequency mirror, by an amount that depends on the tone's
+    /// phase in the window — so a steady black (1500 Hz) tone's estimate
+    /// swings as the window slides a sample at a time. That swing, with the
+    /// phase rotating pixel to pixel, is the diagonal cross-hatch. The
+    /// analytic signal has no mirror, so its estimate holds still.
+    #[test]
+    fn analytic_estimate_does_not_swing_with_the_tone_phase() {
+        let audio = synth_tone(1500.0, 0.100);
+        let mut d = ChannelDemod::new();
+        let mut quadrature = Vec::new();
+        d.hilbert_into(&audio, &mut quadrature);
+        let mid = (audio.len() / 2) as i64;
+        let real: Vec<f64> = (0..16)
+            .map(|k| d.pixel_freq(&audio, mid + k, 0.0, 0))
+            .collect();
+        let analytic: Vec<f64> = (0..16)
+            .map(|k| d.pixel_freq_iq(&audio, &quadrature, mid + k, 0.0, 0))
+            .collect();
+        let (real, analytic) = (spread(&real), spread(&analytic));
+        // Measured: real ≈ 37 Hz (≈ 12 luminance levels), analytic ≈ 1 Hz.
+        assert!(
+            real > 10.0 * analytic && real > 20.0 && analytic < 3.0,
+            "spread over 16 phases: real {real:.1} Hz, analytic {analytic:.1} Hz"
+        );
+    }
+
+    #[test]
+    fn hilbert_of_a_cosine_is_a_sine() {
+        let sr = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
+        let f = 1900.0;
+        let x: Vec<f32> = (0..2000)
+            .map(|n| (2.0 * PI * f * f64::from(n) / sr).cos() as f32)
+            .collect();
+        let mut d = ChannelDemod::new();
+        let mut h = Vec::new();
+        d.hilbert_into(&x, &mut h);
+        assert_eq!(h.len(), x.len());
+        // Away from the buffer ends (where the transform wraps).
+        for (n, &got) in h.iter().enumerate().take(1600).skip(400) {
+            let want = (2.0 * PI * f * n as f64 / sr).sin();
+            assert!(
+                (f64::from(got) - want).abs() < 0.02,
+                "n={n}: {got} vs {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn pixel_centres_follow_slowrx_per_layout() {
+        // video.c:140-142 (PD): (x + 0.5); video.c:196-198 (others): (x - 0.5).
+        assert!((pixel_centre_offset(ChannelLayout::PdYcbcr) - 0.5).abs() < f64::EPSILON);
+        for layout in [
+            ChannelLayout::RobotYuv,
+            ChannelLayout::RgbSequential,
+            ChannelLayout::Monochrome,
+        ] {
+            assert!((pixel_centre_offset(layout) + 0.5).abs() < f64::EPSILON);
+        }
     }
 
     #[test]

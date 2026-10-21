@@ -123,6 +123,18 @@ decoder.set_forced_mode(Some(SstvMode::Pd120)); // every image decodes as PD120
 
 The CLI equivalent is `slowrx-cli --mode pd120 …`.
 
+On real radio, slowrx's pixel demodulation leaves a fine diagonal
+cross-hatch in dark areas. The short FFT it uses picks up the signal's own
+negative-frequency mirror. Demodulating the analytic signal instead removes
+the texture without softening edges, and cuts the error against the ARISS
+Fram2 reference images by about 18%. It's off by default, matching slowrx:
+
+```rust
+# use slowrx::SstvDecoder;
+# let mut decoder = SstvDecoder::new(44_100).expect("valid sample rate");
+decoder.set_analytic_demod(true); // slowrx-cli --analytic-demod
+```
+
 Each `SstvEvent::ImageComplete` also carries a `sync_quality` score. On
 weak signals, a VIS can be followed by noise, and the decoder still returns
 a full-size "image" of it; `sync_quality.looks_like_noise()` flags those

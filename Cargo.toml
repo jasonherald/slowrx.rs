@@ -102,3 +102,7 @@ required-features = ["test-support"]
 [[test]]
 name = "fram2_pixel_diff"
 required-features = ["cli"]
+
+[[test]]
+name = "analytic_demod"
+required-features = ["test-support"]

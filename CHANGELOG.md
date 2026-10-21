@@ -31,6 +31,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pixels from it. `slowrx-cli --mode` / `--fallback-mode` accept `wraase120`
   and `wraase180`. Validated by synthetic round-trips only — no real-radio
   SC-2 recording is available.
+- **Analytic-signal pixel demod** (opt-in, #71):
+  `SstvDecoder::set_analytic_demod` / `analytic_demod`, and
+  `slowrx-cli --analytic-demod`. slowrx estimates each pixel's frequency
+  with a short FFT of the real signal. Under two cycles of a 1500 Hz tone
+  fit in the window, so the tone's negative-frequency mirror pulls the
+  estimate by a phase-dependent amount, which draws the long-standing
+  diagonal "squiggle" cross-hatch in dark areas. Demodulating
+  `audio + j·Hilbert(audio)` removes the mirror: a steady tone's estimate
+  goes from a 37 Hz swing to 1 Hz, the Fram2 error against the reference
+  JPGs drops 18% (8.375 to 6.864), and edges stay as sharp. Off by
+  default (slowrx's behaviour); it persists across `reset()`.
+
+### Changed
+
+- Non-PD modes now sample each pixel at slowrx's `(x − 0.5)` pixel time
+  (`video.c:196-198`) instead of the PD `(x + 0.5)`. That's a one-pixel
+  shift, which the Fram2 comparison (#119) measured against the
+  references; the aligned error is unchanged. The boundary effect moves,
+  as in slowrx, from the last column (which had 29–51 levels of error on
+  synthetic round-trips) to the first. The documented deviation is
+  resolved.
 
 ### Internal
 
@@ -41,7 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`tests/ariss_fram2_baseline.tsv`; 0.7.0 averages 8.375 on 0–255). It's
   `#[ignore]`d because the fixtures are gitignored, and
   `SLOWRX_FRAM2_BLESS=1` rewrites the baseline. This is the yardstick for
-  #71.
+  #71. A second test checks the analytic-signal demod against its own
+  baseline (`tests/ariss_fram2_baseline_analytic.tsv`).
 
 ## [0.7.0] - 2026-10-21
 

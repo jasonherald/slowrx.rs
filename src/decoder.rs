@@ -543,6 +543,26 @@ impl SstvDecoder {
         self.forced_mode
     }
 
+    /// Demodulate pixels from the analytic signal instead of the real audio
+    /// (#71). slowrx estimates each pixel's frequency with a short FFT of the
+    /// real signal; at under two cycles per window, the tone's own
+    /// negative-frequency mirror pulls that estimate by a phase-dependent
+    /// amount, which shows up as a fine diagonal cross-hatch in dark areas.
+    /// The analytic signal has no mirror, so the texture goes while edges stay
+    /// as sharp. On the ARISS Fram2 corpus it lowers the mean error against the
+    /// reference JPGs by about 18%. Off by default (slowrx's behaviour); takes
+    /// effect from the next image and persists across [`Self::reset`]. There is
+    /// no slowrx counterpart — see `docs/intentional-deviations.md`.
+    pub fn set_analytic_demod(&mut self, on: bool) {
+        self.channel_demod.set_analytic(on);
+    }
+
+    /// Whether [`Self::set_analytic_demod`] is on.
+    #[must_use]
+    pub fn analytic_demod(&self) -> bool {
+        self.channel_demod.analytic()
+    }
+
     /// The mode a header-less image is assumed to be: the forced mode, else
     /// the fallback.
     fn expected_mode(&self) -> Option<SstvMode> {
@@ -848,7 +868,8 @@ impl SstvDecoder {
     }
 
     /// Reset to `AwaitingVis`; discard any in-flight image. Configuration
-    /// ([`Self::set_fallback_mode`], [`Self::set_forced_mode`]) is kept.
+    /// ([`Self::set_fallback_mode`], [`Self::set_forced_mode`],
+    /// [`Self::set_analytic_demod`]) is kept.
     pub fn reset(&mut self) {
         self.state = State::AwaitingVis;
         self.samples_processed = 0;
@@ -857,7 +878,9 @@ impl SstvDecoder {
         self.sync_start = None;
         self.apply_expected_mode();
         self.resampler.reset_state();
+        let analytic = self.channel_demod.analytic();
         self.channel_demod = crate::demod::ChannelDemod::new();
+        self.channel_demod.set_analytic(analytic);
         self.snr_est = crate::snr::SnrEstimator::new();
     }
 

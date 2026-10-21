@@ -336,123 +336,100 @@ Either:
 
 ---
 
-## Robot family pixel-time offset: `(x + 0.5)` vs slowrx C `(x - 0.5)`
+## Pixel-time offset: as slowrx since #71 (resolved)
 
-**Files:** `src/mode_pd.rs::decode_one_channel_into` ↔ slowrx `video.c:140-142` (PD case) vs. `:196-198` (non-PD case).
-**Tracking:** Surfaced during V2.2 P3 (Robot 72) code review.
+**Files:** `src/demod.rs::pixel_centre_offset` / `decode_one_channel_into`
+↔ slowrx `video.c:140-142` (PD) and `:196-198` (every other mode).
 
 ### What slowrx does
 
-slowrx C uses **two different per-pixel time formulas**:
-
-- **PD modes** (`video.c:140-142`):
-  `Time = round(Rate * (y/2 * LineTime + ChanStart + PixelTime * (x + 0.5)))`
-  Pixel sampling centered at `(x + 0.5) * PixelTime` from channel start.
-
-- **Non-PD modes** including Robot 72 (`video.c:196-198`):
-  `Time = round(Rate * (y * LineTime + ChanStart + (x - 0.5) / Width * ChanLen[Channel]))`
-  Pixel sampling centered at `(x - 0.5) * (ChanLen / Width)` from channel start —
-  i.e., `(x - 0.5) * PixelTime` for non-Robot-alt modes where ChanLen = PixelTime * Width.
-
-The two forms differ by **1 pixel-time** in the per-pixel sampling offset.
+PD pixels are sampled at `(x + 0.5) * PixelTime` from the channel start
+(`video.c:140-142`). Every other mode samples at
+`(x - 0.5) / Width * ChanLen` (`video.c:196-198`), which is `(x - 0.5)` pixel
+times, or `(x - 0.5) * 2 * PixelTime` for Robot 24/36 luminance.
 
 ### What we do
 
-The Rust port reuses `mode_pd::decode_one_channel_into` for both PD and Robot 72.
-That helper uses the PD `(x + 0.5)` formula. So Robot 72 in slowrx.rs samples each
-pixel `1 * pixel_seconds` later than slowrx C would. The same holds for every
-other non-PD mode, which all decode through that helper — including the Robot
-24 / 12 / 8 B/W modes (#117), whose single channel uses slowrx's `default:`
-layout exactly as R72's channels do.
+The same, since the #71 work. Earlier releases used the PD form `(x + 0.5)`
+for every mode, one pixel time later than slowrx outside PD. That was
+documented here as a deviation, with the trigger to revisit "if the Fram2
+comparison shows a measurable horizontal shift". The numerical comparison
+(#119) did show one: every slide aligned best 2–3 px from the reference.
+`pixel_centre_offset` now picks slowrx's offset per channel layout, for
+every mode, including the Robot 24 / 12 / 8 B/W modes (#117).
 
-### Why we deviated
+### Effect
 
-Sharing one helper between PD and R72 keeps the codebase smaller and the FFT
-windowing logic single-source. The synthetic round-trip (`tests/roundtrip.rs::robot72_roundtrip`)
-passes at the same `mean < 5.0` threshold as PD because the encoder
-(`robot_test_encoder::encode_r72`) ALSO emits at the same per-pixel timing — the
-encoder/decoder pair is internally consistent.
-
-### Real-radio impact
-
-Against real-radio audio (e.g. ARISS Fram2 Robot 36 corpus — which this V2.2
-work uses as the merge gate), the deviation manifests as a **half-pixel
-horizontal shift** in the decoded image relative to slowrx C's output. For
-real audio the FFT window is wider than a half-pixel, so visual quality is
-unaffected at the per-image scale. The Phase 5 visual validation against the
-12 ARISS Fram2 reference JPGs is the empirical test.
-
-### When to revisit
-
-Three triggers would prompt revisiting:
-
-1. **Phase 4 R36/R24 round-trip fails** because Y has 2× pixel-time and the
-   asymmetric `(x ± 0.5)` formula amplifies a per-channel offset error that
-   was tolerable for R72.
-2. **Fram2 visual validation surfaces a measurable horizontal shift** vs. the
-   reference JPGs.
-3. **A future audit cross-validates pixel-by-pixel against slowrx C output**
-   on the same audio file — that would expose the half-pixel offset directly.
-
-If any of these fires, the fix is to introduce a per-mode pixel-offset selector
-(e.g., a `pixel_offset_within_channel: f64` field on `ModeSpec` set to 0.5 for
-PD and -0.5 for non-PD), and route it through `decode_one_channel_into`.
-
-### Status
-
-- ✅ Trigger #1 cleared as of V2.2 Phase 4: R36/R24 synthetic round-trips
-  pass at `mean < 5.0` despite Y being at 2× pixel-time. The encoder
-  emits at the same `(x + 0.5)` offset the decoder reads at, so the
-  R36/R24 round-trip is internally consistent — the deviation is invisible
-  to the synthetic gate.
-- Triggers #2 and #3 remain open. Phase 5 (Fram2 visual validation) is
-  the next empirical test; a future cross-validation against slowrx C
-  output on the same audio file would expose the half-pixel offset
-  directly.
+This is a pure one-pixel translation of non-PD images. The aligned Fram2
+error is unchanged (8.375), and only the best shift moves from −3 to −2 px.
+The boundary effect moves with it. Under `(x + 0.5)` the last column's
+window straddled the end of the channel: on synthetic round-trips column
+319 averaged 29–51 levels of error in every Robot mode. Now, as in slowrx,
+the first column's window starts half a pixel before the channel. The
+synthetic round-trips stay within their tolerance.
 
 ---
 
-## Faint vertical squiggle artifacts in Robot real-radio decode
+## Analytic-signal pixel demod (opt-in; no slowrx counterpart)
 
-**Files:** `src/mode_robot.rs` (and plausibly `src/mode_pd.rs::decode_one_channel_into`).
-**Tracking issue:** [#71](https://github.com/jasonherald/slowrx.rs/issues/71).
+**Files:** `src/demod.rs` (`ChannelDemod::hilbert_into`, `pixel_freq_iq`),
+`SstvDecoder::set_analytic_demod`.
+**Issue:** [#71](https://github.com/jasonherald/slowrx.rs/issues/71).
 
-### What we observe
+### What slowrx does
 
-When decoding real-radio Robot 36 audio (verified against the 12 ARISS
-Fram2 WAVs during V2.2 Phase 5), our output PNGs exhibit faint vertical
-squiggle artifacts every ~20–30 pixels. The image content is correct
-and recognizable — the artifacts are a fine pattern overlaid on the
-content.
+slowrx estimates each pixel's frequency from a Hann-windowed FFT of the
+*real* audio (`video.c:369-398`). On a clean signal the SNR-adaptive
+selector picks the shortest window: 48 samples at 44.1 kHz, or 12 at our
+11025 Hz, about 1.1 ms. That holds under two cycles of a 1500 Hz tone.
 
-The reference JPGs ARISS publishes alongside the WAVs do NOT show these
-artifacts, which means whatever decoder produced the references handles
-this case better than ours.
+### The problem it causes
 
-### Why this isn't a "deviation" yet
+A real signal's spectrum carries a mirror at −f. With so few cycles in the
+window, the mirror's skirt pulls the +f peak by an amount that depends on
+the tone's *phase* in the window. As the window slides from pixel to pixel
+the phase rotates, so the bias becomes a periodic pattern: the fine diagonal
+cross-hatch on real Robot 36 decodes, strongest in dark (1500 Hz) areas.
+That is the long-standing "faint vertical squiggles" (#71). On a steady
+1500 Hz tone the 12-sample estimate swings 37 Hz (about 12 luminance levels)
+over 16 one-sample shifts. The physics depends on cycles per window, not on
+sample rate, so slowrx should show the same pattern.
 
-This is more of an **open quality gap** than a deliberate deviation.
-We're tracking it here so future audits know it's a known and
-documented behavior, not a missed bug. V2.2 ships with this gap because
-the image content is correct and visually validates against the
-reference.
+### What we do
 
-### When to revisit
+By default, exactly what slowrx does. With
+`SstvDecoder::set_analytic_demod(true)` (CLI `--analytic-demod`), each
+channel sweep is Hilbert-transformed once (one zero-padded FFT round trip),
+and the pixel FFT windows the complex analytic signal
+`audio + j·Hilbert(audio)`, which has no mirror. Windows, thresholds, peak
+search and interpolation are unchanged.
 
-When [#71](https://github.com/jasonherald/slowrx.rs/issues/71) is
-prioritized, or whenever a downstream consumer asks for cleaner output.
-The investigation paths in #71 cover SNR-adaptive Hann selector
-re-engagement (V1 deferral #44), slowrx C cross-validation, and per-
-pixel sub-bin interpolation.
+### Evidence
 
-A known divergence to evaluate there (audit A4): slowrx sweeps the whole
-image once, so its SNR estimate and window index stay sticky across
-channels and lines. `decode_one_channel_into` starts each channel cold
-(SNR 0, window index ramping 6 → 5 → 4), so the first pixels of every
-channel use a longer window than slowrx would. Threading the state
-image-wide is the faithful fix, but it changes pixels. Judge it with the
-numerical comparison against the Fram2 reference JPGs (#119) rather than
-by eye.
++ **Steady 1500 Hz tone:** the 16-shift swing drops from 37 Hz to 1 Hz
+  (`demod::tests::analytic_estimate_does_not_swing_with_the_tone_phase`).
++ **ARISS Fram2:** mean absolute error against the reference JPGs drops
+  from 8.375 to 6.864 (−18%). Every slide improves; see
+  `tests/ariss_fram2_baseline{,_analytic}.tsv`.
++ **By eye:** the cross-hatch in dark areas is gone, and text and edges are
+  as sharp as before. Lengthening the window also removes the texture, and
+  the 24-sample window scores 5.03 against the references, but it visibly
+  blurs text. That's a closer match to the softer reference decoder, not a
+  more faithful decode.
++ **Synthetic round-trips:** exact either way.
+
+### Why it's opt-in
+
+The port follows slowrx by default. This is a change to slowrx's demod
+algorithm, so library users choose it. rtl-sdr turns it on.
+
+### Still open
+
+Audit A4: slowrx keeps its SNR estimate and window index sticky across
+the whole image. `decode_one_channel_into` starts each channel cold (SNR 0,
+which selects the 64-sample window until the first re-estimate), so the
+first ~20 pixels of every channel use a 5× longer window than slowrx would.
+That's tracked separately as a fidelity fix to judge with the #119 metric.
 
 ---
 
