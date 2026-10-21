@@ -50,6 +50,8 @@ anyhow = { version = "1", optional = true }
 [dev-dependencies]
 proptest = "1"
 assert_cmd = "2"
+# `tests/fram2_pixel_diff.rs` reads the Fram2 reference JPGs (#119).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 [features]
 test-support = []
@@ -96,3 +98,7 @@ required-features = ["test-support"]
 [[test]]
 name = "sync_start"
 required-features = ["test-support"]
+
+[[test]]
+name = "fram2_pixel_diff"
+required-features = ["cli"]
