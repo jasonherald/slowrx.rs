@@ -228,6 +228,42 @@ fn a_forced_mode_starts_a_headerless_image_from_its_sync_rhythm() {
 }
 
 #[test]
+fn a_forced_mode_takes_precedence_over_the_fallback() {
+    // Fallback PD120, forced Robot 36: both the sync-rhythm start and the
+    // lost-VIS fallback must look for, and decode in, the forced mode.
+    let (ycrcb, image) = robot36();
+    let both = |d: &mut SstvDecoder| {
+        d.set_fallback_mode(Some(SstvMode::Pd120));
+        d.set_forced_mode(Some(SstvMode::Robot36));
+    };
+
+    let mut headerless = noise(1000, 17);
+    headerless.extend(&image);
+    let events = decode(headerless, both);
+    assert_eq!(count(&events, is_sync_start), 1, "sync start in R36");
+    let imgs = images(&events);
+    assert_eq!(imgs.len(), 1);
+    assert_eq!(imgs[0].mode, SstvMode::Robot36);
+    assert!(mean_error(imgs[0], &ycrcb, 1..240, 0) < 5.0);
+
+    let (mut lost_bits, _) = slowrx::__test_support::vis::lost_bits_header(610.0, true, 0.0);
+    lost_bits.extend(&image);
+    let events = decode(lost_bits, both);
+    assert_eq!(
+        count(&events, |e| matches!(
+            e,
+            SstvEvent::VisFallback {
+                mode: SstvMode::Robot36,
+                ..
+            }
+        )),
+        1,
+        "lost-VIS fallback assumes the forced mode"
+    );
+    assert_eq!(images(&events)[0].mode, SstvMode::Robot36);
+}
+
+#[test]
 fn forced_mode_round_trips_through_the_accessor_and_survives_reset() {
     let mut d = SstvDecoder::new(WORKING_SAMPLE_RATE_HZ).expect("decoder");
     assert_eq!(d.forced_mode(), None, "off by default");
