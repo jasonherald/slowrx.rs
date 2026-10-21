@@ -37,14 +37,11 @@ pub(crate) const WINDOW_SAMPLES: usize = (0.020 * WORKING_SAMPLE_RATE_HZ as f64)
 pub(crate) const FFT_LEN: usize = 512;
 pub(crate) const HISTORY_LEN: usize = 45; // slowrx HedrBuf size
 
-/// VIS code for the (unimplemented) Robot 12 B/W mode. R12BW inverts the
-/// parity bit (slowrx `vis.c:116`). No `ModeSpec` exists for it yet, so
-/// `crate::modespec::lookup` returns `None` for it; `match_vis_pattern`
-/// still classifies it so a future R12BW implementation that adds it to
-/// `lookup` works without re-touching the parity logic.
-//
-// TODO: when R12BW gains a `ModeSpec`, derive this from `modespec`.
-pub(crate) const R12BW_VIS_CODE: u8 = 0x06;
+/// VIS code of Robot 12 B/W, the one mode whose header inverts the parity
+/// bit (slowrx `vis.c:116`: `if (VISmap[VIS] == R12BW) Parity = !Parity;`).
+/// Taken from its `ModeSpec`, so the parity rule and the mode table can't
+/// disagree.
+pub(crate) const R12BW_VIS_CODE: u8 = crate::modespec::ROBOT12_BW.vis_code;
 
 const SEARCH_LO_HZ: f64 = 500.0;
 const SEARCH_HI_HZ: f64 = 3300.0;
@@ -584,7 +581,7 @@ fn estimate_peak_freq(spectrum: &[Complex<f32>]) -> f64 {
 /// **Keep-searching for a known code (issue #89, A3):** like slowrx (`vis.c`),
 /// this tries all 9 alignments and returns the *first known* code (`is_known`).
 /// A clean burst whose only parity-passing alignment maps to an *unknown* code
-/// (a real R12BW transmission, or an unimplemented mode) is still returned — as
+/// (a mode this crate doesn't implement) is still returned — as
 /// the `first_unknown` fallback — so the caller can surface it via
 /// `SstvEvent::UnknownVis`. See `docs/intentional-deviations.md`
 /// ("VIS: keep-searching for a known code; surface clean unknown bursts").
@@ -631,11 +628,7 @@ fn match_vis_pattern(
                 } else {
                     // `bit` is the received parity bit. R12BW flips the
                     // *accumulated* parity per slowrx `vis.c:116`:
-                    // `if (VISmap[VIS] == R12BW) Parity = !Parity;`. No
-                    // `ModeSpec` exists for R12BW yet (`lookup` returns
-                    // `None` for `R12BW_VIS_CODE`), but the parity check
-                    // must still pass so a future R12BW implementation that
-                    // adds it to `lookup` is not silently broken.
+                    // `if (VISmap[VIS] == R12BW) Parity = !Parity;`.
                     if code == R12BW_VIS_CODE {
                         parity ^= 1;
                     }
@@ -746,7 +739,8 @@ pub mod tests {
         crate::modespec::lookup(code).is_some()
     }
 
-    /// Build a synthetic VIS burst encoding `code` with even parity.
+    /// Build a synthetic VIS burst encoding `code` with even parity — odd
+    /// for Robot 12 B/W, whose parity bit is inverted (slowrx `vis.c:116`).
     /// `freq_offset_hz` shifts every tone (mistuned-radio test fixture).
     /// Continuous-phase: avoids bit-boundary discontinuities that would
     /// pull FFT peaks off-tone.
@@ -873,23 +867,18 @@ pub mod tests {
     }
 
     /// R12BW (code 0x06) uses inverted parity per slowrx `vis.c:116`.
-    /// `match_vis_pattern` must invert before checking, otherwise V2's
-    /// future R12BW support would silently reject every valid burst.
-    /// V1's `modespec::lookup` returns None for 0x06 — this test runs
-    /// at the parity-classifier level, before the lookup.
+    /// `match_vis_pattern` must invert before checking, otherwise every
+    /// valid R12BW burst would be silently rejected.
     #[test]
     fn r12bw_uses_inverted_parity() {
+        // The parity rule keys off the Robot 12 B/W `ModeSpec`'s code.
+        assert_eq!(R12BW_VIS_CODE, 0x06);
+        let spec = crate::modespec::lookup(R12BW_VIS_CODE).expect("R12BW is in the mode table");
+        assert_eq!(spec.mode, crate::modespec::SstvMode::Robot12Bw);
         // Standard synth_vis emits inverted parity for code 0x06, so the
         // detector must accept it under the R12BW convention.
         let audio = vis_padded(0x06, 0.0, 0.0);
-        let detected = run(&audio);
-        assert!(
-            detected.is_some(),
-            "R12BW (0x06) with inverted parity should decode at the \
-             VIS-classifier level (V1's modespec::lookup will then drop \
-             it because R12BW isn't in the V1 table)."
-        );
-        let detected = detected.expect("R12BW decode");
+        let detected = run(&audio).expect("R12BW (0x06) with inverted parity decodes");
         assert_eq!(detected.code, 0x06);
     }
 

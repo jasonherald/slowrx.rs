@@ -17,9 +17,9 @@
 
 use crate::error::Result;
 use crate::image::{SstvImage, SyncQuality};
-use crate::modespec::{ModeSpec, SstvMode};
+use crate::modespec::{ChannelLayout, ModeSpec, SstvMode};
 use crate::resample::Resampler;
-use crate::sync::{find_sync, SyncTracker, SYNC_PROBE_STRIDE};
+use crate::sync::{find_sync, SyncResult, SyncTracker, SYNC_PROBE_STRIDE};
 use crate::sync_start::SyncStartDetector;
 
 /// One observable event emitted by [`SstvDecoder::process`].
@@ -254,6 +254,138 @@ impl DecodingState {
                 // chroma state would need to opt in here.
                 _ => None,
             },
+        }
+    }
+
+    /// Push [`SstvEvent::LineDecoded`] for image row `row`, already
+    /// decoded into `self.image`.
+    fn push_row(&self, row: u32, out: &mut Vec<SstvEvent>) {
+        let line_pixels = self.spec.line_pixels as usize;
+        let start = (row as usize) * line_pixels;
+        out.push(SstvEvent::LineDecoded {
+            mode: self.mode,
+            line_index: row,
+            pixels: self.image.pixels[start..start + line_pixels].to_vec(),
+        });
+    }
+
+    /// [`ChannelLayout::PdYcbcr`]: decode each radio line — one line pair,
+    /// two image rows — and emit both rows.
+    fn decode_pd_pairs(
+        &mut self,
+        sync: &SyncResult,
+        state: &mut crate::demod::DemodState<'_>,
+        out: &mut Vec<SstvEvent>,
+    ) {
+        let pair_count = self.spec.image_lines / 2;
+        for pair in 0..pair_count {
+            // slowrx `video.c:140-142` computes pixel time as
+            // `Skip + round(Rate * (y/2 * LineTime + ChanStart +
+            // PixelTime * (x + 0.5)))`. Compute `pair_seconds = y/2 *
+            // LineTime` here (un-rounded) and let
+            // [`crate::mode_pd::decode_pd_line_pair`] fold it into its
+            // own `round()`, so per-pair rounding error never
+            // accumulates.
+            let pair_seconds = f64::from(pair) * self.spec.line_seconds;
+            crate::mode_pd::decode_pd_line_pair(
+                self.spec,
+                pair,
+                &self.audio,
+                sync.skip_samples,
+                pair_seconds,
+                sync.adjusted_rate_hz,
+                &mut self.image,
+                state.demod,
+                state.snr_est,
+                self.hedr_shift_hz,
+            );
+            self.push_row(pair * 2, out);
+            self.push_row(pair * 2 + 1, out);
+        }
+    }
+
+    /// [`ChannelLayout::RobotYuv`]: one image row per radio line.
+    fn decode_robot_lines(
+        &mut self,
+        sync: &SyncResult,
+        state: &mut crate::demod::DemodState<'_>,
+        out: &mut Vec<SstvEvent>,
+    ) {
+        // Robot is per-line (no PD line-pairing). For R36/R24 the
+        // chroma-duplication writes to the next image row; that's
+        // handled inside mode_robot::decode_line. LineDecoded for image
+        // row N is emitted after radio-line N's decode — for R36/R24
+        // row 0 the Cb channel is at zero-init at this point (slowrx
+        // C does the same; final ImageComplete carries the populated
+        // state).
+        for line in 0..self.spec.image_lines {
+            let line_seconds_offset = f64::from(line) * self.spec.line_seconds;
+            crate::mode_robot::decode_line(
+                self.spec,
+                self.mode,
+                line,
+                &self.audio,
+                sync.skip_samples,
+                line_seconds_offset,
+                sync.adjusted_rate_hz,
+                &mut self.image,
+                self.chroma_planes.as_mut(),
+                state.demod,
+                state.snr_est,
+                self.hedr_shift_hz,
+            );
+            self.push_row(line, out);
+        }
+    }
+
+    /// [`ChannelLayout::RgbSequential`] (Scottie / Martin): one image row
+    /// per radio line.
+    fn decode_rgb_lines(
+        &mut self,
+        sync: &SyncResult,
+        state: &mut crate::demod::DemodState<'_>,
+        out: &mut Vec<SstvEvent>,
+    ) {
+        // Mid-line sync handling lives inside mode_scottie::decode_line.
+        // No chroma_planes — RGB is composed in-place per line (no
+        // deferred chroma like R36/R24).
+        for line in 0..self.spec.image_lines {
+            let line_seconds_offset = f64::from(line) * self.spec.line_seconds;
+            crate::mode_scottie::decode_line(
+                self.spec,
+                line,
+                &self.audio,
+                sync.skip_samples,
+                line_seconds_offset,
+                sync.adjusted_rate_hz,
+                &mut self.image,
+                state.demod,
+                state.snr_est,
+                self.hedr_shift_hz,
+            );
+            self.push_row(line, out);
+        }
+    }
+
+    /// [`ChannelLayout::Monochrome`] (Robot B/W): one luminance channel,
+    /// one grey image row, per radio line (slowrx `video.c:103-109`,
+    /// `video.c:453`).
+    fn decode_bw_lines(
+        &mut self,
+        sync: &SyncResult,
+        state: &mut crate::demod::DemodState<'_>,
+        out: &mut Vec<SstvEvent>,
+    ) {
+        let ctx = crate::demod::ChannelDecodeCtx {
+            audio: &self.audio,
+            skip_samples: sync.skip_samples,
+            rate_hz: sync.adjusted_rate_hz,
+            hedr_shift_hz: self.hedr_shift_hz,
+            spec: self.spec,
+        };
+        for line in 0..self.spec.image_lines {
+            crate::mode_robot::decode_bw_line(&ctx, line, &mut self.image, state);
+            self.push_row(line, out);
         }
     }
 }
@@ -669,9 +801,9 @@ impl SstvDecoder {
     }
 
     /// Run [`find_sync`] over the buffered sync track, then decode every
-    /// PD line pair against the corrected `(rate, skip)`. Pushes
-    /// [`SstvEvent::LineDecoded`] for every row + a final
-    /// [`SstvEvent::ImageComplete`] into `out`.
+    /// radio line against the corrected `(rate, skip)` with the mode's
+    /// [`ChannelLayout`] decoder. Pushes [`SstvEvent::LineDecoded`] for
+    /// every row + a final [`SstvEvent::ImageComplete`] into `out`.
     ///
     /// **Lookahead note (#33):** Each call to
     /// [`crate::mode_pd::decode_pd_line_pair`] receives `&d.audio` — the
@@ -683,13 +815,8 @@ impl SstvDecoder {
     /// naive `&audio[..pair_end]` slice would lose. No explicit `lookahead`
     /// variable is required, and none should be added. (Issue #33 noted
     /// a now-deleted `lookahead` variable that was dead code; Phase 3's
-    /// rewrite eliminated it by design.)
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::cast_possible_wrap
-    )]
+    /// rewrite eliminated it by design.) Every other layout's line decoder
+    /// gets the full buffer the same way.
     fn run_findsync_and_decode(
         mut d: DecodingState,
         channel_demod: &mut crate::demod::ChannelDemod,
@@ -699,111 +826,20 @@ impl SstvDecoder {
     ) {
         let work_rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
         let result = find_sync(&d.has_sync, work_rate, d.spec, find_sync_scratch);
-        let rate = result.adjusted_rate_hz;
-        let skip = result.skip_samples;
 
         // Image-complete burst: image_lines LineDecoded events + 1 ImageComplete.
         // Pre-reserve to avoid Vec growth reallocs. (Audit #93 D5.)
         out.reserve(d.spec.image_lines as usize + 1);
 
-        let line_pixels = d.spec.line_pixels as usize;
+        let mut state = crate::demod::DemodState {
+            demod: channel_demod,
+            snr_est,
+        };
         match d.spec.channel_layout {
-            crate::modespec::ChannelLayout::PdYcbcr => {
-                let pair_count = d.spec.image_lines / 2;
-                for pair in 0..pair_count {
-                    // slowrx `video.c:140-142` computes pixel time as
-                    // `Skip + round(Rate * (y/2 * LineTime + ChanStart +
-                    // PixelTime * (x + 0.5)))`. Compute `pair_seconds = y/2 *
-                    // LineTime` here (un-rounded) and let
-                    // [`crate::mode_pd::decode_pd_line_pair`] fold it into its
-                    // own `round()`, so per-pair rounding error never
-                    // accumulates.
-                    let pair_seconds = f64::from(pair) * d.spec.line_seconds;
-                    crate::mode_pd::decode_pd_line_pair(
-                        d.spec,
-                        pair,
-                        &d.audio,
-                        skip,
-                        pair_seconds,
-                        rate,
-                        &mut d.image,
-                        channel_demod,
-                        snr_est,
-                        d.hedr_shift_hz,
-                    );
-                    let row0 = pair * 2;
-                    let row1 = row0 + 1;
-                    for r in [row0, row1] {
-                        let start = (r as usize) * line_pixels;
-                        let end = start + line_pixels;
-                        out.push(SstvEvent::LineDecoded {
-                            mode: d.mode,
-                            line_index: r,
-                            pixels: d.image.pixels[start..end].to_vec(),
-                        });
-                    }
-                }
-            }
-            crate::modespec::ChannelLayout::RobotYuv => {
-                // Robot is per-line (no PD line-pairing). For R36/R24 the
-                // chroma-duplication writes to the next image row; that's
-                // handled inside mode_robot::decode_line. LineDecoded for image
-                // row N is emitted after radio-line N's decode — for R36/R24
-                // row 0 the Cb channel is at zero-init at this point (slowrx
-                // C does the same; final ImageComplete carries the populated
-                // state).
-                for line in 0..d.spec.image_lines {
-                    let line_seconds_offset = f64::from(line) * d.spec.line_seconds;
-                    crate::mode_robot::decode_line(
-                        d.spec,
-                        d.mode,
-                        line,
-                        &d.audio,
-                        skip,
-                        line_seconds_offset,
-                        rate,
-                        &mut d.image,
-                        d.chroma_planes.as_mut(),
-                        channel_demod,
-                        snr_est,
-                        d.hedr_shift_hz,
-                    );
-                    let start = (line as usize) * line_pixels;
-                    let end = start + line_pixels;
-                    out.push(SstvEvent::LineDecoded {
-                        mode: d.mode,
-                        line_index: line,
-                        pixels: d.image.pixels[start..end].to_vec(),
-                    });
-                }
-            }
-            crate::modespec::ChannelLayout::RgbSequential => {
-                // Scottie family. Mid-line sync handling lives inside
-                // mode_scottie::decode_line. No chroma_planes — RGB is composed
-                // in-place per line (no deferred chroma like R36/R24).
-                for line in 0..d.spec.image_lines {
-                    let line_seconds_offset = f64::from(line) * d.spec.line_seconds;
-                    crate::mode_scottie::decode_line(
-                        d.spec,
-                        line,
-                        &d.audio,
-                        skip,
-                        line_seconds_offset,
-                        rate,
-                        &mut d.image,
-                        channel_demod,
-                        snr_est,
-                        d.hedr_shift_hz,
-                    );
-                    let start = (line as usize) * line_pixels;
-                    let end = start + line_pixels;
-                    out.push(SstvEvent::LineDecoded {
-                        mode: d.mode,
-                        line_index: line,
-                        pixels: d.image.pixels[start..end].to_vec(),
-                    });
-                }
-            }
+            ChannelLayout::PdYcbcr => d.decode_pd_pairs(&result, &mut state, out),
+            ChannelLayout::RobotYuv => d.decode_robot_lines(&result, &mut state, out),
+            ChannelLayout::RgbSequential => d.decode_rgb_lines(&result, &mut state, out),
+            ChannelLayout::Monochrome => d.decode_bw_lines(&result, &mut state, out),
         }
 
         // Move the now-populated image into the ImageComplete event. The
@@ -1069,6 +1105,46 @@ mod tests {
             })
             .expect("expected VisDetected for Robot72");
         assert!(hedr.abs() < 10.0);
+    }
+
+    /// A clean VIS burst for `code` must start a `mode` image: the decoder
+    /// emits `VisDetected { mode }` with a near-zero mistuning.
+    #[allow(clippy::panic)]
+    fn assert_burst_detected_as(code: u8, mode: SstvMode) {
+        let mut d = SstvDecoder::new(WORKING_SAMPLE_RATE_HZ).expect("decoder");
+        let mut burst = crate::vis::tests::synth_vis(code, 0.0);
+        burst.extend(std::iter::repeat_n(0.0_f32, 512));
+        let events = d.process(&burst);
+        let hedr = events
+            .iter()
+            .find_map(|e| match e {
+                SstvEvent::VisDetected {
+                    mode: m,
+                    hedr_shift_hz,
+                    ..
+                } if *m == mode => Some(*hedr_shift_hz),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected VisDetected for {mode:?}; got {events:?}"));
+        assert!(hedr.abs() < 10.0, "{mode:?}: hedr {hedr}");
+    }
+
+    #[test]
+    fn process_emits_vis_detected_for_robot24bw_burst() {
+        assert_burst_detected_as(0x0A, SstvMode::Robot24Bw);
+    }
+
+    /// R12BW's header carries an inverted parity bit (slowrx `vis.c:116`);
+    /// `synth_vis` sends it that way, so this also covers the inversion
+    /// end to end.
+    #[test]
+    fn process_emits_vis_detected_for_robot12bw_burst() {
+        assert_burst_detected_as(0x06, SstvMode::Robot12Bw);
+    }
+
+    #[test]
+    fn process_emits_vis_detected_for_robot8bw_burst() {
+        assert_burst_detected_as(0x02, SstvMode::Robot8Bw);
     }
 
     #[test]

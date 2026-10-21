@@ -16,6 +16,11 @@
 //! R72 is 3-channel per radio line, one image row per radio line, no
 //! chroma duplication.
 //!
+//! **B/W:** Robot 24 / 12 / 8 B/W carry a single luminance channel per
+//! radio line ([`crate::modespec::ChannelLayout::Monochrome`]; slowrx
+//! `video.c:103-109` `NumChans = 1`) and are decoded by
+//! `decode_bw_line`, not `decode_line`.
+//!
 //! Translated from slowrx's `video.c` (Oona Räisänen, ISC License).
 //! Per-mode chroma layout: video.c lines 60-101, 178-209, 421-425.
 //! YUV→RGB matrix: video.c lines 446-451 (shared with PD; we re-use
@@ -89,6 +94,11 @@ pub(crate) fn decode_line(
                 hedr_shift_hz,
             );
         }
+        // The B/W modes have their own layout and line decoder
+        // (`decode_bw_line`).
+        SstvMode::Robot24Bw | SstvMode::Robot12Bw | SstvMode::Robot8Bw => {
+            unreachable!("decode_line called with B/W mode {mode:?}");
+        }
         // Listed, not `_`: inside this crate `#[non_exhaustive]` doesn't
         // apply, so a new mode forces a decision here at compile time
         // instead of landing on a runtime panic (audit C17).
@@ -103,6 +113,38 @@ pub(crate) fn decode_line(
             unreachable!("decode_line called with non-Robot mode {mode:?}");
         }
     }
+}
+
+/// Decode one Robot B/W radio line into image row `line_index`.
+///
+/// One channel per line (slowrx `video.c:103-109`, `NumChans = 1`), laid
+/// out by the `default:` branch of the channel-time switch
+/// (`video.c:95-100`): `ChanStart[0]` = sync + porch, `ChanLen[0]` =
+/// `pixel_seconds` × width. Each pixel is grey — `p[0] = p[1] = p[2] =
+/// Image[tx][y][0]` (`video.c:453`). The radio line's time offset is
+/// `line_index × line_seconds` (un-rounded; the per-pixel time does the
+/// single `round()`, as for every mode).
+pub(crate) fn decode_bw_line(
+    ctx: &crate::demod::ChannelDecodeCtx<'_>,
+    line_index: u32,
+    image: &mut crate::image::SstvImage,
+    state: &mut crate::demod::DemodState<'_>,
+) {
+    let spec = ctx.spec;
+    // Hoisted line buffers (Audit #93 D3); returned to the demod below.
+    let mut bufs = state.demod.take_line_bufs(spec.line_pixels as usize);
+    let [lum, _, _, _] = &mut bufs;
+    crate::demod::decode_one_channel_into(
+        lum,
+        spec.sync_seconds + spec.porch_seconds,
+        f64::from(line_index) * spec.line_seconds,
+        ctx,
+        state,
+    );
+    for (x, &y) in (0..spec.line_pixels).zip(lum.iter()) {
+        image.put_pixel(x, line_index, [y, y, y]);
+    }
+    state.demod.restore_line_bufs(bufs);
 }
 
 /// Decode one R72 radio line into image[`line_index`].

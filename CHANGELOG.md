@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Robot 24 / 12 / 8 B/W** (#117): the three monochrome Robot modes now
+  decode (`SstvMode::Robot24Bw` / `Robot12Bw` / `Robot8Bw`, VIS `0x0A` /
+  `0x06` / `0x02`; Robot 12 B/W's inverted VIS parity bit is handled), with
+  slowrx's timings. Their images are grey (R = G = B), via the new
+  `ChannelLayout::Monochrome`. Robot 12 and 8 B/W send 120 lines: the image
+  is 320×120, and the new `ModeSpec::line_height` field (slowrx's
+  `LineHeight`; 2 for these two, 1 for every other mode) says to show each
+  row twice; `slowrx-cli` writes their PNGs at 320×240 that way, as slowrx
+  saves them. `slowrx-cli --mode` / `--fallback-mode` accept `robot24bw`,
+  `robot12bw` and `robot8bw`. Validated by synthetic round-trips only — no
+  real-radio B/W recording is available.
+
 ## [0.7.0] - 2026-10-21
 
 ### Added

@@ -4,13 +4,14 @@
 //! See `NOTICE.md` for full attribution.
 //!
 //! Implemented modes: PD120, PD180, PD240, Robot 24, Robot 36, Robot 72,
-//! Scottie 1, Scottie 2, Scottie DX, Martin 1, Martin 2. All RGB-sequential
-//! modes (Scottie + Martin) share a single decode path; the per-line
-//! offsets branch on [`SyncPosition`].
+//! Robot 8 / 12 / 24 B/W, Scottie 1, Scottie 2, Scottie DX, Martin 1,
+//! Martin 2. All RGB-sequential modes (Scottie + Martin) share a single
+//! decode path; the per-line offsets branch on [`SyncPosition`].
 
 /// SSTV operating mode. Implemented: [`SstvMode::Pd120`], [`SstvMode::Pd180`],
 /// [`SstvMode::Pd240`], [`SstvMode::Robot24`], [`SstvMode::Robot36`],
-/// [`SstvMode::Robot72`], [`SstvMode::Scottie1`], [`SstvMode::Scottie2`],
+/// [`SstvMode::Robot72`], [`SstvMode::Robot24Bw`], [`SstvMode::Robot12Bw`],
+/// [`SstvMode::Robot8Bw`], [`SstvMode::Scottie1`], [`SstvMode::Scottie2`],
 /// [`SstvMode::ScottieDx`], [`SstvMode::Martin1`], [`SstvMode::Martin2`].
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -27,6 +28,15 @@ pub enum SstvMode {
     Robot36,
     /// Robot 72. VIS `0x0C`.
     Robot72,
+    /// Robot 24 B/W (monochrome, 320 × 240). VIS `0x0A`.
+    Robot24Bw,
+    /// Robot 12 B/W (monochrome, 320 × 120, shown at
+    /// [`ModeSpec::line_height`] 2). VIS `0x06`, sent with an inverted
+    /// parity bit.
+    Robot12Bw,
+    /// Robot 8 B/W (monochrome, 320 × 120, shown at
+    /// [`ModeSpec::line_height`] 2). VIS `0x02`.
+    Robot8Bw,
     /// Scottie 1. VIS `0x3C`.
     Scottie1,
     /// Scottie 2. VIS `0x38`.
@@ -58,8 +68,19 @@ pub struct ModeSpec {
     pub vis_code: u8,
     /// Visible image width in pixels.
     pub line_pixels: u32,
-    /// Total visible scan lines per image.
+    /// Total visible scan lines per image — the decoded image's height.
     pub image_lines: u32,
+    /// Display rows per decoded image row: slowrx's `LineHeight`
+    /// (`modespec.c`). 2 for Robot 12 B/W and Robot 8 B/W, whose 120 lines
+    /// are meant to be shown at 320 × 240; 1 for every other mode here.
+    /// Display-only — slowrx decodes `NumLines` rows and applies it only
+    /// when scaling the image for display and for its saved PNG
+    /// (`video.c:243-244`, `common.c:86-87`). The decoded [`SstvImage`]
+    /// stays `image_lines` tall; stretch each row `line_height` times for
+    /// the intended aspect.
+    ///
+    /// [`SstvImage`]: crate::image::SstvImage
+    pub line_height: u32,
     /// Total per-line duration including sync + porches, seconds.
     pub line_seconds: f64,
     /// Sync pulse duration, seconds.
@@ -84,8 +105,10 @@ pub struct ModeSpec {
 }
 
 /// Per-mode channel arrangement. PD-family modes use
-/// [`ChannelLayout::PdYcbcr`]; Robot family uses [`ChannelLayout::RobotYuv`].
-/// Future V2 mode families (Scottie, Martin) add their own values.
+/// [`ChannelLayout::PdYcbcr`]; the colour Robot modes use
+/// [`ChannelLayout::RobotYuv`] and the Robot B/W modes
+/// [`ChannelLayout::Monochrome`]; Scottie and Martin use
+/// [`ChannelLayout::RgbSequential`].
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ChannelLayout {
@@ -102,6 +125,11 @@ pub enum ChannelLayout {
     /// line. Used by Scottie (G→B→R, sync mid-line) and Martin (G→B→R,
     /// sync at line start).
     RgbSequential,
+    /// One luminance channel per radio line, one image row per radio line,
+    /// shown as grey (`R = G = B = Y`). Robot 24 / 12 / 8 B/W — slowrx's
+    /// `NumChans = 1` modes (`video.c:103-109`) with `ColorEnc = BW`
+    /// (`video.c:453`).
+    Monochrome,
 }
 
 /// Where the sync pulse sits within a radio line.
@@ -125,15 +153,18 @@ pub enum SyncPosition {
 impl ModeSpec {
     /// Radio lines per image — the `line_seconds` periods the decoder
     /// buffers, each starting with one sync pulse. PD packs two image rows
-    /// into each radio line (`image_lines / 2`); Robot, Scottie and Martin
-    /// send one row per radio line. Mirrors slowrx `video.c:251-254`.
+    /// into each radio line (`image_lines / 2`); Robot (colour and B/W),
+    /// Scottie and Martin send one row per radio line. Mirrors slowrx
+    /// `video.c:251-254`.
     /// Requires an even `image_lines` for PD (true of every PD mode; pinned
     /// by a test).
     #[must_use]
     pub(crate) fn radio_lines(&self) -> u32 {
         match self.channel_layout {
             ChannelLayout::PdYcbcr => self.image_lines / 2,
-            ChannelLayout::RobotYuv | ChannelLayout::RgbSequential => self.image_lines,
+            ChannelLayout::RobotYuv | ChannelLayout::RgbSequential | ChannelLayout::Monochrome => {
+                self.image_lines
+            }
         }
     }
 
@@ -191,6 +222,9 @@ pub fn for_mode(mode: SstvMode) -> ModeSpec {
         SstvMode::Robot24 => ROBOT24,
         SstvMode::Robot36 => ROBOT36,
         SstvMode::Robot72 => ROBOT72,
+        SstvMode::Robot24Bw => ROBOT24_BW,
+        SstvMode::Robot12Bw => ROBOT12_BW,
+        SstvMode::Robot8Bw => ROBOT8_BW,
         SstvMode::Scottie1 => SCOTTIE1,
         SstvMode::Scottie2 => SCOTTIE2,
         SstvMode::ScottieDx => SCOTTIE_DX,
@@ -201,7 +235,9 @@ pub fn for_mode(mode: SstvMode) -> ModeSpec {
 
 // Mode timing constants — translated row-for-row from slowrx's
 // modespec.c (PD120 lines 260-271, PD180 lines 286-297, PD240 lines 299-310,
-// R72 lines 130-141, R36 lines 143-154, R24 lines 156-167).
+// R72 lines 130-141, R36 lines 143-154, R24 lines 156-167, R24BW lines
+// 169-180, R12BW lines 182-193, R8BW lines 195-206). `line_height` is
+// slowrx's `LineHeight` column.
 
 const PD120: ModeSpec = ModeSpec {
     mode: SstvMode::Pd120,
@@ -210,6 +246,7 @@ const PD120: ModeSpec = ModeSpec {
     vis_code: 0x5F,
     line_pixels: 640,
     image_lines: 496,
+    line_height: 1,
     line_seconds: 0.508_48,
     sync_seconds: 0.020,
     porch_seconds: 0.002_08,
@@ -226,6 +263,7 @@ const PD180: ModeSpec = ModeSpec {
     vis_code: 0x60,
     line_pixels: 640,
     image_lines: 496,
+    line_height: 1,
     line_seconds: 0.754_24,
     sync_seconds: 0.020,
     porch_seconds: 0.002_08,
@@ -242,6 +280,7 @@ const PD240: ModeSpec = ModeSpec {
     vis_code: 0x61,
     line_pixels: 640,
     image_lines: 496,
+    line_height: 1,
     // slowrx modespec.c:299-310 — PD240 LineTime = 1000e-3,
     // PixelTime = 0.382e-3, SyncTime = 20e-3, PorchTime = 2.08e-3.
     line_seconds: 1.000,
@@ -260,6 +299,7 @@ const ROBOT24: ModeSpec = ModeSpec {
     vis_code: 0x04,
     line_pixels: 320,
     image_lines: 240,
+    line_height: 1,
     // slowrx modespec.c:156-167 — R24 LineTime = 150e-3,
     // PixelTime = 0.1375e-3, SyncTime = 9e-3, PorchTime = 3e-3,
     // SeptrTime = 6e-3.
@@ -279,6 +319,7 @@ const ROBOT36: ModeSpec = ModeSpec {
     vis_code: 0x08,
     line_pixels: 320,
     image_lines: 240,
+    line_height: 1,
     // slowrx modespec.c:143-154 — R36 LineTime = 150e-3,
     // PixelTime = 0.1375e-3, SyncTime = 9e-3, PorchTime = 3e-3,
     // SeptrTime = 6e-3.  Identical timing to R24.
@@ -298,6 +339,7 @@ const ROBOT72: ModeSpec = ModeSpec {
     vis_code: 0x0C,
     line_pixels: 320,
     image_lines: 240,
+    line_height: 1,
     // slowrx modespec.c:130-141 — R72 LineTime = 300e-3,
     // PixelTime = 0.2875e-3, SyncTime = 9e-3, PorchTime = 3e-3,
     // SeptrTime = 4.7e-3.
@@ -317,6 +359,7 @@ const SCOTTIE1: ModeSpec = ModeSpec {
     vis_code: 0x3C,
     line_pixels: 320,
     image_lines: 256,
+    line_height: 1,
     // slowrx modespec.c:91-102 — S1 LineTime = 428.38e-3,
     // PixelTime = 0.4320e-3, SyncTime = 9e-3, PorchTime = 1.5e-3,
     // SeptrTime = 1.5e-3.
@@ -336,6 +379,7 @@ const SCOTTIE2: ModeSpec = ModeSpec {
     vis_code: 0x38,
     line_pixels: 320,
     image_lines: 256,
+    line_height: 1,
     // slowrx modespec.c:104-115 — S2 LineTime = 277.692e-3,
     // PixelTime = 0.2752e-3, SyncTime = 9e-3, PorchTime = 1.5e-3,
     // SeptrTime = 1.5e-3.
@@ -355,6 +399,7 @@ const SCOTTIE_DX: ModeSpec = ModeSpec {
     vis_code: 0x4C,
     line_pixels: 320,
     image_lines: 256,
+    line_height: 1,
     // slowrx modespec.c:117-128 — SDX LineTime = 1050.3e-3,
     // PixelTime = 1.08053e-3, SyncTime = 9e-3, PorchTime = 1.5e-3,
     // SeptrTime = 1.5e-3.
@@ -367,6 +412,70 @@ const SCOTTIE_DX: ModeSpec = ModeSpec {
     sync_position: SyncPosition::Scottie,
 };
 
+/// Robot 24 B/W. slowrx `modespec.c:169-180`.
+const ROBOT24_BW: ModeSpec = ModeSpec {
+    mode: SstvMode::Robot24Bw,
+    short_name: "robot24bw",
+    name: "Robot 24 B/W",
+    vis_code: 0x0A,
+    line_pixels: 320,
+    image_lines: 240,
+    line_height: 1,
+    // slowrx modespec.c:169-180 — R24BW LineTime = 100e-3,
+    // PixelTime = 0.291e-3, SyncTime = 7e-3, PorchTime = 0e-3,
+    // SeptrTime = 0e-3.
+    line_seconds: 0.100,
+    sync_seconds: 0.007,
+    porch_seconds: 0.0,
+    pixel_seconds: 0.000_291,
+    septr_seconds: 0.0,
+    channel_layout: ChannelLayout::Monochrome,
+    sync_position: SyncPosition::LineStart,
+};
+
+/// Robot 12 B/W. slowrx `modespec.c:182-193`. Its VIS parity bit is
+/// inverted (`vis.c:116`; see `crate::vis::R12BW_VIS_CODE`).
+pub(crate) const ROBOT12_BW: ModeSpec = ModeSpec {
+    mode: SstvMode::Robot12Bw,
+    short_name: "robot12bw",
+    name: "Robot 12 B/W",
+    vis_code: 0x06,
+    line_pixels: 320,
+    image_lines: 120,
+    line_height: 2,
+    // slowrx modespec.c:182-193 — R12BW LineTime = 100e-3,
+    // PixelTime = 0.291e-3, SyncTime = 7e-3, PorchTime = 0e-3,
+    // SeptrTime = 0e-3. Identical line timing to R24BW, half the lines.
+    line_seconds: 0.100,
+    sync_seconds: 0.007,
+    porch_seconds: 0.0,
+    pixel_seconds: 0.000_291,
+    septr_seconds: 0.0,
+    channel_layout: ChannelLayout::Monochrome,
+    sync_position: SyncPosition::LineStart,
+};
+
+/// Robot 8 B/W. slowrx `modespec.c:195-206`.
+const ROBOT8_BW: ModeSpec = ModeSpec {
+    mode: SstvMode::Robot8Bw,
+    short_name: "robot8bw",
+    name: "Robot 8 B/W",
+    vis_code: 0x02,
+    line_pixels: 320,
+    image_lines: 120,
+    line_height: 2,
+    // slowrx modespec.c:195-206 — R8BW LineTime = 66.9e-3,
+    // PixelTime = 0.1871875e-3, SyncTime = 7e-3, PorchTime = 0e-3,
+    // SeptrTime = 0e-3.
+    line_seconds: 0.066_9,
+    sync_seconds: 0.007,
+    porch_seconds: 0.0,
+    pixel_seconds: 0.000_187_187_5,
+    septr_seconds: 0.0,
+    channel_layout: ChannelLayout::Monochrome,
+    sync_position: SyncPosition::LineStart,
+};
+
 /// Martin 1. slowrx `modespec.c:39-50`.
 const MARTIN1: ModeSpec = ModeSpec {
     mode: SstvMode::Martin1,
@@ -375,6 +484,7 @@ const MARTIN1: ModeSpec = ModeSpec {
     vis_code: 0x2C,
     line_pixels: 320,
     image_lines: 256,
+    line_height: 1,
     // slowrx modespec.c:39-50 — M1 LineTime = 446.446e-3,
     // PixelTime = 0.4576e-3, SyncTime = 4.862e-3,
     // PorchTime = 0.572e-3, SeptrTime = 0.572e-3.
@@ -395,6 +505,7 @@ const MARTIN2: ModeSpec = ModeSpec {
     vis_code: 0x28,
     line_pixels: 320,
     image_lines: 256,
+    line_height: 1,
     // slowrx modespec.c:52-63 — M2 LineTime = 226.7986e-3,
     // PixelTime = 0.2288e-3, SyncTime = 4.862e-3,
     // PorchTime = 0.572e-3, SeptrTime = 0.572e-3.
@@ -415,9 +526,9 @@ const MARTIN2: ModeSpec = ModeSpec {
 /// The F8 round-trip test (`all_specs_roundtrip`) verifies every
 /// entry's `(mode, vis_code, short_name, name)` quadruple is unique
 /// and that `lookup` and `for_mode` agree with the table.
-pub(crate) const ALL_SPECS: [ModeSpec; 11] = [
-    PD120, PD180, PD240, ROBOT24, ROBOT36, ROBOT72, SCOTTIE1, SCOTTIE2, SCOTTIE_DX, MARTIN1,
-    MARTIN2,
+pub(crate) const ALL_SPECS: [ModeSpec; 14] = [
+    PD120, PD180, PD240, ROBOT24, ROBOT36, ROBOT72, ROBOT24_BW, ROBOT12_BW, ROBOT8_BW, SCOTTIE1,
+    SCOTTIE2, SCOTTIE_DX, MARTIN1, MARTIN2,
 ];
 
 #[cfg(test)]
@@ -484,6 +595,9 @@ mod tests {
             SstvMode::Robot24,
             SstvMode::Robot36,
             SstvMode::Robot72,
+            SstvMode::Robot24Bw,
+            SstvMode::Robot12Bw,
+            SstvMode::Robot8Bw,
         ] {
             let spec = for_mode(mode);
             assert_eq!(spec.sync_position, SyncPosition::LineStart);
@@ -650,6 +764,82 @@ mod tests {
         assert_eq!(lookup(0x28).expect("M2").mode, SstvMode::Martin2);
     }
 
+    /// The timing every Robot B/W mode shares (slowrx `modespec.c:169-206`):
+    /// 7 ms sync, no porch or separator, 320 px, one luminance channel per
+    /// line-start-synced radio line.
+    fn assert_robot_bw_common(spec: ModeSpec) {
+        assert_eq!(spec.line_pixels, 320, "{:?}", spec.mode);
+        assert_eq!(spec.sync_seconds, 0.007, "{:?}", spec.mode);
+        assert_eq!(spec.porch_seconds, 0.0, "{:?}", spec.mode);
+        assert_eq!(spec.septr_seconds, 0.0, "{:?}", spec.mode);
+        assert_eq!(spec.channel_layout, ChannelLayout::Monochrome);
+        assert_eq!(spec.sync_position, SyncPosition::LineStart);
+    }
+
+    #[test]
+    fn robot24bw_modespec() {
+        let spec = for_mode(SstvMode::Robot24Bw);
+        assert_robot_bw_common(spec);
+        assert_eq!(spec.mode, SstvMode::Robot24Bw);
+        assert_eq!(spec.vis_code, 0x0A);
+        assert_eq!(spec.short_name, "robot24bw");
+        assert_eq!(spec.name, "Robot 24 B/W");
+        assert_eq!(spec.image_lines, 240);
+        assert_eq!(spec.line_height, 1);
+        assert_eq!(spec.line_seconds, 0.100);
+        assert_eq!(spec.pixel_seconds, 0.000_291);
+    }
+
+    #[test]
+    fn robot12bw_modespec() {
+        let spec = for_mode(SstvMode::Robot12Bw);
+        assert_robot_bw_common(spec);
+        assert_eq!(spec.mode, SstvMode::Robot12Bw);
+        assert_eq!(spec.vis_code, 0x06);
+        assert_eq!(spec.short_name, "robot12bw");
+        assert_eq!(spec.name, "Robot 12 B/W");
+        assert_eq!(spec.image_lines, 120);
+        assert_eq!(spec.line_height, 2);
+        assert_eq!(spec.line_seconds, 0.100);
+        assert_eq!(spec.pixel_seconds, 0.000_291);
+    }
+
+    #[test]
+    fn robot8bw_modespec() {
+        let spec = for_mode(SstvMode::Robot8Bw);
+        assert_robot_bw_common(spec);
+        assert_eq!(spec.mode, SstvMode::Robot8Bw);
+        assert_eq!(spec.vis_code, 0x02);
+        assert_eq!(spec.short_name, "robot8bw");
+        assert_eq!(spec.name, "Robot 8 B/W");
+        assert_eq!(spec.image_lines, 120);
+        assert_eq!(spec.line_height, 2);
+        assert_eq!(spec.line_seconds, 0.066_9);
+        assert_eq!(spec.pixel_seconds, 0.000_187_187_5);
+    }
+
+    /// slowrx `VISmap` (`modespec.c:376`): `0x02` R8BW, `0x06` R12BW,
+    /// `0x0A` R24BW.
+    #[test]
+    fn robot_bw_vis_codes_resolve() {
+        assert_eq!(lookup(0x02).expect("R8BW").mode, SstvMode::Robot8Bw);
+        assert_eq!(lookup(0x06).expect("R12BW").mode, SstvMode::Robot12Bw);
+        assert_eq!(lookup(0x0A).expect("R24BW").mode, SstvMode::Robot24Bw);
+    }
+
+    /// `LineHeight` is 2 only for the two 120-line B/W modes; every other
+    /// mode shows each decoded row once (slowrx `modespec.c`).
+    #[test]
+    fn line_height_is_two_only_for_r12bw_and_r8bw() {
+        for spec in ALL_SPECS {
+            let expected = match spec.mode {
+                SstvMode::Robot12Bw | SstvMode::Robot8Bw => 2,
+                _ => 1,
+            };
+            assert_eq!(spec.line_height, expected, "{:?}", spec.mode);
+        }
+    }
+
     /// `radio_lines` halves PD's `image_lines` with integer division, so
     /// every PD mode must have an even image height (audit A5).
     #[test]
@@ -657,7 +847,9 @@ mod tests {
         for spec in ALL_SPECS {
             let rows_per_radio_line = match spec.channel_layout {
                 ChannelLayout::PdYcbcr => 2,
-                ChannelLayout::RobotYuv | ChannelLayout::RgbSequential => 1,
+                ChannelLayout::RobotYuv
+                | ChannelLayout::RgbSequential
+                | ChannelLayout::Monochrome => 1,
             };
             assert_eq!(
                 spec.radio_lines() * rows_per_radio_line,
@@ -677,6 +869,9 @@ mod tests {
             SstvMode::Robot24,
             SstvMode::Robot36,
             SstvMode::Robot72,
+            SstvMode::Robot24Bw,
+            SstvMode::Robot12Bw,
+            SstvMode::Robot8Bw,
             SstvMode::Martin1,
             SstvMode::Martin2,
         ] {
@@ -709,8 +904,8 @@ mod tests {
 
     /// F8 (#91). Every entry in `ALL_SPECS` round-trips cleanly
     /// through `lookup` (VIS code → spec) and `for_mode` (mode →
-    /// spec); the table has exactly 11 unique modes, 11 unique VIS
-    /// codes, 11 unique `short_names`; every `name` and `short_name`
+    /// spec); the table has exactly 14 unique modes, 14 unique VIS
+    /// codes, 14 unique `short_names`; every `name` and `short_name`
     /// is non-empty.
     ///
     /// Subsumes the per-mode `vis_code_resolves` tests as a

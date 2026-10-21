@@ -21,8 +21,9 @@ fixtures decode to images visually matching the reference JPGs),
 Robot 36 against the ARISS Fram2 corpus (all 12 fixtures decode to
 images visually matching the reference JPGs — see
 [`tests/ariss_fram2_validation.md`](https://github.com/jasonherald/slowrx.rs/blob/main/tests/ariss_fram2_validation.md)). PD240, Robot 24, Robot 72,
-Scottie 1/2/DX, and Martin 1/2 ship with synthetic round-trip coverage
-only — real-radio fixtures for those modes are pending. Robot 24
+Robot 24/12/8 B/W, Scottie 1/2/DX, and Martin 1/2 ship with synthetic
+round-trip coverage only — real-radio fixtures for those modes are
+pending. Robot 24
 inherits Robot 36's real-radio evidence by structural identity (same
 decoder code path, only LineTime differs). Scottie + Martin share an
 RGB-sequential decoder dispatched on `SyncPosition` (Scottie sync
@@ -77,11 +78,18 @@ samples. Mode coverage:
 |---|---|
 | **PD** | PD120, PD180, PD240 |
 | **Robot** | Robot 24, Robot 36, Robot 72 |
+| **Robot B/W** | Robot 24 B/W, Robot 12 B/W, Robot 8 B/W |
 | **Scottie** | Scottie 1, Scottie 2, Scottie DX |
 | **Martin** | Martin 1, Martin 2 |
 
 VIS header detection is automatic — feed the decoder audio, get images
 out as they complete.
+
+Robot 12 B/W and Robot 8 B/W send 120 lines, so their decoded images are
+320×120 — one row per line, as slowrx decodes them. `ModeSpec::line_height`
+(2 for these two modes, 1 for all others) says how many times to repeat
+each row to show the picture at its intended 320×240 shape, which is what
+slowrx does when it displays and saves the image.
 
 If a fade wipes out a header's VIS bits, the image after it is normally lost.
 Callers that know which mode a station uses can opt in to a fallback, so the

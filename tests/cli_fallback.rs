@@ -154,6 +154,28 @@ fn an_unknown_mode_name_is_rejected_with_the_valid_names() {
     );
 }
 
+/// Every Robot B/W name is accepted by both mode flags. A second of silence
+/// decodes nothing (exit 2); an unknown name would fail argument parsing
+/// (exit 1, as above).
+#[test]
+fn both_mode_flags_accept_the_robot_bw_names() {
+    let dir = scratch("bw-names");
+    let wav = dir.join("silence.wav");
+    write_wav(&wav, &vec![0.0_f32; WORKING_SAMPLE_RATE_HZ as usize]);
+    for name in ["robot24bw", "robot12bw", "robot8bw", "ROBOT12BW"] {
+        for flag in ["--mode", "--fallback-mode"] {
+            cli()
+                .args(["--quiet", flag, name, "--input"])
+                .arg(&wav)
+                .arg("--output")
+                .arg(dir.join("out"))
+                .assert()
+                .code(2);
+        }
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// A clean Robot 36 VIS followed by 40 s of noise: the decoder produces a
 /// full-size image of noise.
 fn write_vis_then_noise_wav(path: &Path) {

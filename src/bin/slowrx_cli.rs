@@ -272,12 +272,18 @@ fn on_image(
     Ok(())
 }
 
+/// Write `image` as a PNG, repeating each row `line_height` times (2 for
+/// Robot 12/8 B/W, whose 120 lines slowrx shows twice each) so the picture
+/// keeps its aspect, as slowrx's saved images do.
 fn save_image(image: &SstvImage, path: &std::path::Path) -> Result<()> {
     let w = image.width;
-    let h = image.height;
+    let line_height = slowrx::for_mode(image.mode).line_height.max(1);
+    let h = image.height * line_height;
     let mut buf: Vec<u8> = Vec::with_capacity((w as usize) * (h as usize) * 3);
-    for pixel in &image.pixels {
-        buf.extend_from_slice(pixel);
+    for row in image.pixels.chunks(w.max(1) as usize) {
+        for _ in 0..line_height {
+            buf.extend(row.iter().flatten());
+        }
     }
     let img: image::ImageBuffer<image::Rgb<u8>, _> = image::ImageBuffer::from_vec(w, h, buf)
         .ok_or_else(|| anyhow!("image buffer size mismatch"))?;
