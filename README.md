@@ -20,7 +20,7 @@ captures: PD120/PD180 against the ARISS Dec-2017 corpus (6 of 7
 fixtures decode to images visually matching the reference JPGs),
 Robot 36 against the ARISS Fram2 corpus (all 12 fixtures decode to
 images visually matching the reference JPGs — see
-`tests/ariss_fram2_validation.md`). PD240, Robot 24, Robot 72,
+[`tests/ariss_fram2_validation.md`](https://github.com/jasonherald/slowrx.rs/blob/main/tests/ariss_fram2_validation.md)). PD240, Robot 24, Robot 72,
 Scottie 1/2/DX, and Martin 1/2 ship with synthetic round-trip coverage
 only — real-radio fixtures for those modes are pending. Robot 24
 inherits Robot 36's real-radio evidence by structural identity (same

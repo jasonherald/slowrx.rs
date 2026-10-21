@@ -755,4 +755,4 @@ Closes V2.2 epic ([#64]). Tracks the V2 umbrella ([#9]).
 ---
 
 For releases **0.2.x and earlier** (V1 launch through V2.1 PD240
-post-merge cleanup), see [`docs/history.md`](docs/history.md).
+post-merge cleanup), see [`docs/history.md`](https://github.com/jasonherald/slowrx.rs/blob/main/docs/history.md).

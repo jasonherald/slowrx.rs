@@ -7,7 +7,7 @@ revisit. Future audits should consult this list before flagging any
 of these as "missing".
 
 For the parity audit reports themselves, see
-[`docs/audits/`](./audits/).
+[`docs/audits/`](https://github.com/jasonherald/slowrx.rs/tree/main/docs/audits).
 
 ---
 
@@ -530,7 +530,7 @@ Three triggers would prompt revisiting:
 
 1. **Empirical Fram2 validation shows the squiggles persist or worsen
    after this hysteresis lands.** Re-run the procedure at
-   [`tests/ariss_fram2_validation.md`](../tests/ariss_fram2_validation.md)
+   [`tests/ariss_fram2_validation.md`](https://github.com/jasonherald/slowrx.rs/blob/main/tests/ariss_fram2_validation.md)
    and compare visually against the V2.2 baseline. Persistence means
    hysteresis isn't the root cause; move on to other paths in #71
    (sub-pixel FFT interpolation, resampler quality).

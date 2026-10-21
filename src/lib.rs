@@ -11,7 +11,7 @@
 //! Martin 1 / 2 decode from raw audio. PD120 and PD180 are validated
 //! against the ARISS Dec-2017 capture set; Robot 36 is validated
 //! against the ARISS Fram2 corpus (see
-//! `tests/ariss_fram2_validation.md`). Scottie and Martin families
+//! [`tests/ariss_fram2_validation.md`][fram2]). Scottie and Martin families
 //! are synthetic round-trip-validated only — no Scottie or Martin
 //! reference WAVs are available. The public API is
 //! `#[non_exhaustive]`-protected for additive growth. See
@@ -34,6 +34,7 @@
 //! ```
 //!
 //! [NOTICE file]: https://github.com/jasonherald/slowrx.rs/blob/main/NOTICE.md
+//! [fram2]: https://github.com/jasonherald/slowrx.rs/blob/main/tests/ariss_fram2_validation.md
 
 #![warn(missing_docs)]
 
