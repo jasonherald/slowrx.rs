@@ -91,6 +91,24 @@ decoder.set_fallback_mode(Some(SstvMode::Robot36)); // emits SstvEvent::VisFallb
 
 The CLI equivalent is `slowrx-cli --fallback-mode robot36 …`.
 
+With a fallback set, the decoder also catches images that have no header at
+all: a fully faded header, or a transmission the receiver joined mid-image.
+Once that mode's line-sync pulses line up for about two seconds, it starts the
+image at the first synced line and emits `SstvEvent::SyncStart`. A header,
+when heard, always wins.
+
+If you already know the mode — a recording, or a station that only sends one —
+you can force it. Headers still mark where images start, but their mode bits
+are ignored:
+
+```rust
+# use slowrx::{SstvDecoder, SstvMode};
+# let mut decoder = SstvDecoder::new(44_100).expect("valid sample rate");
+decoder.set_forced_mode(Some(SstvMode::Pd120)); // every image decodes as PD120
+```
+
+The CLI equivalent is `slowrx-cli --mode pd120 …`.
+
 Each `SstvEvent::ImageComplete` also carries a `sync_quality` score. On
 weak signals, a VIS can be followed by noise, and the decoder still returns
 a full-size "image" of it; `sync_quality.looks_like_noise()` flags those

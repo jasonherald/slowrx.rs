@@ -88,3 +88,7 @@ required-features = ["cli", "test-support"]
 [[test]]
 name = "sync_quality"
 required-features = ["test-support"]
+
+[[test]]
+name = "sync_start"
+required-features = ["test-support"]

@@ -42,10 +42,18 @@ struct Args {
     quiet: bool,
 
     /// Mode to assume when a VIS header's leaders arrive but its bits are
-    /// lost (e.g. `robot36`, the same names as the output files). Off by
-    /// default. See `SstvDecoder::set_fallback_mode`.
+    /// lost (e.g. `robot36`, the same names as the output files); images
+    /// with no header at all then start from this mode's sync rhythm. Off
+    /// by default. See `SstvDecoder::set_fallback_mode`.
     #[arg(long, value_name = "MODE", value_parser = parse_mode)]
     fallback_mode: Option<SstvMode>,
+
+    /// Decode every image as MODE, ignoring the mode bits of VIS headers
+    /// (headers still mark where images start; images without one start
+    /// from the sync rhythm). Overrides `--fallback-mode`. See
+    /// `SstvDecoder::set_forced_mode`.
+    #[arg(long, value_name = "MODE", value_parser = parse_mode)]
+    mode: Option<SstvMode>,
 
     /// Don't write images whose line-sync quality says they are noise
     /// (`SyncQuality::looks_like_noise`, e.g. a VIS followed by a faded or
@@ -107,6 +115,7 @@ fn run(args: &Args) -> Result<u32> {
     let mut decoder =
         SstvDecoder::new(spec.sample_rate).with_context(|| "construct SstvDecoder")?;
     decoder.set_fallback_mode(args.fallback_mode);
+    decoder.set_forced_mode(args.mode);
 
     // Streaming pipeline: read in fixed-size chunks, normalize + fold to
     // mono on the fly, push each mono chunk into the stateful decoder.
@@ -138,10 +147,7 @@ fn run(args: &Args) -> Result<u32> {
     stream_decode(&mut reader, spec, channels, &mut decoder, &mut on_event)?;
 
     if !args.quiet {
-        eprintln!(
-            "done: {} VIS ({} assumed), {} lines, {} image(s), {} dropped as noise",
-            tally.vis, tally.fallback, tally.lines, tally.images, tally.dropped
-        );
+        eprintln!("{}", tally.summary());
     }
     Ok(tally.images)
 }
@@ -152,25 +158,32 @@ struct Tally {
     images: u32,
     vis: u32,
     fallback: u32,
+    sync_starts: u32,
     dropped: u32,
     lines: u32,
+}
+
+impl Tally {
+    /// The end-of-run summary line.
+    fn summary(&self) -> String {
+        format!(
+            "done: {} VIS ({} assumed), {} sync start(s), {} lines, {} image(s), {} dropped as noise",
+            self.vis, self.fallback, self.sync_starts, self.lines, self.images, self.dropped
+        )
+    }
 }
 
 /// Handle one decoder event: count it, report it, and write completed
 /// images (unless `--drop-noise` says the image is noise).
 fn on_event(args: &Args, tally: &mut Tally, event: SstvEvent) -> Result<()> {
-    match event {
+    let note = match event {
         SstvEvent::VisDetected {
             mode,
             sample_offset,
             hedr_shift_hz,
         } => {
             tally.vis += 1;
-            if !args.quiet {
-                eprintln!(
-                    "  VIS: mode={mode:?} at sample {sample_offset} (hedr_shift {hedr_shift_hz:+.1} Hz)"
-                );
-            }
+            format!("  VIS: mode={mode:?} at sample {sample_offset} (hedr_shift {hedr_shift_hz:+.1} Hz)")
         }
         SstvEvent::VisFallback {
             mode,
@@ -179,19 +192,28 @@ fn on_event(args: &Args, tally: &mut Tally, event: SstvEvent) -> Result<()> {
         } => {
             tally.vis += 1;
             tally.fallback += 1;
-            if !args.quiet {
-                eprintln!(
-                    "  VIS lost, assuming fallback: mode={mode:?} image from sample {sample_offset} (hedr_shift {hedr_shift_hz:+.1} Hz)"
-                );
-            }
+            format!("  VIS lost, assuming fallback: mode={mode:?} image from sample {sample_offset} (hedr_shift {hedr_shift_hz:+.1} Hz)")
         }
-        SstvEvent::LineDecoded { .. } => tally.lines += 1,
+        SstvEvent::SyncStart {
+            mode,
+            sample_offset,
+        } => {
+            tally.sync_starts += 1;
+            format!("  no VIS, sync rhythm: mode={mode:?} image from sample {sample_offset}")
+        }
+        SstvEvent::LineDecoded { .. } => {
+            tally.lines += 1;
+            return Ok(());
+        }
         SstvEvent::ImageComplete {
             image,
             sync_quality,
             ..
-        } => on_image(args, tally, &image, sync_quality)?,
-        _ => {}
+        } => return on_image(args, tally, &image, sync_quality),
+        _ => return Ok(()),
+    };
+    if !args.quiet {
+        eprintln!("{note}");
     }
     Ok(())
 }

@@ -68,7 +68,7 @@ const SLANT_OK_HI_DEG: f64 = 91.0;
 const MAX_SLANT_RETRIES: usize = 3;
 // `xAcc[700]` (sync.c:23), `SyncImg[700][630]` (sync.c:26),
 // `lines[600][...]` (sync.c:24).
-const X_ACC_BINS: usize = 700;
+pub(crate) const X_ACC_BINS: usize = 700;
 const SYNC_IMG_Y_BINS: usize = 630;
 const LINES_D_BINS: usize = 600;
 
@@ -531,21 +531,41 @@ pub(crate) fn sync_quality(x_acc: &[u32], spec: ModeSpec, num_lines: usize) -> f
     if n == 0 || num_lines == 0 {
         return 0.0;
     }
-    let width = ((spec.sync_seconds / spec.line_seconds) * n as f64)
-        .round()
-        .clamp(1.0, n as f64) as usize;
-    // Circular sliding-window sum, O(n).
-    let mut sum: u64 = x_acc[..width].iter().map(|&c| u64::from(c)).sum();
-    let mut best = sum;
-    for start in 1..n {
-        sum = sum + u64::from(x_acc[(start + width - 1) % n]) - u64::from(x_acc[start - 1]);
-        best = best.max(sum);
-    }
+    let width = sync_pulse_columns(spec, n);
+    let (_, best) = best_pulse_window(x_acc, width);
     let mut sorted = x_acc.to_vec();
     sorted.sort_unstable();
     let median = f64::from(sorted[n / 2]);
     let peak = best as f64 / width as f64;
     ((peak - median) / num_lines as f64).clamp(0.0, 1.0) as f32
+}
+
+/// Columns a sync pulse spans in an `n`-column line accumulator (≥ 1).
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub(crate) fn sync_pulse_columns(spec: ModeSpec, n: usize) -> usize {
+    ((spec.sync_seconds / spec.line_seconds) * n as f64)
+        .round()
+        .clamp(1.0, n.max(1) as f64) as usize
+}
+
+/// Start column and hit sum of the best `width`-column window of `x_acc`,
+/// wrapping around the line edge (circular sliding sum, O(n)); the first
+/// best window wins ties. `x_acc` must be non-empty and `width ≤ len`.
+pub(crate) fn best_pulse_window(x_acc: &[u32], width: usize) -> (usize, u64) {
+    let n = x_acc.len();
+    let mut sum: u64 = x_acc[..width].iter().map(|&c| u64::from(c)).sum();
+    let mut best = (0, sum);
+    for start in 1..n {
+        sum = sum + u64::from(x_acc[(start + width - 1) % n]) - u64::from(x_acc[start - 1]);
+        if sum > best.1 {
+            best = (start, sum);
+        }
+    }
+    best
 }
 
 /// Convert a falling-edge `xmax` (post-slip-wrap) to skip seconds,
@@ -738,6 +758,23 @@ mod tests {
         x_acc[..22].fill(spec.image_lines);
         let q = sync_quality(&x_acc, spec, lines);
         assert!(q > 0.9, "wrapped pulse: {q}");
+    }
+
+    #[test]
+    fn best_pulse_window_finds_the_pulse_start_column_including_wrapped() {
+        let spec = modespec::for_mode(modespec::SstvMode::Robot36);
+        let width = sync_pulse_columns(spec, X_ACC_BINS);
+        assert_eq!(width, 42, "9 ms of a 150 ms line over 700 columns");
+        let mut x_acc = vec![1_u32; X_ACC_BINS];
+        x_acc[300..300 + width].fill(50);
+        assert_eq!(best_pulse_window(&x_acc, width), (300, 50 * 42));
+        let mut wrapped = vec![0_u32; X_ACC_BINS];
+        wrapped[X_ACC_BINS - 10..].fill(9);
+        wrapped[..width - 10].fill(9);
+        assert_eq!(
+            best_pulse_window(&wrapped, width),
+            (X_ACC_BINS - 10, 9 * 42)
+        );
     }
 
     #[test]

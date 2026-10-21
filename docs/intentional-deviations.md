@@ -197,9 +197,69 @@ would decode a garbled image rather than nothing, so the caller chooses
 ### When to revisit
 
 If transmitters start sending headers with a single leader (the detector
-needs ≥ 350 ms of leader to be confident it saw a header), or if we add
-start-without-any-VIS detection from a mode's line-sync rhythm (tracked
-separately), which would subsume this for most cases.
+needs ≥ 350 ms of leader to be confident it saw a header). The sync-rhythm
+start below covers headers lost entirely, but this fallback still matters:
+it starts the image at its first line about 60 ms in, without waiting
+~2 s for the pulses, and it measures the radio's mistuning on the leader.
+
+---
+
+## Image start from the line-sync rhythm; forced mode (opt-in; no slowrx counterpart)
+
+### What slowrx does
+
+An image starts only at a decoded VIS. With no header, or with the receiver
+joining mid-transmission, nothing is decoded. The mode always comes from
+the VIS code.
+
+### What we do
+
+By default, exactly the same. With a fallback mode
+(`SstvDecoder::set_fallback_mode`) or a forced mode (`set_forced_mode`)
+set, a second detector runs alongside the VIS detector while the decoder
+waits for an image. It probes the 1200 Hz sync band with the same probe
+`find_sync` uses, and every ~23 ms it folds the latest window, at least
+8 lines and 2 s long, at that mode's line period. It scores the window
+with the sync-quality measure. After three consecutive scores ≥ 0.6, it finds
+the first line in the window whose pulse is present and backs off to where
+that line starts as the decoder lays lines out: 0 for line-start pulses, and
+`line / 2 − skip correction` for Scottie's mid-line pulse. It then starts
+decoding two pulse widths earlier, emitting `SstvEvent::SyncStart`.
+`find_sync` aligns the rest exactly as after a VIS. There is no header,
+so no mistuning is measured (0 Hz shift).
+
+Robot 24/36 pick `Cr` or `Cb` by row parity, so a start on an odd line
+would swap the chroma for the whole image. The detector votes the standard
+even/odd separator tone (1500 Hz before `Cr`, 2300 Hz before `Cb`) over the
+window and backs off one more line when the first line is odd.
+
+A forced mode makes the decoder ignore VIS mode bits. Headers still mark
+image starts (`VisDetected` reports the forced mode), and a header with an
+unknown code is decoded instead of reported as `UnknownVis`.
+
+### Why we deviated
+
+The lost-VIS fallback needs the header's leaders; a fade over the whole
+header, or AOS mid-transmission, still lost the image (#115). Replaying 13
+2026-10 ISS passes, over 2 hours of audio, with the fallback set to Robot 36
+recovered three images the decoder used to miss. One is a complete,
+legible slide whose header never came through, on the ~158 s transmission
+cadence between two headers. The other two are mid-image joins, legible
+after the join and with the colours right.
+
+It made no false starts in noise, including two passes with no SSTV at
+all. Every header-started image was pixel-identical, apart from one VIS
+caught 3 ms earlier because the detector re-anchored after a recovered
+image. All 12 ARISS Fram2 slides are pixel-identical. A forced mode answers
+issue #113: a known mode for recordings whose headers are damaged or
+misread.
+
+### When to revisit
+
+If a non-SSTV signal with periodic 1200 Hz clicks at a mode's line period
+shows up: a start then needs ~2 s of consistent pulses, which noise has
+never produced. Or if mistuned signals need decoding without a header: the
+sync probe assumes the nominal 1200 Hz.
 
 ---
 
@@ -216,7 +276,8 @@ ends, or a VIS matched by chance in noise, still produces a full-size
 
 Decoding is unchanged. `find_sync` additionally scores how clearly the
 mode's sync pulses lined up across the image, from its column accumulator
-`x_acc`: (best pulse-wide window mean − median) ÷ lines, clamped to `[0, 1]`.
+`x_acc`: (best pulse-wide window mean − median) ÷ radio lines (half the
+image rows for PD), clamped to `[0, 1]`.
 `SstvEvent::ImageComplete` carries the score as `sync_quality: SyncQuality`,
 and `SyncQuality::looks_like_noise()` flags scores below `NOISE_THRESHOLD`
 (0.2). `slowrx-cli --drop-noise` skips writing those images.

@@ -24,6 +24,9 @@ use crate::modespec::SstvMode;
 use crate::resample::WORKING_SAMPLE_RATE_HZ;
 use crate::test_tone::{lum_to_freq, ToneWriter, PORCH_HZ, SEPTR_HZ, SYNC_HZ};
 
+/// R36/R24 porch between the even/odd separator tone and the chroma.
+const ROBOT_CHROMA_PORCH_HZ: f64 = 1900.0;
+
 /// Encode an image as Robot 24 / 36 / 72 audio. `ycrcb` is row-major
 /// `[Y, Cr, Cb]` triples of length `width * height`.
 ///
@@ -155,8 +158,25 @@ fn encode_r36_or_r24(
             tone.fill_to(lum_to_freq(lum), advance(t, spec.pixel_seconds * 2.0));
         }
 
-        // Septr between Y and chroma.
-        tone.fill_to(SEPTR_HZ, advance(t, spec.septr_seconds));
+        // Septr between Y and chroma: the even/odd tone (1500 Hz before
+        // Cr, 2300 Hz before Cb), then a 1900 Hz porch. The decoder picks
+        // chroma by line parity; the sync-rhythm start reads this tone.
+        let parity_hz = if y % 2 == 0 {
+            crate::sync_start::ROBOT_EVEN_SEPARATOR_HZ
+        } else {
+            crate::sync_start::ROBOT_ODD_SEPARATOR_HZ
+        };
+        tone.fill_to(
+            parity_hz,
+            advance(t, crate::sync_start::ROBOT_PARITY_SEPARATOR_SECONDS),
+        );
+        tone.fill_to(
+            ROBOT_CHROMA_PORCH_HZ,
+            advance(
+                t,
+                spec.septr_seconds - crate::sync_start::ROBOT_PARITY_SEPARATOR_SECONDS,
+            ),
+        );
 
         // Chroma — Cr (ycrcb index 1) on even rows, Cb (ycrcb index 2)
         // on odd. One sample per `pixel_seconds`.
@@ -222,6 +242,30 @@ mod tests {
             p_sync > 10.0 * p_porch,
             "Robot72 line starts with SYNC tone (p_sync={p_sync}, p_porch={p_porch})"
         );
+    }
+
+    /// R36/R24 separators mark the line's chroma: 1500 Hz before `Cr`
+    /// (even lines), 2300 Hz before `Cb` (odd lines).
+    #[test]
+    fn encode_robot36_separator_marks_line_parity() {
+        let spec = for_mode(SstvMode::Robot36);
+        let img = vec![[128_u8, 128, 128]; (spec.line_pixels * spec.image_lines) as usize];
+        let audio = encode_robot(SstvMode::Robot36, &img);
+        let rate = f64::from(crate::resample::WORKING_SAMPLE_RATE_HZ);
+        let septr_at = spec.sync_seconds
+            + spec.porch_seconds
+            + 2.0 * f64::from(spec.line_pixels) * spec.pixel_seconds;
+        for line in 0..2_u32 {
+            let from = ((f64::from(line) * spec.line_seconds + septr_at) * rate).round() as usize;
+            let seg = &audio[from + 4..from + 44];
+            let even = crate::dsp::goertzel_power(seg, crate::sync_start::ROBOT_EVEN_SEPARATOR_HZ);
+            let odd = crate::dsp::goertzel_power(seg, crate::sync_start::ROBOT_ODD_SEPARATOR_HZ);
+            assert_eq!(
+                odd > even,
+                line % 2 == 1,
+                "line {line}: even {even:.1}, odd {odd:.1}"
+            );
+        }
     }
 
     #[test]

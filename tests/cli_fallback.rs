@@ -7,6 +7,8 @@
 //! - `--drop-noise`: an "image" decoded from noise after a VIS (#116) is
 //!   written by default but skipped with the flag; kept images report
 //!   their sync-quality score.
+//! - `--mode`: forces the mode (#113), so an image with no header at all
+//!   decodes from its sync rhythm (#115) — and only with a mode flag.
 
 #![cfg(all(feature = "cli", feature = "test-support"))]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
@@ -29,6 +31,18 @@ fn scratch(name: &str) -> PathBuf {
 /// Write the lost-VIS Robot 36 transmission as a 16-bit mono WAV.
 fn write_lost_vis_wav(path: &Path) {
     let (mut audio, _) = slowrx::__test_support::vis::lost_bits_header(610.0, true, 0.0);
+    let ycrcb = slowrx::__test_support::mode_robot::synthetic_ycrcb(SstvMode::Robot36);
+    audio.extend(slowrx::__test_support::mode_robot::encode_robot(
+        SstvMode::Robot36,
+        &ycrcb,
+    ));
+    audio.extend(std::iter::repeat_n(0.0_f32, 8192));
+    write_wav(path, &audio);
+}
+
+/// Write a Robot 36 image with no header at all (1 s of noise first).
+fn write_headerless_wav(path: &Path) {
+    let mut audio = slowrx::__test_support::noise::white(WORKING_SAMPLE_RATE_HZ as usize, 21);
     let ycrcb = slowrx::__test_support::mode_robot::synthetic_ycrcb(SstvMode::Robot36);
     audio.extend(slowrx::__test_support::mode_robot::encode_robot(
         SstvMode::Robot36,
@@ -178,5 +192,46 @@ fn drop_noise_skips_an_image_decoded_from_noise() {
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
     assert!(stderr.contains("looks like noise"), "stderr: {stderr}");
     assert!(!dropped.join("img-001-robot36.png").exists());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn mode_flag_decodes_an_image_with_no_header_from_its_sync_rhythm() {
+    let dir = scratch("mode");
+    let wav = dir.join("headerless.wav");
+    write_headerless_wav(&wav);
+    let out = dir.join("out");
+    let assert = cli()
+        .args(["--mode", "robot36", "--input"])
+        .arg(&wav)
+        .arg("--output")
+        .arg(&out)
+        .assert()
+        .success();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        stderr.contains("sync rhythm: mode=Robot36"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("1 sync start"), "stderr: {stderr}");
+    assert!(out.join("img-001-robot36.png").is_file(), "image written");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn without_a_mode_flag_an_image_with_no_header_is_not_decoded() {
+    let dir = scratch("nomode");
+    let wav = dir.join("headerless.wav");
+    write_headerless_wav(&wav);
+    let out = dir.join("out");
+    let assert = cli()
+        .args(["--quiet", "--input"])
+        .arg(&wav)
+        .arg("--output")
+        .arg(&out)
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(stderr.contains("no SSTV images"), "stderr: {stderr}");
     let _ = fs::remove_dir_all(&dir);
 }
