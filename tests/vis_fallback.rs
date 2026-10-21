@@ -89,22 +89,9 @@ fn vis_bits(t: &mut Tones, code: u8) {
     t.tone(BREAK_HZ, 30.0);
 }
 
-/// The synthetic Robot test image from `tests/roundtrip.rs` (Y'CbCr): Cr and
-/// Cb stripes are offset by a row so adjacent rows share chroma, which
-/// Robot 36's alternating-chroma lines need to round-trip.
+/// The shared synthetic Robot 36 test image (`Y'CbCr`).
 fn robot36_image() -> Vec<[u8; 3]> {
-    let spec = slowrx::for_mode(SstvMode::Robot36);
-    let (w, h) = (spec.line_pixels, spec.image_lines);
-    let mut ycrcb = Vec::with_capacity((w * h) as usize);
-    for y in 0..h {
-        for x in 0..w {
-            let lum = (f64::from(x) / f64::from(w) * 255.0) as u8;
-            let cr = if y % 4 < 2 { 200 } else { 56 };
-            let cb = if (y + 1) % 4 < 2 { 200 } else { 56 };
-            ycrcb.push([lum, cr, cb]);
-        }
-    }
-    ycrcb
+    slowrx::__test_support::mode_robot::synthetic_ycrcb(SstvMode::Robot36)
 }
 
 /// Append the Robot 36 image audio plus decoder-threshold padding.

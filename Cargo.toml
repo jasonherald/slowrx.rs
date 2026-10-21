@@ -80,3 +80,7 @@ required-features = ["test-support"]
 [[test]]
 name = "vis_fallback"
 required-features = ["test-support"]
+
+[[test]]
+name = "cli_fallback"
+required-features = ["cli", "test-support"]

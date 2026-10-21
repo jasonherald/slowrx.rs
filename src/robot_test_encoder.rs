@@ -168,6 +168,30 @@ fn encode_r36_or_r24(
     }
 }
 
+/// The standard synthetic Robot test image (`Y'CbCr`): a horizontal luma
+/// gradient with Cr and Cb stripes offset by a row, so adjacent rows share
+/// chroma as the R36/R24 round-trip constraint above requires (harmless for
+/// R72). Shared by the round-trip and lost-VIS fallback tests.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub(crate) fn synthetic_ycrcb(mode: SstvMode) -> Vec<[u8; 3]> {
+    let spec = crate::modespec::for_mode(mode);
+    let (w, h) = (spec.line_pixels, spec.image_lines);
+    let mut ycrcb = Vec::with_capacity((w * h) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let lum = (f64::from(x) / f64::from(w) * 255.0) as u8;
+            let cr = if y % 4 < 2 { 200 } else { 56 };
+            let cb = if (y + 1) % 4 < 2 { 200 } else { 56 };
+            ycrcb.push([lum, cr, cb]);
+        }
+    }
+    ycrcb
+}
+
 #[cfg(test)]
 #[allow(
     clippy::cast_precision_loss,

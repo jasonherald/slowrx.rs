@@ -247,15 +247,13 @@ pub struct SstvDecoder {
     /// counter may be slightly ahead of what the image decoder has consumed.
     ///
     /// The counter is used to anchor the VIS detector each time a fresh one
-    /// is constructed (initial, post-image, post-unknown-VIS). Note: for the
-    /// *first* detection on a freshly-built decoder, `DetectedVis::end_sample`
-    /// (→ `SstvEvent::VisDetected.sample_offset` / `UnknownVis.sample_offset`)
-    /// is an absolute working-rate index from sample 0. After a *restart*
-    /// (post-image — see `restart_vis_detection` — or post-unknown-VIS) the
-    /// fresh detector counts hops from 0, so a later detection's `sample_offset`
-    /// is relative to where the carry-forward audio began, not absolute. That
-    /// is acceptable — `sample_offset` is informational only — and tracked in
-    /// issue #99 (fixing it needs a `VisDetector` API change). The counter
+    /// is constructed (initial, post-image, post-unknown-VIS). Every
+    /// detection's `DetectedVis::end_sample` (→ `SstvEvent::VisDetected` /
+    /// `VisFallback` / `UnknownVis` `.sample_offset`) is an absolute
+    /// working-rate index from sample 0: a detector rebuilt after a
+    /// *restart* (post-image — see `restart_vis_detection` — or
+    /// post-unknown-VIS) fixes its hop grid's origin at the carry-forward
+    /// audio's absolute position on its first anchor (#99). The counter
     /// here does not gate any decode logic.
     ///
     /// If mid-image VIS detection is ever re-activated (see the TODO in
@@ -514,9 +512,9 @@ impl SstvDecoder {
                     // through (vs the old `break`) means that next VIS — and
                     // the image after it — surface in this same `process()`
                     // call, mirroring the known/unknown-code branches above.
-                    // Closes #31; #90 (A2 + D4). (`sample_offset` on detections
-                    // after the first is relative to the carry-forward start,
-                    // not absolute — #99.)
+                    // Closes #31; #90 (A2 + D4). The fresh detector anchors on
+                    // the carry-forward audio's absolute position, so its
+                    // detections still report absolute `sample_offset`s (#99).
                     Self::restart_vis_detection(
                         &mut self.vis,
                         self.working_samples_emitted,

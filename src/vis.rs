@@ -205,12 +205,16 @@ impl VisDetector {
 
     /// VIS code to assume when a header's leaders arrive but its bits are
     /// lost (`None` disables the fallback, the default and slowrx's
-    /// behaviour).
+    /// behaviour). Changing it drops any leader run or armed preamble seen
+    /// under the previous setting, so a header can only fire in the mode
+    /// that was configured while it arrived; re-setting the same code
+    /// keeps them.
     pub fn set_fallback_code(&mut self, code: Option<u8>) {
-        self.fallback_code = code;
-        if code.is_none() {
+        if code != self.fallback_code {
+            self.leader_run = None;
             self.fallback_arm = None;
         }
+        self.fallback_code = code;
     }
 
     /// Push working-rate audio into the detector. `total_samples_consumed`
@@ -931,7 +935,7 @@ pub mod tests {
     /// of 1900 Hz, optionally split by a 10 ms 1200 Hz break after 300 ms,
     /// then 300 ms of noise and `tail_ms` of silence. Returns the audio and
     /// the true image-start sample (where a stop bit would have ended).
-    fn lost_bits_header(leader_ms: f64, with_break: bool, tail_ms: f64) -> (Vec<f32>, usize) {
+    pub fn lost_bits_header(leader_ms: f64, with_break: bool, tail_ms: f64) -> (Vec<f32>, usize) {
         let sr = f64::from(WORKING_SAMPLE_RATE_HZ);
         let ms = |m: f64| (m * sr / 1000.0).round() as usize;
         let mut tone = crate::test_tone::ToneWriter::new();
@@ -975,6 +979,34 @@ pub mod tests {
                 "break={with_break}: image start off by {err_ms:.1} ms"
             );
         }
+    }
+
+    #[test]
+    fn changing_the_fallback_mode_drops_a_pending_preamble() {
+        // A header armed under one fallback must not fire under another:
+        // feed the preamble with Robot 36 set, switch to PD120 before the
+        // fire deadline, and nothing may be emitted for that header.
+        let (audio, image_start) = lost_bits_header(610.0, true, 200.0);
+        let mut det = VisDetector::new(vis_known);
+        det.set_fallback_code(Some(0x08));
+        let split = image_start - (0.1 * f64::from(WORKING_SAMPLE_RATE_HZ)) as usize;
+        det.process(&audio[..split], split as u64);
+        assert!(det.take_detected().is_none(), "not due yet");
+        det.set_fallback_code(Some(0x5F));
+        det.process(&audio[split..], audio.len() as u64);
+        assert!(
+            det.take_detected().is_none(),
+            "stale preamble must not fire"
+        );
+        // Re-setting the *same* mode keeps a pending preamble.
+        let mut det = VisDetector::new(vis_known);
+        det.set_fallback_code(Some(0x08));
+        det.process(&audio[..split], split as u64);
+        det.set_fallback_code(Some(0x08));
+        det.process(&audio[split..], audio.len() as u64);
+        assert!(det
+            .take_detected()
+            .is_some_and(|d| d.assumed && d.code == 0x08));
     }
 
     #[test]
