@@ -53,6 +53,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   synthetic round-trips) to the first. The documented deviation is
   resolved.
 
+### Fixed
+
+- **Sync-rhythm start in narrow-pulse modes** (follow-up to #115, found in
+  the review of #128). When an image started from its sync rhythm, the
+  first line was the first window line with half its pulse columns hit.
+  A short pulse on a long line spans only a few of the 700 columns:
+  Wraase SC-2's 5.5 ms is about 8, Martin's about 8, Scottie DX's about
+  6. So a noise line before the image could pass by chance, and the image
+  started one or two lines early (5 of 24 noise seeds for SC-2). For
+  pulses under 20 columns, the first line must now begin two consecutive
+  lines each carrying an unbroken run of sync hits at least half the
+  pulse long. Wide pulses (Robot, PD) keep the column test: the run test
+  started real weak Robot 36 images 4–10 lines late. Replaying 13 ISS
+  passes gives identical starts and images.
+
 ### Internal
 
 - `tests/fram2_pixel_diff.rs` compares the 12 ARISS Fram2 decodes with

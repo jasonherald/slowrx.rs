@@ -277,16 +277,51 @@ fn forced_mode_round_trips_through_the_accessor_and_survives_reset() {
 
 /// A forced Wraase SC-2 mode starts a header-less SC-2 transmission from
 /// its sync rhythm (SC-2's line is ~0.5 s, so the 8-line window is ~3.8 s)
-/// and decodes its R, G, B channels in order.
+/// at its first line, and decodes its R, G, B channels in order.
 #[test]
 fn a_forced_wraase_mode_decodes_a_headerless_sc2_image() {
     let spec = slowrx::for_mode(SstvMode::Wraase120);
     let (w, h) = (spec.line_pixels as usize, spec.image_lines as usize);
-    // A horizontal red ramp over vertical green/blue bands.
-    let rgb: Vec<[u8; 3]> = (0..h)
-        .flat_map(|_| {
+    let rgb = alternating_bands(w, h);
+    let lead_ms = 1000;
+    let mut audio = noise(lead_ms, 31);
+    audio.extend(slowrx::__test_support::mode_scottie::encode_scottie(
+        SstvMode::Wraase120,
+        &rgb,
+    ));
+    let events = decode(audio, |d| d.set_forced_mode(Some(SstvMode::Wraase120)));
+    let starts: Vec<u64> = events
+        .iter()
+        .filter_map(|e| match e {
+            SstvEvent::SyncStart {
+                mode: SstvMode::Wraase120,
+                sample_offset,
+            } => Some(*sample_offset),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(starts.len(), 1, "one sync start");
+    // The detector starts two sync-pulse widths ahead of the first line.
+    let expected = (lead_ms * RATE / 1000) as f64 - 2.0 * spec.sync_seconds * RATE as f64;
+    let off = starts[0] as f64 - expected;
+    assert!(
+        off.abs() < 40.0,
+        "start {off:.0} samples from the first line"
+    );
+    let imgs = images(&events);
+    assert_eq!(imgs.len(), 1);
+    let img = imgs[0];
+    let err = inset_rgb_error(img, &rgb);
+    assert!(err < 5.0, "headerless SC-2 mean error {err:.2}");
+}
+
+/// A red ramp over green/blue bands that swap on alternate rows, so a start
+/// one line late would decode every row inverted.
+fn alternating_bands(w: usize, h: usize) -> Vec<[u8; 3]> {
+    (0..h)
+        .flat_map(|y| {
             (0..w).map(move |x| {
-                let band = (x / 40) % 2 == 0;
+                let band = ((x / 40) + y) % 2 == 0;
                 [
                     (x * 255 / w) as u8,
                     if band { 200 } else { 40 },
@@ -294,38 +329,22 @@ fn a_forced_wraase_mode_decodes_a_headerless_sc2_image() {
                 ]
             })
         })
-        .collect();
-    let mut audio = noise(1000, 31);
-    audio.extend(slowrx::__test_support::mode_scottie::encode_scottie(
-        SstvMode::Wraase120,
-        &rgb,
-    ));
-    let events = decode(audio, |d| d.set_forced_mode(Some(SstvMode::Wraase120)));
-    assert_eq!(
-        count(&events, |e| matches!(
-            e,
-            SstvEvent::SyncStart {
-                mode: SstvMode::Wraase120,
-                ..
-            }
-        )),
-        1
-    );
-    let imgs = images(&events);
-    assert_eq!(imgs.len(), 1);
-    let img = imgs[0];
-    // Compare RGB away from the edge columns, whose pixel windows straddle
-    // the channel boundaries.
+        .collect()
+}
+
+/// Mean absolute RGB error against `rgb`, away from the edge columns whose
+/// pixel windows straddle the channel boundaries.
+fn inset_rgb_error(img: &SstvImage, rgb: &[[u8; 3]]) -> f64 {
+    let w = img.width as usize;
     let (mut sum, mut n) = (0_u64, 0_u64);
-    for y in 0..h {
-        for x in 1..w - 1 {
-            let (want, got) = (rgb[y * w + x], img.pixels[y * w + x]);
-            for c in 0..3 {
-                sum += u64::from(want[c].abs_diff(got[c]));
-                n += 1;
-            }
+    for (i, (want, got)) in rgb.iter().zip(&img.pixels).enumerate() {
+        if i % w == 0 || i % w == w - 1 {
+            continue;
+        }
+        for c in 0..3 {
+            sum += u64::from(want[c].abs_diff(got[c]));
+            n += 1;
         }
     }
-    let err = sum as f64 / n as f64;
-    assert!(err < 5.0, "headerless SC-2 mean error {err:.2}");
+    sum as f64 / n as f64
 }

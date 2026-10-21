@@ -34,6 +34,22 @@ pub(crate) const START_QUALITY: f32 = 0.6;
 /// … on this many evaluations in a row before an image starts.
 const START_CONSECUTIVE: u32 = 3;
 
+/// Pulses at least this many of the 700 columns wide can't be faked by a
+/// noise line (see `SyncStartDetector::first_pulsed_line`).
+const WIDE_PULSE_COLUMNS: usize = 20;
+
+/// A narrow-pulse image's first line must begin a run of this many
+/// consecutive lines that carry the pulse (see
+/// `SyncStartDetector::line_is_pulsed`).
+const PULSED_RUN: usize = 2;
+
+/// A pulsed line's longest unbroken run of sync-band hits must cover at
+/// least this fraction of the pulse length.
+const PULSE_RUN_FRACTION: f64 = 0.5;
+
+/// Probes searched either side of a line's expected pulse.
+const PULSE_SEARCH_SLACK_PROBES: f64 = 4.0;
+
 /// Start this many sync-pulse widths ahead of the located line start, so a
 /// slightly late pulse estimate never clips the first line.
 const START_LEAD_SYNC_PULSES: f64 = 2.0;
@@ -217,24 +233,18 @@ impl SyncStartDetector {
         })
     }
 
-    /// Absolute start sample for the first window line whose pulse (at
-    /// `column`, `width` columns wide) is present.
+    /// Absolute start sample for the image's first window line
+    /// ([`Self::first_pulsed_line`]), the pulse starting at `column` and
+    /// `width` columns wide.
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
     )]
     fn locate_start(&self, first: usize, column: usize, width: usize) -> u64 {
-        let n = X_ACC_BINS as f64;
-        let first_line = (0..self.window_lines)
-            .find(|&y| {
-                let hits = (column..column + width)
-                    .filter(|&c| self.probe_at(first, y as f64 + c as f64 / n))
-                    .count();
-                2 * hits >= width
-            })
-            .unwrap_or(0);
-        let pulse = (first_line as f64 + column as f64 / n) * self.spec.line_seconds;
+        let first_line = self.first_pulsed_line(first, column, width);
+        let pulse =
+            (first_line as f64 + column as f64 / X_ACC_BINS as f64) * self.spec.line_seconds;
         let window_start = (self.probe_origin + (first * SYNC_PROBE_STRIDE) as u64) as f64;
         let rate = f64::from(WORKING_SAMPLE_RATE_HZ);
         let mut line_start = window_start + (pulse - pulse_offset_seconds(self.spec)) * rate;
@@ -243,6 +253,66 @@ impl SyncStartDetector {
         }
         let start = line_start - START_LEAD_SYNC_PULSES * self.spec.sync_seconds * rate;
         start.max(self.audio_origin as f64).round() as u64
+    }
+
+    /// The first window line of the image. A wide pulse (Robot, PD: 20+ of
+    /// 700 columns) can't be faked by noise, so the first line whose pulse
+    /// columns are at least half hit is it. A narrow pulse (SC-2's 5.5 ms is
+    /// ~8 columns, Martin's ~8, Scottie DX's ~6) can be: a noise line hits
+    /// half of 8 columns by chance. Those modes need [`PULSED_RUN`]
+    /// consecutive lines carrying an unbroken run of hits
+    /// ([`Self::line_is_pulsed`]). The run test isn't used for wide pulses:
+    /// on weak real signals noise fragments the pulse, and it found real
+    /// Robot 36 images 4–10 lines late.
+    #[allow(clippy::cast_precision_loss)]
+    fn first_pulsed_line(&self, first: usize, column: usize, width: usize) -> usize {
+        if width >= WIDE_PULSE_COLUMNS {
+            let n = X_ACC_BINS as f64;
+            return (0..self.window_lines)
+                .find(|&y| {
+                    let hits = (column..column + width)
+                        .filter(|&c| self.probe_at(first, y as f64 + c as f64 / n))
+                        .count();
+                    2 * hits >= width
+                })
+                .unwrap_or(0);
+        }
+        (0..self.window_lines.saturating_sub(PULSED_RUN - 1))
+            .find(|&y| (y..y + PULSED_RUN).all(|l| self.line_is_pulsed(first, l, column)))
+            .unwrap_or(0)
+    }
+
+    /// Whether window line `y` carries the sync pulse whose start sits at
+    /// `column`: the longest unbroken run of sync-band hits around it covers
+    /// at least [`PULSE_RUN_FRACTION`] of the pulse. A real pulse is one
+    /// contiguous run of hits as long as the pulse; noise trips the probe in
+    /// short, scattered bursts — and with a narrow pulse (SC-2's 5.5 ms is
+    /// ~8 of 700 columns, Scottie DX's ~6) a column count alone is easy for
+    /// a noise line to fake.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    fn line_is_pulsed(&self, first: usize, y: usize, column: usize) -> bool {
+        let per_probe = SYNC_PROBE_STRIDE as f64;
+        let line_probes = self.line_samples() / per_probe;
+        let pulse_probes = self.spec.sync_seconds * f64::from(WORKING_SAMPLE_RATE_HZ) / per_probe;
+        let start = first as f64 + (y as f64 + column as f64 / X_ACC_BINS as f64) * line_probes;
+        // Search a few probes either side: the column grid is coarser than
+        // the probe grid on long lines.
+        let lo = (start - PULSE_SEARCH_SLACK_PROBES).max(0.0) as usize;
+        let hi = (start + pulse_probes + PULSE_SEARCH_SLACK_PROBES) as usize;
+        let (mut run, mut longest) = (0_usize, 0_usize);
+        for idx in lo..hi {
+            if self.probes.get(idx).copied().unwrap_or(false) {
+                run += 1;
+                longest = longest.max(run);
+            } else {
+                run = 0;
+            }
+        }
+        longest as f64 >= PULSE_RUN_FRACTION * pulse_probes
     }
 
     /// Robot 24/36 decode `Cr` or `Cb` by line-index parity, so an image
@@ -424,6 +494,37 @@ mod tests {
         let start = feed(&mut det, &audio).expect("rhythm detected");
         let err = start.start_sample as f64 - expected_start(spec, lead - line);
         assert!(err.abs() < 30.0, "start off by {err:.0} samples");
+    }
+
+    /// Narrow-pulse modes — SC-2's 5.5 ms pulse is ~8 of 700 columns on its
+    /// 475 ms line, Martin 1's ~8, Scottie DX's ~6 — let a noise line fake
+    /// "half the pulse columns hit", so the first line must stand out from
+    /// its own background on consecutive lines (#128 review). A noise line
+    /// fakes it only by chance, so many seeds are tried per mode.
+    #[test]
+    fn narrow_pulse_modes_start_at_their_first_line_not_on_noise() {
+        let lead = RATE;
+        for mode in [SstvMode::Wraase120, SstvMode::Martin1, SstvMode::ScottieDx] {
+            let spec = for_mode(mode);
+            let rgb = vec![[128_u8, 64, 200]; (spec.line_pixels * spec.image_lines) as usize];
+            let mut image = crate::scottie_test_encoder::encode_scottie(mode, &rgb);
+            // The detector needs ~8 lines; keep 12.
+            image.truncate((12.0 * spec.line_seconds * RATE as f64) as usize);
+            let misplaced: Vec<(u32, f64)> = (0..16_u32)
+                .filter_map(|seed| {
+                    let mut audio = noise(lead, 1000 + seed);
+                    audio.extend(&image);
+                    let mut det = SyncStartDetector::new(spec);
+                    let start = feed(&mut det, &audio).expect("rhythm detected");
+                    let err = start.start_sample as f64 - expected_start(spec, lead);
+                    (err.abs() >= 40.0).then_some((seed, err))
+                })
+                .collect();
+            assert!(
+                misplaced.is_empty(),
+                "{mode:?} (seed, samples off): {misplaced:?}"
+            );
+        }
     }
 
     #[test]
