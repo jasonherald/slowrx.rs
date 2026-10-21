@@ -1,9 +1,8 @@
-//! Minimal usage example: read a 16-bit mono WAV, push it through
-//! `SstvDecoder`, write PNGs.
+//! Minimal usage example: stream a WAV through `SstvDecoder` with
+//! [`slowrx::wav::decode_wav_stream`], writing each image as a PNG.
 //!
-//! For a polished tool with `--input`/`--output` flags, multi-channel
-//! audio, all integer bit depths, and proper error reporting, use the
-//! `slowrx-cli` binary instead:
+//! For a polished tool with `--input`/`--output` flags, mode options and
+//! progress reporting, use the `slowrx-cli` binary instead:
 //!
 //! ```text
 //! cargo install slowrx --features cli
@@ -11,87 +10,51 @@
 //! ```
 //!
 //! This example exists to show the smallest amount of glue needed to
-//! drive the library API. It assumes a 16-bit mono WAV.
+//! drive the library API. `slowrx::wav` handles the WAV side (any channel
+//! count, 8/16/24/32-bit integer or 32-bit float samples). Exit status
+//! follows `slowrx-cli`: 0 = images written, 2 = none, 1 = error.
 //!
 //! ```text
 //! cargo run --features cli --example decode_wav -- recording.wav
 //! ```
 
 use std::env;
+use std::error::Error;
 use std::process::ExitCode;
 
-use slowrx::{SstvDecoder, SstvEvent};
+use slowrx::{SstvDecoder, SstvEvent, SstvImage};
 
-fn main() -> ExitCode {
+fn main() -> Result<ExitCode, Box<dyn Error>> {
     let Some(path) = env::args().nth(1) else {
         eprintln!("usage: decode_wav <input.wav>");
-        return ExitCode::from(2);
+        return Ok(ExitCode::from(1));
     };
 
-    let mut reader = match hound::WavReader::open(&path) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error: open {path}: {e}");
-            return ExitCode::from(1);
-        }
-    };
-    let spec = reader.spec();
-    if spec.channels != 1 || spec.bits_per_sample != 16 {
-        eprintln!(
-            "error: this example expects 16-bit mono; got {} ch, {} bits — use slowrx-cli",
-            spec.channels, spec.bits_per_sample
-        );
-        return ExitCode::from(1);
-    }
+    let mut reader = hound::WavReader::open(&path)?;
+    let mut decoder = SstvDecoder::new(reader.spec().sample_rate)?;
 
-    let max = f32::from(i16::MAX);
-    let samples: Vec<f32> = match reader
-        .samples::<i16>()
-        .map(|r| r.map(|s| f32::from(s) / max))
-        .collect::<Result<Vec<_>, _>>()
-    {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error: WAV sample read: {e}");
-            return ExitCode::from(1);
-        }
-    };
-
-    let mut decoder = match SstvDecoder::new(spec.sample_rate) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("error: SstvDecoder::new({}): {e}", spec.sample_rate);
-            return ExitCode::from(1);
-        }
-    };
-
-    let mut idx = 0_u32;
-    for event in decoder.process(&samples) {
+    let mut written = 0_u32;
+    slowrx::wav::decode_wav_stream(&mut reader, &mut decoder, |event| {
         if let SstvEvent::ImageComplete { image, .. } = event {
-            idx += 1;
-            let out = format!("decoded-{idx:03}.png");
-            let mut buf = Vec::with_capacity((image.width as usize) * (image.height as usize) * 3);
-            for px in &image.pixels {
-                buf.extend_from_slice(px);
-            }
-            let Some(img) =
-                image::ImageBuffer::<image::Rgb<u8>, _>::from_vec(image.width, image.height, buf)
-            else {
-                eprintln!("error: image buffer size mismatch");
-                return ExitCode::from(1);
-            };
-            if let Err(e) = img.save(&out) {
-                eprintln!("error: write {out}: {e}");
-                return ExitCode::from(1);
-            }
+            written += 1;
+            let out = format!("decoded-{written:03}.png");
+            save_png(&image, &out)?;
             println!("wrote {out}");
         }
-    }
+        Ok::<(), Box<dyn Error>>(())
+    })?;
 
-    if idx == 0 {
+    if written == 0 {
         eprintln!("no SSTV images decoded");
-        ExitCode::from(1)
-    } else {
-        ExitCode::SUCCESS
+        return Ok(ExitCode::from(2));
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn save_png(image: &SstvImage, out: &str) -> Result<(), Box<dyn Error>> {
+    let buf: Vec<u8> = image.pixels.iter().flatten().copied().collect();
+    let png = image::RgbImage::from_vec(image.width, image.height, buf)
+        .ok_or("image buffer size mismatch")?;
+    png.save(out)?;
+    Ok(())
 }

@@ -41,11 +41,8 @@ jobs:
       # "running over 60 seconds" warnings). In release the same
       # suite is ~11 s — release is also what end-users run, so
       # decode-correctness coverage there is more representative.
-      # Trade-off: we lose `debug_assert!` / overflow-check panics
-      # from CI signal; the codebase doesn't lean on them, and the
-      # integer-truncation correctness checks (e.g. `get_bin` floor
-      # semantics, the round-2-audit findings) live in unit tests
-      # that this step still exercises in release mode.
+      # Release drops `debug_assert!` / overflow-check panics; the
+      # `test-debug` job below restores them for the fast suites.
       - name: Test
         run: cargo test --all-features --locked --release
 
@@ -53,6 +50,28 @@ jobs:
         run: cargo doc --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings
+
+  # Debug-profile tests: overflow checks and `debug_assert!` are on, which
+  # the release `Test` step above can't see — that matters for the
+  # `#[allow(clippy::cast_*)]` `f64 as usize` index math in the decoder.
+  # Only the fast suites run here: the unit tests (lib + binary) and the
+  # no-VIS regression. The synthetic round-trips (`--test roundtrip`,
+  # ~547 s in debug) and the other decode-heavy integration tests stay
+  # release-only.
+  test-debug:
+    name: Test (debug, fast suites)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2
+
+      - name: Unit tests (debug)
+        run: cargo test --lib --bins --all-features --locked
+
+      - name: No-VIS regression (debug)
+        run: cargo test --test no_vis --all-features --locked
 
   msrv:
     name: MSRV check (1.85)

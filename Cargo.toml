@@ -1,6 +1,6 @@
 [package]
 name = "slowrx"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 rust-version = "1.85"
 description = "Pure-Rust SSTV (Slow-Scan TV) decoder library — a port of slowrx by Oona Räisänen"
@@ -21,6 +21,10 @@ include = [
     "CHANGELOG.md",
     "docs/intentional-deviations.md",
 ]
+
+# Document the `cli`-gated `wav` module (and its `Error` variants) too.
+[package.metadata.docs.rs]
+features = ["cli"]
 
 [lints.rust]
 unsafe_code = "deny"

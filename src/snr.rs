@@ -38,6 +38,15 @@ use rustfft::{num_complex::Complex, FftPlanner};
 
 use crate::demod::FFT_LEN;
 
+/// Lowest SNR the estimator reports (slowrx `video.c:340-341`).
+pub(crate) const SNR_FLOOR_DB: f64 = -20.0;
+
+/// Highest SNR the estimator reports. slowrx has no ceiling, but a noise
+/// band that underflows to (sub)normal-zero power divides to `+∞`; every
+/// window-selection threshold sits far below this, so clamping changes no
+/// decision (audit A9).
+pub(crate) const SNR_CEILING_DB: f64 = 60.0;
+
 /// Per-decoder SNR estimator. Owns its own FFT plan + scratch buffer
 /// (separate from the per-pixel demod's plan so concurrent calls never
 /// fight over the same scratch slice). One full-length Hann window is
@@ -77,7 +86,9 @@ impl SnrEstimator {
     /// `center_sample`. `hedr_shift_hz` shifts the video band as in
     /// `video.c:316-326`. Out-of-bounds samples zero-pad.
     ///
-    /// Returns SNR in dB; floored at -20 dB to match `video.c:340-341`.
+    /// Returns SNR in dB, within `[SNR_FLOOR_DB, SNR_CEILING_DB]`
+    /// (-20 to 60 dB): floored as `video.c:340-341` does, and capped so a
+    /// numerically empty noise band never yields `+∞`.
     #[must_use = "the SNR estimate must be consumed; dropping it makes the estimator a no-op"]
     #[allow(
         clippy::cast_precision_loss,
@@ -146,7 +157,7 @@ impl SnrEstimator {
         let receiver_bins = bin_for(3400.0) - bin_for(400.0);
 
         if noise_only_bins == 0 {
-            return -20.0;
+            return SNR_FLOOR_DB;
         }
 
         // Eq 15 from slowrx (`video.c:336-338`).
@@ -154,11 +165,21 @@ impl SnrEstimator {
         let p_signal = p_video_plus_noise
             - p_noise_only * (video_plus_noise_bins as f64) / (noise_only_bins as f64);
 
-        if p_noise <= 0.0 || p_signal / p_noise < 0.01 {
-            -20.0
-        } else {
-            10.0 * (p_signal / p_noise).log10()
-        }
+        snr_db_from_powers(p_signal, p_noise)
+    }
+}
+
+/// slowrx's SNR from the bandwidth-corrected powers (`video.c:340-341`:
+/// `Psignal / Pnoise < .01 ? -20 : 10·log10(Psignal / Pnoise)`), clamped to
+/// [`SNR_CEILING_DB`]. Zero noise with real signal divides to `+∞` there —
+/// the ceiling here; `0 / 0` is NaN, which slowrx's window thresholds treat
+/// like the floor, so it maps to [`SNR_FLOOR_DB`].
+fn snr_db_from_powers(p_signal: f64, p_noise: f64) -> f64 {
+    let ratio = p_signal / p_noise;
+    if ratio.is_nan() || ratio < 0.01 {
+        SNR_FLOOR_DB
+    } else {
+        (10.0 * ratio.log10()).min(SNR_CEILING_DB)
     }
 }
 
@@ -213,6 +234,41 @@ mod tests {
             (snr - -20.0).abs() < 1e-9,
             "silence should floor at -20 dB, got {snr}"
         );
+    }
+
+    /// slowrx `video.c:341`: `Psignal / Pnoise < .01 ? -20 : 10·log10(…)`.
+    /// Zero noise with real signal is `+∞` there (the shortest window), so
+    /// it maps to the ceiling here, not the floor (review of #123).
+    #[test]
+    fn snr_db_from_powers_follows_slowrx_and_clamps() {
+        assert!((snr_db_from_powers(10.0, 1.0) - 10.0).abs() < 1e-12);
+        assert!((snr_db_from_powers(1.0, 0.0) - SNR_CEILING_DB).abs() < 1e-12);
+        assert!((snr_db_from_powers(1e9, 1.0) - SNR_CEILING_DB).abs() < 1e-12);
+        for (signal, noise) in [(0.0, 0.0), (-1.0, 1.0), (0.001, 1.0), (-1.0, 0.0)] {
+            assert!(
+                (snr_db_from_powers(signal, noise) - SNR_FLOOR_DB).abs() < 1e-12,
+                "({signal}, {noise})"
+            );
+        }
+    }
+
+    #[test]
+    fn snr_is_always_finite_and_within_its_documented_range() {
+        // A tone ~1e-160 below full scale: its power (~1e-320) underflows to
+        // subnormal / zero in the noise bands, which used to divide to +inf.
+        let mut est = SnrEstimator::new();
+        for scale in [1.0_f32, 1e-20, 1e-40, 1e-44, 0.0] {
+            let audio: Vec<f32> = synth_tone(1900.0, 0.100)
+                .iter()
+                .map(|v| v * scale)
+                .collect();
+            let center = (audio.len() / 2) as i64;
+            let snr = est.estimate(&audio, center, 0.0);
+            assert!(
+                snr.is_finite() && (SNR_FLOOR_DB..=SNR_CEILING_DB).contains(&snr),
+                "scale {scale:e}: snr {snr}"
+            );
+        }
     }
 
     #[test]

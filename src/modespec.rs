@@ -127,6 +127,8 @@ impl ModeSpec {
     /// buffers, each starting with one sync pulse. PD packs two image rows
     /// into each radio line (`image_lines / 2`); Robot, Scottie and Martin
     /// send one row per radio line. Mirrors slowrx `video.c:251-254`.
+    /// Requires an even `image_lines` for PD (true of every PD mode; pinned
+    /// by a test).
     #[must_use]
     pub(crate) fn radio_lines(&self) -> u32 {
         match self.channel_layout {
@@ -646,6 +648,24 @@ mod tests {
     fn martin_vis_codes_resolve() {
         assert_eq!(lookup(0x2C).expect("M1").mode, SstvMode::Martin1);
         assert_eq!(lookup(0x28).expect("M2").mode, SstvMode::Martin2);
+    }
+
+    /// `radio_lines` halves PD's `image_lines` with integer division, so
+    /// every PD mode must have an even image height (audit A5).
+    #[test]
+    fn pd_radio_lines_cover_every_image_row() {
+        for spec in ALL_SPECS {
+            let rows_per_radio_line = match spec.channel_layout {
+                ChannelLayout::PdYcbcr => 2,
+                ChannelLayout::RobotYuv | ChannelLayout::RgbSequential => 1,
+            };
+            assert_eq!(
+                spec.radio_lines() * rows_per_radio_line,
+                spec.image_lines,
+                "{:?}",
+                spec.mode
+            );
+        }
     }
 
     #[test]

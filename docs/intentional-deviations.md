@@ -7,7 +7,7 @@ revisit. Future audits should consult this list before flagging any
 of these as "missing".
 
 For the parity audit reports themselves, see
-[`docs/audits/`](./audits/).
+[`docs/audits/`](https://github.com/jasonherald/slowrx.rs/tree/main/docs/audits).
 
 ---
 
@@ -442,6 +442,15 @@ The investigation paths in #71 cover SNR-adaptive Hann selector
 re-engagement (V1 deferral #44), slowrx C cross-validation, and per-
 pixel sub-bin interpolation.
 
+A known divergence to evaluate there (audit A4): slowrx sweeps the whole
+image once, so its SNR estimate and window index stay sticky across
+channels and lines. `decode_one_channel_into` starts each channel cold
+(SNR 0, window index ramping 6 → 5 → 4), so the first pixels of every
+channel use a longer window than slowrx would. Threading the state
+image-wide is the faithful fix, but it changes pixels. Judge it with the
+numerical comparison against the Fram2 reference JPGs (#119) rather than
+by eye.
+
 ---
 
 ## SNR hysteresis on adaptive Hann window selection
@@ -521,7 +530,7 @@ Three triggers would prompt revisiting:
 
 1. **Empirical Fram2 validation shows the squiggles persist or worsen
    after this hysteresis lands.** Re-run the procedure at
-   [`tests/ariss_fram2_validation.md`](../tests/ariss_fram2_validation.md)
+   [`tests/ariss_fram2_validation.md`](https://github.com/jasonherald/slowrx.rs/blob/main/tests/ariss_fram2_validation.md)
    and compare visually against the V2.2 baseline. Persistence means
    hysteresis isn't the root cause; move on to other paths in #71
    (sub-pixel FFT interpolation, resampler quality).
