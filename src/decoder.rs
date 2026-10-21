@@ -40,6 +40,23 @@ pub enum SstvEvent {
         /// (`vis.c` line 106 → `video.c` line 406).
         hedr_shift_hz: f64,
     },
+    /// A VIS header's leaders arrived but its bits were lost (typically a
+    /// fade), and the decoder is decoding the image in the caller's
+    /// fallback mode ([`SstvDecoder::set_fallback_mode`]). Emitted only when
+    /// a fallback mode is set; image decoding then proceeds exactly as after
+    /// [`SstvEvent::VisDetected`]. There is no slowrx counterpart — see
+    /// `docs/intentional-deviations.md`.
+    VisFallback {
+        /// The assumed mode (the caller's fallback).
+        mode: SstvMode,
+        /// Working-rate (11025 Hz) sample offset where the image audio is
+        /// expected to begin, inferred from the header's leader timing.
+        sample_offset: u64,
+        /// Radio mistuning offset in Hz measured on the leader tone
+        /// (`observed_leader_hz - 1900`), as for
+        /// [`SstvEvent::VisDetected`].
+        hedr_shift_hz: f64,
+    },
     /// A VIS header parsed and passed parity, but its 7-bit code maps to no
     /// SSTV mode this build can decode (reserved / undefined, or a mode not
     /// yet implemented). The decoder discards the burst and resumes scanning
@@ -230,15 +247,13 @@ pub struct SstvDecoder {
     /// counter may be slightly ahead of what the image decoder has consumed.
     ///
     /// The counter is used to anchor the VIS detector each time a fresh one
-    /// is constructed (initial, post-image, post-unknown-VIS). Note: for the
-    /// *first* detection on a freshly-built decoder, `DetectedVis::end_sample`
-    /// (→ `SstvEvent::VisDetected.sample_offset` / `UnknownVis.sample_offset`)
-    /// is an absolute working-rate index from sample 0. After a *restart*
-    /// (post-image — see `restart_vis_detection` — or post-unknown-VIS) the
-    /// fresh detector counts hops from 0, so a later detection's `sample_offset`
-    /// is relative to where the carry-forward audio began, not absolute. That
-    /// is acceptable — `sample_offset` is informational only — and tracked in
-    /// issue #99 (fixing it needs a `VisDetector` API change). The counter
+    /// is constructed (initial, post-image, post-unknown-VIS). Every
+    /// detection's `DetectedVis::end_sample` (→ `SstvEvent::VisDetected` /
+    /// `VisFallback` / `UnknownVis` `.sample_offset`) is an absolute
+    /// working-rate index from sample 0: a detector rebuilt after a
+    /// *restart* (post-image — see `restart_vis_detection` — or
+    /// post-unknown-VIS) fixes its hop grid's origin at the carry-forward
+    /// audio's absolute position on its first anchor (#99). The counter
     /// here does not gate any decode logic.
     ///
     /// If mid-image VIS detection is ever re-activated (see the TODO in
@@ -249,6 +264,9 @@ pub struct SstvDecoder {
     ///
     /// Closes #29 and #34 (both are the same observation from different angles).
     working_samples_emitted: u64,
+    /// Mode assumed when a VIS header's bits are lost; `None` (the default)
+    /// keeps slowrx's behaviour of decoding nothing without a VIS.
+    fallback_mode: Option<SstvMode>,
 }
 
 impl SstvDecoder {
@@ -267,7 +285,34 @@ impl SstvDecoder {
             state: State::AwaitingVis,
             samples_processed: 0,
             working_samples_emitted: 0,
+            fallback_mode: None,
         })
+    }
+
+    /// Mode to assume when a VIS header's leaders arrive but its bits are
+    /// lost — typically a fade over the ~0.3 s that carries the mode. With a
+    /// fallback set, the decoder starts the image where the header's timing
+    /// places it and emits [`SstvEvent::VisFallback`] instead of
+    /// [`SstvEvent::VisDetected`]. `None` (the default) disables this, which
+    /// is slowrx's behaviour. A good fallback is the mode the transmitter
+    /// last used (e.g. the mode of the previous `VisDetected` from the same
+    /// station); a wrong one decodes a garbled image rather than nothing.
+    ///
+    /// Takes effect for the next VIS search; it persists across
+    /// [`Self::reset`].
+    pub fn set_fallback_mode(&mut self, mode: Option<SstvMode>) {
+        self.fallback_mode = mode;
+        self.vis.set_fallback_code(Self::fallback_code(mode));
+    }
+
+    /// The current fallback mode (see [`Self::set_fallback_mode`]).
+    #[must_use]
+    pub fn fallback_mode(&self) -> Option<SstvMode> {
+        self.fallback_mode
+    }
+
+    fn fallback_code(mode: Option<SstvMode>) -> Option<u8> {
+        mode.map(|m| crate::modespec::for_mode(m).vis_code)
     }
 
     /// Process a chunk of mono `f32` audio samples in caller's rate.
@@ -298,10 +343,18 @@ impl SstvDecoder {
                     remaining = &[];
                     if let Some(detected) = self.vis.take_detected() {
                         if let Some(spec) = crate::modespec::lookup(detected.code) {
-                            out.push(SstvEvent::VisDetected {
-                                mode: spec.mode,
-                                sample_offset: detected.end_sample,
-                                hedr_shift_hz: detected.hedr_shift_hz,
+                            out.push(if detected.assumed {
+                                SstvEvent::VisFallback {
+                                    mode: spec.mode,
+                                    sample_offset: detected.end_sample,
+                                    hedr_shift_hz: detected.hedr_shift_hz,
+                                }
+                            } else {
+                                SstvEvent::VisDetected {
+                                    mode: spec.mode,
+                                    sample_offset: detected.end_sample,
+                                    hedr_shift_hz: detected.hedr_shift_hz,
+                                }
                             });
                             let image =
                                 SstvImage::new(spec.mode, spec.line_pixels, spec.image_lines);
@@ -381,6 +434,7 @@ impl SstvDecoder {
                             &mut self.vis,
                             self.working_samples_emitted,
                             &residual,
+                            Self::fallback_code(self.fallback_mode),
                         );
                         continue;
                     }
@@ -458,13 +512,14 @@ impl SstvDecoder {
                     // through (vs the old `break`) means that next VIS — and
                     // the image after it — surface in this same `process()`
                     // call, mirroring the known/unknown-code branches above.
-                    // Closes #31; #90 (A2 + D4). (`sample_offset` on detections
-                    // after the first is relative to the carry-forward start,
-                    // not absolute — #99.)
+                    // Closes #31; #90 (A2 + D4). The fresh detector anchors on
+                    // the carry-forward audio's absolute position, so its
+                    // detections still report absolute `sample_offset`s (#99).
                     Self::restart_vis_detection(
                         &mut self.vis,
                         self.working_samples_emitted,
                         &carry_audio,
+                        Self::fallback_code(self.fallback_mode),
                     );
                     remaining = &[]; // already folded into d.audio → now inside the fresh detector
                 }
@@ -480,13 +535,15 @@ impl SstvDecoder {
     /// `hops_completed` / `history` state is never reset, so it must be
     /// replaced rather than re-used. `working_samples_emitted` is the
     /// decoder's running working-rate output count (used to anchor the fresh
-    /// detector).
+    /// detector); `fallback_code` carries the lost-VIS fallback over.
     fn restart_vis_detection(
         vis: &mut crate::vis::VisDetector,
         working_samples_emitted: u64,
         leftover_audio: &[f32],
+        fallback_code: Option<u8>,
     ) {
         *vis = crate::vis::VisDetector::new(IS_KNOWN_VIS);
+        vis.set_fallback_code(fallback_code);
         vis.process(leftover_audio, working_samples_emitted);
     }
 
@@ -637,12 +694,15 @@ impl SstvDecoder {
         });
     }
 
-    /// Reset to `AwaitingVis`; discard any in-flight image.
+    /// Reset to `AwaitingVis`; discard any in-flight image. Configuration
+    /// ([`Self::set_fallback_mode`]) is kept.
     pub fn reset(&mut self) {
         self.state = State::AwaitingVis;
         self.samples_processed = 0;
         self.working_samples_emitted = 0;
         self.vis = crate::vis::VisDetector::new(IS_KNOWN_VIS);
+        self.vis
+            .set_fallback_code(Self::fallback_code(self.fallback_mode));
         self.resampler.reset_state();
         self.channel_demod = crate::demod::ChannelDemod::new();
         self.snr_est = crate::snr::SnrEstimator::new();
@@ -753,7 +813,7 @@ mod tests {
         let mut d = SstvDecoder::new(11_025).expect("decoder");
         // Silence produces no VIS match.
         let events = d.process(&[0.5_f32; 512]);
-        assert!(events.is_empty());
+        assert_eq!(events, [] as [SstvEvent; 0]);
     }
 
     #[test]

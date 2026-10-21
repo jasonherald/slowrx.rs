@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-21
+
+### Added
+
+- **Lost-VIS fallback mode** (opt-in): `SstvDecoder::set_fallback_mode` /
+  `fallback_mode` and a new `SstvEvent::VisFallback` event. When a header's
+  leaders arrive but its VIS bits are lost (e.g. to a fade), the decoder
+  assumes the caller's mode and decodes the image from the header's leader
+  timing instead of losing it. Off by default (slowrx behaviour). Recovered
+  a 37 s Robot 36 image from a real 2026-10-06 ISS pass that decoded nothing
+  before; replays of eight other passes and the 12 ARISS Fram2 recordings
+  are unchanged. See `docs/intentional-deviations.md`.
+- `slowrx-cli --fallback-mode <MODE>` (same names as the output files).
+
+### Fixed
+
+- **Absolute VIS sample offsets after the first image** (#99): a detector
+  re-armed after an image or an unknown VIS counted hops from zero, so
+  `VisDetected.sample_offset` / `UnknownVis.sample_offset` were relative to
+  the carry-forward audio. Re-armed detectors also now drain to the stop-bit
+  end like the first one does (later images previously started their image
+  audio up to a window early; images are visually unchanged).
+
+### Internal
+
+- Rust toolchain 1.95.0 → 1.99.1; dependency lockfile refreshed with the
+  MSRV-aware resolver so the 1.85 MSRV still builds. Clippy 1.99's
+  `assert_is_empty` lint addressed in tests.
+
+
 ### Internal
 
 - **Docs sweep** — ten audit findings, all docs-only (audit bundle

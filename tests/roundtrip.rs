@@ -99,32 +99,15 @@ fn run_roundtrip(mode: SstvMode) {
     assert!(mean < 5.0, "{mode:?}: max_diff={max_diff} mean={mean:.2}");
 }
 
-/// Build a synthetic Robot test image: gradient luma + smooth chroma
-/// stripes designed so adjacent rows share chroma (required for R36/R24
-/// round-trip — see `robot_test_encoder.rs` doc; harmless for R72).
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
+/// The shared synthetic Robot test image (see
+/// `__test_support::mode_robot::synthetic_ycrcb`) with its dimensions.
 fn test_robot_image(mode: SstvMode) -> (u32, u32, Vec<[u8; 3]>) {
     let spec = slowrx::for_mode(mode);
-    let w = spec.line_pixels;
-    let h = spec.image_lines;
-    let mut ycrcb = Vec::with_capacity((w * h) as usize);
-    for y in 0..h {
-        for x in 0..w {
-            let lum = ((f64::from(x)) / (f64::from(w)) * 255.0) as u8;
-            // Cr alternates every 4 rows (so adjacent even-odd Y row
-            // pairs share Cr — required for R36/R24 round-trip).
-            // Cb alternates every 4 rows offset by 1 (so adjacent
-            // odd-even pairs share Cb — also required for R36/R24).
-            let cr = if y % 4 < 2 { 200 } else { 56 };
-            let cb = if (y + 1) % 4 < 2 { 200 } else { 56 };
-            ycrcb.push([lum, cr, cb]);
-        }
-    }
-    (w, h, ycrcb)
+    (
+        spec.line_pixels,
+        spec.image_lines,
+        slowrx::__test_support::mode_robot::synthetic_ycrcb(mode),
+    )
 }
 
 #[allow(

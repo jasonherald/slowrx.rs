@@ -83,7 +83,7 @@ pub use crate::resample::{Resampler, MAX_INPUT_SAMPLE_RATE_HZ, WORKING_SAMPLE_RA
 #[doc(hidden)]
 pub mod __test_support {
     pub mod vis {
-        pub use crate::vis::tests::synth_vis;
+        pub use crate::vis::tests::{lost_bits_header, synth_vis};
     }
     pub mod mode_pd {
         pub use crate::demod::ycbcr_to_rgb;
@@ -105,6 +105,14 @@ pub mod __test_support {
         #[must_use]
         pub fn encode_robot(mode: crate::modespec::SstvMode, ycrcb: &[[u8; 3]]) -> Vec<f32> {
             crate::robot_test_encoder::encode_robot(mode, ycrcb)
+        }
+
+        /// The standard synthetic Robot test image (`Y'CbCr`) the
+        /// round-trip and fallback tests encode.
+        #[doc(hidden)]
+        #[must_use]
+        pub fn synthetic_ycrcb(mode: crate::modespec::SstvMode) -> Vec<[u8; 3]> {
+            crate::robot_test_encoder::synthetic_ycrcb(mode)
         }
     }
     pub mod mode_scottie {

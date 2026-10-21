@@ -489,7 +489,7 @@ mod tests {
     #[test]
     fn empty_input_returns_empty() {
         let mut r = Resampler::new(44_100).unwrap();
-        assert!(r.process(&[]).is_empty());
+        assert_eq!(r.process(&[]), [] as [f32; 0]);
 
         // Sandwich: process(non-empty) → process(empty) → process(non-empty)
         // should produce the same output as process(non-empty ++ non-empty).
@@ -499,7 +499,7 @@ mod tests {
 
         let mut sandwiched = a.process(&in_audio[..mid]);
         let empty_call = a.process(&[]);
-        assert!(empty_call.is_empty());
+        assert_eq!(empty_call, [] as [f32; 0]);
         sandwiched.extend_from_slice(&a.process(&in_audio[mid..]));
 
         let mut b = Resampler::new(44_100).unwrap();

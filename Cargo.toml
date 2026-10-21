@@ -1,6 +1,6 @@
 [package]
 name = "slowrx"
-version = "0.5.3"
+version = "0.6.0"
 edition = "2021"
 rust-version = "1.85"
 description = "Pure-Rust SSTV (Slow-Scan TV) decoder library — a port of slowrx by Oona Räisänen"
@@ -76,3 +76,11 @@ required-features = ["test-support"]
 [[test]]
 name = "multi_image"
 required-features = ["test-support"]
+
+[[test]]
+name = "vis_fallback"
+required-features = ["test-support"]
+
+[[test]]
+name = "cli_fallback"
+required-features = ["cli", "test-support"]

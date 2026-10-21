@@ -157,6 +157,52 @@ to change.
 
 ---
 
+## Lost-VIS fallback mode (opt-in; no slowrx counterpart)
+
+### What slowrx does
+
+`GetVIS()` only ever matches the trailing 450 ms of a header (the end of the
+second leader, the start bit, the 8 bits and the stop bit). If any of that is
+unreadable, no VIS is found and `Listen()` keeps waiting — the image that
+follows is never decoded, however clean it is.
+
+### What we do
+
+By default, exactly the same. When the caller opts in with
+`SstvDecoder::set_fallback_mode(Some(mode))`, the VIS detector also tracks
+*leader runs*: hops within ±25 Hz of a 1900 Hz (±150 Hz) leader, tolerating up
+to 2 off-tone hops in a row (noise, or the 10 ms break). A run of 350–750 ms
+with ≥ 70 % on-tone hops looks like the two leaders of a VIS header. If the
+real VIS has not decoded 60 ms after the image would have started, the
+decoder assumes the fallback mode, emits `SstvEvent::VisFallback`, and decodes
+the image from the start implied by the header timing: the break hop
++ 615 ms when the 10 ms break was seen, otherwise the run's first hop
++ 920 ms. `find_sync` then corrects the residual alignment as usual. While a
+fallback is armed the detector keeps the audio from the expected image start,
+so nothing is lost if it fires. A decodable VIS always wins.
+
+### Why we deviated
+
+A fade over just the ~0.3 s of VIS bits costs the whole image. On a
+2026-10-06 ISS ARISS pass a ~0.5 s fade did exactly that: both leader starts
+and the break came through, the bits did not, and a clean 37 s Robot 36 image
+(~17 dB) was lost. With the fallback set to Robot 36 the same recording
+decodes ("European Astronaut Sophie Adenot supports ARISS"). Replaying eight
+other passes from that event and the 12 ARISS Fram2 reference recordings with
+the fallback on gives pixel-identical images and no fallback events.
+Opt-in keeps the default behaviour faithful to slowrx; a wrong fallback mode
+would decode a garbled image rather than nothing, so the caller chooses
+(typically the mode the station last used).
+
+### When to revisit
+
+If transmitters start sending headers with a single leader (the detector
+needs ≥ 350 ms of leader to be confident it saw a header), or if we add
+start-without-any-VIS detection from a mode's line-sync rhythm (tracked
+separately), which would subsume this for most cases.
+
+---
+
 ## Synthetic round-trip max_diff tolerance
 
 **Files:** `tests/roundtrip.rs`.

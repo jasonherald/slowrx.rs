@@ -50,15 +50,15 @@ fn decoder_emits_unknown_vis_then_recovers() {
         "UnknownVis should precede the recovered VisDetected; got {events:?}"
     );
 
-    // The recovered detection's sample_offset should be a sane working-rate
-    // index (non-zero, and not wildly past the end of the fed audio). Exact
-    // semantics post-restart (relative-to-restart vs absolute) are tracked
-    // separately; this is only a gross-corruption guard.
+    // The recovered detection's `sample_offset` is absolute (#99): it lands
+    // within a few 10 ms hops of burst 2's stop-bit end, even though the
+    // detector that found it was rebuilt after the unknown burst.
+    let burst2_stop_end = audio.len() - 512;
+    let tolerance = (WORKING_SAMPLE_RATE_HZ as usize) * 30 / 1000;
     if let SstvEvent::VisDetected { sample_offset, .. } = &events[detected_at] {
         assert!(
-            *sample_offset > 0 && (*sample_offset as usize) <= audio.len(),
-            "VisDetected.sample_offset = {sample_offset} out of [1, {}]",
-            audio.len()
+            (*sample_offset as usize).abs_diff(burst2_stop_end) <= tolerance,
+            "VisDetected.sample_offset = {sample_offset}, expected ≈ {burst2_stop_end}"
         );
     }
 }
