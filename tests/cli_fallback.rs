@@ -5,10 +5,11 @@
 //!   (a double-leader header with the bits replaced by noise, then a
 //!   Robot 36 image).
 //! - `--drop-noise`: an "image" decoded from noise after a VIS (#116) is
-//!   written by default but skipped with the flag.
+//!   written by default but skipped with the flag; kept images report
+//!   their sync-quality score.
 
 #![cfg(all(feature = "cli", feature = "test-support"))]
-#![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -77,6 +78,31 @@ fn fallback_mode_recovers_a_lost_vis_image() {
 }
 
 #[test]
+fn a_kept_image_reports_its_sync_quality_score() {
+    let dir = scratch("score");
+    let wav = dir.join("lost.wav");
+    write_lost_vis_wav(&wav);
+    let out = dir.join("out");
+    let assert = cli()
+        .args(["--fallback-mode", "robot36", "--input"])
+        .arg(&wav)
+        .arg("--output")
+        .arg(&out)
+        .assert()
+        .success();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    let score: f32 = stderr
+        .split("(sync quality ")
+        .nth(1)
+        .and_then(|rest| rest.get(..4))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| panic!("no sync-quality score in stderr: {stderr}"));
+    assert!(score > 0.9, "clean image scored {score}: {stderr}");
+    assert!(stderr.contains("img-001-robot36.png"), "stderr: {stderr}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn without_a_fallback_the_lost_vis_image_is_not_decoded() {
     let dir = scratch("off");
     let wav = dir.join("lost.wav");
@@ -118,14 +144,10 @@ fn an_unknown_mode_name_is_rejected_with_the_valid_names() {
 /// full-size image of noise.
 fn write_vis_then_noise_wav(path: &Path) {
     let mut audio = slowrx::__test_support::vis::synth_vis(0x08, 0.0);
-    let mut seed = 0x5EED_u32;
-    let n = 40 * WORKING_SAMPLE_RATE_HZ as usize;
-    audio.extend((0..n).map(|_| {
-        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        #[allow(clippy::cast_possible_truncation)]
-        let v = (f64::from(seed) / f64::from(u32::MAX) * 2.0 - 1.0) as f32;
-        v
-    }));
+    audio.extend(slowrx::__test_support::noise::white(
+        40 * WORKING_SAMPLE_RATE_HZ as usize,
+        0x5EED,
+    ));
     write_wav(path, &audio);
 }
 

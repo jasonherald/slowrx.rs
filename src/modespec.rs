@@ -123,6 +123,18 @@ pub enum SyncPosition {
 }
 
 impl ModeSpec {
+    /// Radio lines per image — the `line_seconds` periods the decoder
+    /// buffers, each starting with one sync pulse. PD packs two image rows
+    /// into each radio line (`image_lines / 2`); Robot, Scottie and Martin
+    /// send one row per radio line. Mirrors slowrx `video.c:251-254`.
+    #[must_use]
+    pub(crate) fn radio_lines(&self) -> u32 {
+        match self.channel_layout {
+            ChannelLayout::PdYcbcr => self.image_lines / 2,
+            ChannelLayout::RobotYuv | ChannelLayout::RgbSequential => self.image_lines,
+        }
+    }
+
     /// Offset (seconds) applied to the raw `xmax`-derived skip to
     /// land on line 0's content start. `LineStart` modes return 0;
     /// `Scottie` modes return `-chan_len/2 + 2 × porch_seconds` (the

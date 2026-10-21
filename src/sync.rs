@@ -323,8 +323,10 @@ pub(crate) fn find_sync(
         skip_samples,
         slant_deg: slant_deg_detected,
         // `x_acc` was just rebuilt by `find_falling_edge` at the final,
-        // slant-corrected rate.
-        sync_quality: sync_quality(&scratch.x_acc, spec, num_lines),
+        // slant-corrected rate. Normalise by the radio lines actually
+        // buffered: `find_falling_edge` folds `image_lines` (slowrx-faithful),
+        // but PD's buffer holds only half that many sync pulses.
+        sync_quality: sync_quality(&scratch.x_acc, spec, spec.radio_lines() as usize),
     }
 }
 
@@ -501,8 +503,9 @@ fn find_falling_edge(
 }
 
 /// Line-sync quality of a decoded image from the column accumulator
-/// `x_acc` (how many of the image's `num_lines` lines had sync energy at
-/// each of the [`X_ACC_BINS`] positions across a line). A real image puts
+/// `x_acc` (how many of the `num_lines` folded radio lines — see
+/// [`ModeSpec::radio_lines`] — had sync energy at each of the
+/// [`X_ACC_BINS`] positions across a line). A real image puts
 /// a sync pulse in the same columns on nearly every line, so the best
 /// pulse-wide window scores close to `num_lines` above the background;
 /// noise spreads its hits evenly. Returns
@@ -662,6 +665,19 @@ mod tests {
             .collect();
         let noise = find_sync(&random_track, rate, spec, &mut scratch);
         assert!(noise.sync_quality < 0.1, "noise: {}", noise.sync_quality);
+        // PD packs two image rows per radio line, so the decoder buffers
+        // only `image_lines / 2` lines of sync; a clean PD image must
+        // still score near 1 (CodeRabbit, #121).
+        for mode in [modespec::SstvMode::Pd120, modespec::SstvMode::Pd240] {
+            let pd = modespec::for_mode(mode);
+            let mut track = synth_has_sync(pd, rate);
+            track.truncate(
+                (f64::from(pd.radio_lines()) * pd.line_seconds * rate / SYNC_PROBE_STRIDE as f64)
+                    as usize,
+            );
+            let q = find_sync(&track, rate, pd, &mut scratch).sync_quality;
+            assert!(q > 0.9, "clean {mode:?}: {q}");
+        }
         let empty = find_sync(&[], rate, spec, &mut scratch);
         assert!(
             empty.sync_quality.abs() < f32::EPSILON,

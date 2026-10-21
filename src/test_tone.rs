@@ -110,10 +110,35 @@ impl Default for ToneWriter {
     }
 }
 
+/// `n` samples of deterministic full-scale white noise in `[-1, 1]` (an
+/// LCG seeded with `seed`) — an FM channel carrying no signal.
+#[must_use]
+#[allow(clippy::cast_possible_truncation)]
+pub(crate) fn white_noise(n: usize, seed: u32) -> Vec<f32> {
+    let mut s = seed;
+    (0..n)
+        .map(|_| {
+            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (f64::from(s) / f64::from(u32::MAX) * 2.0 - 1.0) as f32
+        })
+        .collect()
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp, clippy::cast_precision_loss)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn white_noise_is_deterministic_full_scale_and_zero_mean() {
+        let a = white_noise(11_025, 42);
+        assert_eq!(a, white_noise(11_025, 42), "same seed, same noise");
+        assert_ne!(a, white_noise(11_025, 43), "the seed matters");
+        assert!(a.iter().all(|v| (-1.0..=1.0).contains(v)));
+        let mean = a.iter().map(|&v| f64::from(v)).sum::<f64>() / a.len() as f64;
+        let peak = a.iter().fold(0.0_f32, |m, v| m.max(v.abs()));
+        assert!(mean.abs() < 0.05 && peak > 0.95, "mean {mean}, peak {peak}");
+    }
 
     #[test]
     fn lum_to_freq_endpoints_match_black_and_white() {

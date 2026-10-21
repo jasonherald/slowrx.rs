@@ -47,12 +47,10 @@ fn a_real_image_does_not_look_like_noise() {
 #[test]
 fn a_vis_followed_by_noise_looks_like_noise() {
     let mut audio = slowrx::__test_support::vis::synth_vis(ROBOT36_VIS, 0.0);
-    let mut seed = 0x5EED_u32;
-    let n = 40 * WORKING_SAMPLE_RATE_HZ as usize;
-    audio.extend((0..n).map(|_| {
-        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        (f64::from(seed) / f64::from(u32::MAX) * 2.0 - 1.0) as f32
-    }));
+    audio.extend(slowrx::__test_support::noise::white(
+        40 * WORKING_SAMPLE_RATE_HZ as usize,
+        0x5EED,
+    ));
     let q = first_completion(&audio);
     assert!(q.value() < 0.1, "noise image quality {}", q.value());
     assert!(q.looks_like_noise());

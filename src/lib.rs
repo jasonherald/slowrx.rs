@@ -85,6 +85,14 @@ pub mod __test_support {
     pub mod vis {
         pub use crate::vis::tests::{lost_bits_header, synth_vis};
     }
+    pub mod noise {
+        /// Deterministic full-scale white noise — `n` samples, LCG-seeded.
+        #[doc(hidden)]
+        #[must_use]
+        pub fn white(n: usize, seed: u32) -> Vec<f32> {
+            crate::test_tone::white_noise(n, seed)
+        }
+    }
     pub mod mode_pd {
         pub use crate::demod::ycbcr_to_rgb;
 
