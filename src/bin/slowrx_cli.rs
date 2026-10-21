@@ -18,7 +18,7 @@ use std::process::ExitCode;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
-use slowrx::{SstvDecoder, SstvEvent, SstvImage};
+use slowrx::{SstvDecoder, SstvEvent, SstvImage, SstvMode};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -40,6 +40,28 @@ struct Args {
     /// still go to stderr.
     #[arg(short, long)]
     quiet: bool,
+
+    /// Mode to assume when a VIS header's leaders arrive but its bits are
+    /// lost (e.g. `robot36`, the same names as the output files). Off by
+    /// default. See `SstvDecoder::set_fallback_mode`.
+    #[arg(long, value_name = "MODE", value_parser = parse_mode)]
+    fallback_mode: Option<SstvMode>,
+}
+
+/// Resolve a mode by its `ModeSpec::short_name` (case-insensitive).
+fn parse_mode(name: &str) -> std::result::Result<SstvMode, String> {
+    let specs: Vec<_> = (0u8..0x80).filter_map(slowrx::lookup_vis).collect();
+    specs
+        .iter()
+        .find(|s| s.short_name.eq_ignore_ascii_case(name))
+        .map(|s| s.mode)
+        .ok_or_else(|| {
+            let names: Vec<_> = specs.iter().map(|s| s.short_name).collect();
+            format!(
+                "unknown mode '{name}'; expected one of: {}",
+                names.join(", ")
+            )
+        })
 }
 
 fn main() -> ExitCode {
@@ -78,6 +100,7 @@ fn run(args: &Args) -> Result<u32> {
 
     let mut decoder =
         SstvDecoder::new(spec.sample_rate).with_context(|| "construct SstvDecoder")?;
+    decoder.set_fallback_mode(args.fallback_mode);
 
     // Streaming pipeline: read in fixed-size chunks, normalize + fold to
     // mono on the fly, push each mono chunk into the stateful decoder.
@@ -106,6 +129,7 @@ fn run(args: &Args) -> Result<u32> {
 
     let mut image_count: u32 = 0;
     let mut vis_count: u32 = 0;
+    let mut fallback_count: u32 = 0;
     let mut line_count: u32 = 0;
 
     let mut on_event = |event: SstvEvent| -> Result<()> {
@@ -119,6 +143,19 @@ fn run(args: &Args) -> Result<u32> {
                 if !args.quiet {
                     eprintln!(
                         "  VIS: mode={mode:?} at sample {sample_offset} (hedr_shift {hedr_shift_hz:+.1} Hz)"
+                    );
+                }
+            }
+            SstvEvent::VisFallback {
+                mode,
+                sample_offset,
+                hedr_shift_hz,
+            } => {
+                vis_count += 1;
+                fallback_count += 1;
+                if !args.quiet {
+                    eprintln!(
+                        "  VIS lost, assuming fallback: mode={mode:?} image from sample {sample_offset} (hedr_shift {hedr_shift_hz:+.1} Hz)"
                     );
                 }
             }
@@ -149,7 +186,9 @@ fn run(args: &Args) -> Result<u32> {
     stream_decode(&mut reader, spec, channels, &mut decoder, &mut on_event)?;
 
     if !args.quiet {
-        eprintln!("done: {vis_count} VIS, {line_count} lines, {image_count} image(s)");
+        eprintln!(
+            "done: {vis_count} VIS ({fallback_count} assumed), {line_count} lines, {image_count} image(s)"
+        );
     }
     Ok(image_count)
 }

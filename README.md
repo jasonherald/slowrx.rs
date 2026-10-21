@@ -13,7 +13,7 @@
 
 ## Status
 
-🛰️ **0.5.2 — V2.4 published.** PD120, PD180, PD240, Robot 24, Robot 36, Robot 72, Scottie 1, Scottie 2, Scottie DX, Martin 1, and Martin 2 decoding from raw audio. All four V2 mode families landed; the [V2 roadmap](https://github.com/jasonherald/slowrx.rs/issues/9) is closed. Post-V2.4 cleanup (code-review audit backlog, [epic #97](https://github.com/jasonherald/slowrx.rs/issues/97)) is in progress.
+🛰️ **0.6.0** adds an opt-in lost-VIS fallback mode (see below) on top of **V2.4**: PD120, PD180, PD240, Robot 24, Robot 36, Robot 72, Scottie 1, Scottie 2, Scottie DX, Martin 1, and Martin 2 decoding from raw audio. All four V2 mode families landed; the [V2 roadmap](https://github.com/jasonherald/slowrx.rs/issues/9) is closed. Post-V2.4 cleanup (code-review audit backlog, [epic #97](https://github.com/jasonherald/slowrx.rs/issues/97)) is in progress.
 
 PD120, PD180, and Robot 36 are validated end-to-end against real-radio
 captures: PD120/PD180 against the ARISS Dec-2017 corpus (6 of 7
@@ -78,6 +78,18 @@ samples. Mode coverage:
 
 VIS header detection is automatic — feed the decoder audio, get images
 out as they complete.
+
+If a fade wipes out a header's VIS bits, the image after it is normally lost.
+Callers that know which mode a station uses can opt in to a fallback, so the
+decoder starts the image from the header's leader timing anyway:
+
+```rust
+# use slowrx::{SstvDecoder, SstvMode};
+# let mut decoder = SstvDecoder::new(44_100).expect("valid sample rate");
+decoder.set_fallback_mode(Some(SstvMode::Robot36)); // emits SstvEvent::VisFallback
+```
+
+The CLI equivalent is `slowrx-cli --fallback-mode robot36 …`.
 
 ## Why a Rust port?
 

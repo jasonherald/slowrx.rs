@@ -49,6 +49,75 @@ pub(crate) const R12BW_VIS_CODE: u8 = 0x06;
 const SEARCH_LO_HZ: f64 = 500.0;
 const SEARCH_HI_HZ: f64 = 3300.0;
 
+// ---- Lost-VIS fallback (opt-in; no slowrx counterpart) -------------------
+//
+// A standard VIS header is `leader 300 ms · break 10 ms · leader 300 ms ·
+// start 30 ms · 8 bits × 30 ms · stop 30 ms`. The pattern matcher only looks
+// at the trailing 450 ms (end of leader 2 + bits), so a fade over the bits
+// loses the image even when both leaders came through. The fallback tracks
+// the *leader run* instead and, if the bits never decode, assumes the
+// caller's fallback mode and starts the image where the header's timing says
+// it begins. See `docs/intentional-deviations.md`.
+
+/// A hop can start a leader run if its peak is within this of 1900 Hz (wide
+/// enough for any plausible receiver mistuning; the run then tracks its own
+/// mean with [`TONE_TOLERANCE_HZ`]).
+const LEADER_ACQUIRE_TOLERANCE_HZ: f64 = 150.0;
+/// Off-leader hops a run tolerates in a row (noise hops, or the 10 ms break)
+/// before it ends.
+const LEADER_RUN_MAX_GAP_HOPS: u32 = 2;
+/// A run counts as a VIS preamble only within this span. Both leaders plus
+/// the break are ~610 ms; a run cut short by a fade during leader 2 is
+/// shorter. Image content never holds one tone this long (Robot 36 has a
+/// sync pulse every 150 ms, PD/Scottie every line), and the upper bound
+/// rejects a steady carrier-like tone.
+const LEADER_RUN_MIN_MS: u64 = 350;
+const LEADER_RUN_MAX_MS: u64 = 750;
+/// Minimum share of a run's hops that sit on the leader tone.
+const LEADER_RUN_MIN_HIT_RATIO: f64 = 0.7;
+/// The break only counts once this much leader has preceded it.
+const BREAK_MIN_LEADER_MS: u64 = 200;
+/// Image start relative to the break hop's window start: break centre
+/// (+10 ms) → break end (+5) → leader 2 (+300) → start + 8 bits + stop (+300).
+const IMAGE_START_AFTER_BREAK_HOP_MS: u64 = 615;
+/// Image start relative to the run's first hop when no break was seen:
+/// leader onset (+10 ms) → leader 300 + break 10 + leader 300 + bits 300.
+const IMAGE_START_AFTER_RUN_START_MS: u64 = 920;
+/// How long past the expected image start to wait for the real VIS before
+/// assuming the fallback mode (the matcher fires within ~25 ms of the stop
+/// bit's end).
+const FALLBACK_FIRE_DELAY_MS: u64 = 60;
+
+/// Milliseconds → working-rate samples.
+const fn ms_to_samples(ms: u64) -> u64 {
+    ms * WORKING_SAMPLE_RATE_HZ as u64 / 1000
+}
+
+/// An in-progress run of leader-tone hops.
+#[derive(Clone, Copy, Debug)]
+struct LeaderRun {
+    start_hop: u64,
+    last_hit_hop: u64,
+    hits: u32,
+    sum_hz: f64,
+    break_hop: Option<u64>,
+    gap: u32,
+}
+
+impl LeaderRun {
+    fn mean_hz(&self) -> f64 {
+        self.sum_hz / f64::from(self.hits)
+    }
+}
+
+/// A preamble whose bits have not (yet) decoded.
+#[derive(Clone, Copy, Debug)]
+struct FallbackArm {
+    image_start_abs: u64,
+    fire_at_abs: u64,
+    hedr_shift_hz: f64,
+}
+
 /// VIS detection state machine at the [`WORKING_SAMPLE_RATE_HZ`] working rate.
 pub(crate) struct VisDetector {
     fft: Arc<dyn rustfft::Fft<f32>>,
@@ -80,6 +149,10 @@ pub(crate) struct VisDetector {
     /// *known* VIS code (issue #89 A3). An `fn` pointer: the closure captures
     /// nothing, so it coerces.
     is_known_vis: fn(u8) -> bool,
+    /// VIS code to assume when a preamble's bits are lost; `None` = off.
+    fallback_code: Option<u8>,
+    leader_run: Option<LeaderRun>,
+    fallback_arm: Option<FallbackArm>,
 }
 
 /// Result of a successful VIS detection.
@@ -91,8 +164,12 @@ pub(crate) struct DetectedVis {
     /// plumbs this through to per-pixel demod for accurate pixel-frequency
     /// mapping (slowrx vis.c line 106 → video.c line 406).
     pub hedr_shift_hz: f64,
-    /// Working-rate sample index where the VIS stop-bit window ended.
+    /// Working-rate sample index where the VIS stop-bit window ended — for
+    /// an assumed header, where the image audio is expected to begin.
     pub end_sample: u64,
+    /// `true` when the bits were lost and `code` is the caller's fallback
+    /// mode, inferred from the leader timing (see `set_fallback_code`).
+    pub assumed: bool,
 }
 
 impl VisDetector {
@@ -120,6 +197,19 @@ impl VisDetector {
             hops_completed: 0,
             detected: None,
             is_known_vis,
+            fallback_code: None,
+            leader_run: None,
+            fallback_arm: None,
+        }
+    }
+
+    /// VIS code to assume when a header's leaders arrive but its bits are
+    /// lost (`None` disables the fallback, the default and slowrx's
+    /// behaviour).
+    pub fn set_fallback_code(&mut self, code: Option<u8>) {
+        self.fallback_code = code;
+        if code.is_none() {
+            self.fallback_arm = None;
         }
     }
 
@@ -152,7 +242,9 @@ impl VisDetector {
                 break;
             }
             self.process_hop(buf_window_start);
+            let hop = self.hops_completed;
             self.hops_completed = self.hops_completed.saturating_add(1);
+            self.track_leader(hop);
 
             if self.history_filled >= HISTORY_LEN {
                 if let Some((code, hedr_shift_hz, i_match)) =
@@ -184,7 +276,10 @@ impl VisDetector {
                         code,
                         hedr_shift_hz,
                         end_sample: stop_end_abs,
+                        assumed: false,
                     });
+                    self.leader_run = None;
+                    self.fallback_arm = None;
                     self.audio_buffer.drain(..drain_to_buf);
                     #[allow(clippy::cast_possible_truncation)]
                     {
@@ -194,9 +289,20 @@ impl VisDetector {
                 }
             }
 
+            if self.fire_fallback_if_due(hop) {
+                return;
+            }
+
             // Drop samples no future window will touch (next hop starts
-            // at buf_window_start + HOP_SAMPLES).
-            let drain_to = buf_window_start + HOP_SAMPLES;
+            // at buf_window_start + HOP_SAMPLES) — but while a fallback is
+            // armed, keep everything from the expected image start on.
+            let mut drain_to = buf_window_start + HOP_SAMPLES;
+            if let Some(arm) = self.fallback_arm {
+                let keep_from =
+                    usize::try_from(arm.image_start_abs.saturating_sub(self.audio_origin_sample))
+                        .unwrap_or(usize::MAX);
+                drain_to = drain_to.min(keep_from);
+            }
             self.audio_buffer.drain(..drain_to);
             #[allow(clippy::cast_possible_truncation)]
             {
@@ -289,6 +395,105 @@ impl VisDetector {
         if self.history_filled < HISTORY_LEN {
             self.history_filled += 1;
         }
+    }
+
+    /// Update the leader-run tracker with the hop just processed, arming the
+    /// lost-VIS fallback when a run ends looking like a VIS preamble.
+    fn track_leader(&mut self, hop: u64) {
+        if self.fallback_code.is_none() {
+            return;
+        }
+        let f = self.history[(self.history_ptr + HISTORY_LEN - 1) % HISTORY_LEN];
+        let Some(mut run) = self.leader_run else {
+            if (f - LEADER_HZ).abs() < LEADER_ACQUIRE_TOLERANCE_HZ {
+                self.leader_run = Some(LeaderRun {
+                    start_hop: hop,
+                    last_hit_hop: hop,
+                    hits: 1,
+                    sum_hz: f,
+                    break_hop: None,
+                    gap: 0,
+                });
+            }
+            return;
+        };
+        let leader = run.mean_hz();
+        let led_ms = (hop - run.start_hop) * 10;
+        if within(f, leader, TONE_TOLERANCE_HZ) {
+            run.hits += 1;
+            run.sum_hz += f;
+            run.last_hit_hop = hop;
+            run.gap = 0;
+        } else if run.break_hop.is_none()
+            && led_ms >= BREAK_MIN_LEADER_MS
+            && within(f, leader + BREAK_HZ_OFFSET, TONE_TOLERANCE_HZ)
+        {
+            run.break_hop = Some(hop);
+            run.gap += 1;
+        } else {
+            run.gap += 1;
+        }
+        if run.gap > LEADER_RUN_MAX_GAP_HOPS {
+            self.leader_run = None;
+            self.arm_if_preamble(&run);
+        } else {
+            self.leader_run = Some(run);
+        }
+    }
+
+    /// Arm the fallback if a just-ended leader run has a VIS preamble's
+    /// length and consistency.
+    fn arm_if_preamble(&mut self, run: &LeaderRun) {
+        if self.fallback_arm.is_some() {
+            return;
+        }
+        let span_hops = run.last_hit_hop - run.start_hop + 1;
+        let span_ms = span_hops * 10;
+        #[allow(clippy::cast_precision_loss)]
+        let hit_ratio = f64::from(run.hits) / span_hops as f64;
+        if !(LEADER_RUN_MIN_MS..=LEADER_RUN_MAX_MS).contains(&span_ms)
+            || hit_ratio < LEADER_RUN_MIN_HIT_RATIO
+        {
+            return;
+        }
+        let image_start_abs = match run.break_hop {
+            Some(b) => self.hop_abs(b) + ms_to_samples(IMAGE_START_AFTER_BREAK_HOP_MS),
+            None => self.hop_abs(run.start_hop) + ms_to_samples(IMAGE_START_AFTER_RUN_START_MS),
+        };
+        self.fallback_arm = Some(FallbackArm {
+            image_start_abs,
+            fire_at_abs: image_start_abs + ms_to_samples(FALLBACK_FIRE_DELAY_MS),
+            hedr_shift_hz: run.mean_hz() - LEADER_HZ,
+        });
+    }
+
+    /// If an armed fallback's deadline has passed with no real VIS, emit the
+    /// assumed detection, keeping audio from the expected image start on.
+    fn fire_fallback_if_due(&mut self, hop: u64) -> bool {
+        let (Some(arm), Some(code)) = (self.fallback_arm, self.fallback_code) else {
+            return false;
+        };
+        if self.hop_abs(hop) + (WINDOW_SAMPLES as u64) < arm.fire_at_abs {
+            return false;
+        }
+        let drain_to_buf =
+            usize::try_from(arm.image_start_abs.saturating_sub(self.audio_origin_sample))
+                .unwrap_or(usize::MAX)
+                .min(self.audio_buffer.len());
+        self.audio_buffer.drain(..drain_to_buf);
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            self.audio_origin_sample += drain_to_buf as u64;
+        }
+        self.detected = Some(DetectedVis {
+            code,
+            hedr_shift_hz: arm.hedr_shift_hz,
+            end_sample: arm.image_start_abs,
+            assumed: true,
+        });
+        self.fallback_arm = None;
+        self.leader_run = None;
+        true
     }
 
     /// Rotate the circular history so `[0]` is oldest, `[HISTORY_LEN-1]`
@@ -720,6 +925,84 @@ pub mod tests {
             "0x06 with standard (non-inverted) parity must NOT decode — \
              slowrx vis.c:116 inverts parity for R12BW."
         );
+    }
+
+    /// Header with both leaders but the bits replaced by noise: `leader_ms`
+    /// of 1900 Hz, optionally split by a 10 ms 1200 Hz break after 300 ms,
+    /// then 300 ms of noise and `tail_ms` of silence. Returns the audio and
+    /// the true image-start sample (where a stop bit would have ended).
+    fn lost_bits_header(leader_ms: f64, with_break: bool, tail_ms: f64) -> (Vec<f32>, usize) {
+        let sr = f64::from(WORKING_SAMPLE_RATE_HZ);
+        let ms = |m: f64| (m * sr / 1000.0).round() as usize;
+        let mut tone = crate::test_tone::ToneWriter::new();
+        if with_break {
+            tone.fill_secs(LEADER_HZ, 0.300);
+            tone.fill_secs(LEADER_HZ + BREAK_HZ_OFFSET, 0.010);
+            tone.fill_secs(LEADER_HZ, (leader_ms - 310.0) / 1000.0);
+        } else {
+            tone.fill_secs(LEADER_HZ, leader_ms / 1000.0);
+        }
+        let mut audio = tone.into_vec();
+        let image_start = audio.len() + ms(300.0);
+        let mut seed = 0x1234_5678_u32;
+        for _ in 0..ms(300.0) {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            audio.push((f64::from(seed) / f64::from(u32::MAX) * 2.0 - 1.0) as f32);
+        }
+        audio.extend(std::iter::repeat_n(0.0_f32, ms(tail_ms)));
+        (audio, image_start)
+    }
+
+    fn run_with_fallback(audio: &[f32], fallback: Option<u8>) -> Option<DetectedVis> {
+        let mut det = VisDetector::new(vis_known);
+        det.set_fallback_code(fallback);
+        det.process(audio, audio.len() as u64);
+        det.take_detected()
+    }
+
+    #[test]
+    fn fallback_assumes_the_mode_and_finds_the_image_start() {
+        for with_break in [true, false] {
+            let (audio, image_start) = lost_bits_header(610.0, with_break, 200.0);
+            let d = run_with_fallback(&audio, Some(0x08)).expect("fallback fires");
+            assert!(d.assumed, "marked as assumed");
+            assert_eq!(d.code, 0x08);
+            assert!(d.hedr_shift_hz.abs() < 10.0, "hedr {}", d.hedr_shift_hz);
+            let err_ms = (d.end_sample as f64 - image_start as f64) * 1000.0
+                / f64::from(WORKING_SAMPLE_RATE_HZ);
+            assert!(
+                err_ms.abs() <= 15.0,
+                "break={with_break}: image start off by {err_ms:.1} ms"
+            );
+        }
+    }
+
+    #[test]
+    fn fallback_is_off_by_default() {
+        let (audio, _) = lost_bits_header(610.0, true, 200.0);
+        assert!(run_with_fallback(&audio, None).is_none());
+    }
+
+    #[test]
+    fn fallback_ignores_runs_outside_the_preamble_length() {
+        // A single 300 ms leader (too short to be sure it was a header) and
+        // an 800 ms one (too long — a steady tone, not two leaders).
+        for leader_ms in [300.0, 800.0] {
+            let (audio, _) = lost_bits_header(leader_ms, false, 300.0);
+            assert!(
+                run_with_fallback(&audio, Some(0x08)).is_none(),
+                "{leader_ms} ms leader run must not arm the fallback"
+            );
+        }
+    }
+
+    #[test]
+    fn a_decodable_vis_wins_over_the_fallback() {
+        let mut audio = synth_vis(0x5F, 0.0);
+        audio.extend(std::iter::repeat_n(0.0_f32, 2048));
+        let d = run_with_fallback(&audio, Some(0x08)).expect("real VIS");
+        assert_eq!(d.code, 0x5F);
+        assert!(!d.assumed);
     }
 
     #[test]
