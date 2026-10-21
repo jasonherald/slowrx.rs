@@ -258,14 +258,22 @@ pub(crate) struct SyncResult {
     /// both "perfectly aligned input" and "nothing-detected-at-all input".
     #[allow(dead_code)]
     pub slant_deg: Option<f64>,
+    /// How clearly the mode's sync pulses showed up across the image, from
+    /// `0.0` (no line-sync structure — e.g. a VIS followed by noise) to
+    /// about `1.0` (a pulse on every line). See [`sync_quality`].
+    pub sync_quality: f32,
 }
 
 /// Linear Hough transform + 8-tap convolution edge-find.
 ///
 /// `has_sync` is the per-stride boolean track produced by [`SyncTracker`].
-/// `initial_rate_hz` is normally [`WORKING_SAMPLE_RATE_HZ`] but the
-/// function may adjust it. Translated from slowrx `sync.c::FindSync`
-/// (lines 18-133).
+/// Only its first image's worth (`radio_lines × line_seconds` at
+/// `initial_rate_hz`) is used: slowrx's `HasSync` spans exactly one image,
+/// but the decoder's track runs on when a `process` call carries more audio,
+/// and PD's `image_lines` folds (twice its radio lines) would otherwise read
+/// the next transmission. `initial_rate_hz` is normally
+/// [`WORKING_SAMPLE_RATE_HZ`] but the function may adjust it. Translated from
+/// slowrx `sync.c::FindSync` (lines 18-133).
 #[must_use = "the SyncResult must be consumed; dropping it discards the slant + skip correction"]
 #[allow(
     clippy::cast_precision_loss,
@@ -279,6 +287,10 @@ pub(crate) fn find_sync(
     spec: ModeSpec,
     scratch: &mut FindSyncScratch,
 ) -> SyncResult {
+    let image_probes = (f64::from(spec.radio_lines()) * spec.line_seconds * initial_rate_hz
+        / SYNC_PROBE_STRIDE as f64)
+        .ceil() as usize;
+    let has_sync = &has_sync[..has_sync.len().min(image_probes)];
     let line_width: usize = ((spec.line_seconds / spec.sync_seconds) * 4.0) as usize;
     let num_lines = spec.image_lines as usize;
     let mut rate = initial_rate_hz;
@@ -318,6 +330,11 @@ pub(crate) fn find_sync(
         adjusted_rate_hz: rate,
         skip_samples,
         slant_deg: slant_deg_detected,
+        // `x_acc` was just rebuilt by `find_falling_edge` at the final,
+        // slant-corrected rate. Normalise by the radio lines actually
+        // buffered: `find_falling_edge` folds `image_lines` (slowrx-faithful),
+        // but PD's buffer holds only half that many sync pulses.
+        sync_quality: sync_quality(&scratch.x_acc, spec, spec.radio_lines() as usize),
     }
 }
 
@@ -493,6 +510,44 @@ fn find_falling_edge(
     falling_edge_from_x_acc(&scratch.x_acc)
 }
 
+/// Line-sync quality of a decoded image from the column accumulator
+/// `x_acc` (how many of the `num_lines` folded radio lines — see
+/// [`ModeSpec::radio_lines`] — had sync energy at each of the
+/// [`X_ACC_BINS`] positions across a line). A real image puts
+/// a sync pulse in the same columns on nearly every line, so the best
+/// pulse-wide window scores close to `num_lines` above the background;
+/// noise spreads its hits evenly. Returns
+/// `(best pulse-wide window mean − median) / num_lines`, clamped to
+/// `[0, 1]`: ~0.95 on clean real-radio Robot 36, 0.4–0.95 on faded but
+/// legible passes, ≤ 0.1 when the "image" is noise (#116). The window
+/// wraps around the line edge. No slowrx counterpart.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub(crate) fn sync_quality(x_acc: &[u32], spec: ModeSpec, num_lines: usize) -> f32 {
+    let n = x_acc.len();
+    if n == 0 || num_lines == 0 {
+        return 0.0;
+    }
+    let width = ((spec.sync_seconds / spec.line_seconds) * n as f64)
+        .round()
+        .clamp(1.0, n as f64) as usize;
+    // Circular sliding-window sum, O(n).
+    let mut sum: u64 = x_acc[..width].iter().map(|&c| u64::from(c)).sum();
+    let mut best = sum;
+    for start in 1..n {
+        sum = sum + u64::from(x_acc[(start + width - 1) % n]) - u64::from(x_acc[start - 1]);
+        best = best.max(sum);
+    }
+    let mut sorted = x_acc.to_vec();
+    sorted.sort_unstable();
+    let median = f64::from(sorted[n / 2]);
+    let peak = best as f64 / width as f64;
+    ((peak - median) / num_lines as f64).clamp(0.0, 1.0) as f32
+}
+
 /// Convert a falling-edge `xmax` (post-slip-wrap) to skip seconds,
 /// applying the mode's sync-position offset. Pure arithmetic — no
 /// global state. The raw `s_secs` is computed assuming the falling
@@ -599,6 +654,90 @@ mod tests {
             }
         }
         track
+    }
+
+    #[test]
+    fn sync_quality_is_high_for_a_clean_track_and_low_for_noise() {
+        let spec = modespec::for_mode(modespec::SstvMode::Robot36);
+        let rate = f64::from(WORKING_SAMPLE_RATE_HZ);
+        let mut scratch = FindSyncScratch::new();
+        let clean = find_sync(&synth_has_sync(spec, rate), rate, spec, &mut scratch);
+        assert!(clean.sync_quality > 0.9, "clean: {}", clean.sync_quality);
+        // Noise: sync-band hits scattered at random (LCG, ~30 % density).
+        let mut seed = 0xACE1_u32;
+        let random_track: Vec<bool> = (0..synth_has_sync(spec, rate).len())
+            .map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                seed >> 24 < 77
+            })
+            .collect();
+        let noise = find_sync(&random_track, rate, spec, &mut scratch);
+        assert!(noise.sync_quality < 0.1, "noise: {}", noise.sync_quality);
+        // PD packs two image rows per radio line, so the decoder buffers
+        // only `image_lines / 2` lines of sync; a clean PD image must
+        // still score near 1 (CodeRabbit, #121).
+        for mode in [modespec::SstvMode::Pd120, modespec::SstvMode::Pd240] {
+            let pd = modespec::for_mode(mode);
+            let mut track = synth_has_sync(pd, rate);
+            track.truncate(
+                (f64::from(pd.radio_lines()) * pd.line_seconds * rate / SYNC_PROBE_STRIDE as f64)
+                    as usize,
+            );
+            let q = find_sync(&track, rate, pd, &mut scratch).sync_quality;
+            assert!(q > 0.9, "clean {mode:?}: {q}");
+        }
+        let empty = find_sync(&[], rate, spec, &mut scratch);
+        assert!(
+            empty.sync_quality.abs() < f32::EPSILON,
+            "empty: {}",
+            empty.sync_quality
+        );
+    }
+
+    /// slowrx's `HasSync` spans exactly one image, but the decoder's track
+    /// runs on when one `process` call carries more audio. PD folds
+    /// `image_lines` = 2 × its radio lines, so without truncation it read
+    /// the *next* transmission's pulses: a noise image followed by a clean
+    /// one scored as clean (review of #121), and the edge depended on how
+    /// the audio was chunked.
+    #[test]
+    fn find_sync_ignores_the_track_past_the_image() {
+        let rate = f64::from(WORKING_SAMPLE_RATE_HZ);
+        let pd = modespec::for_mode(modespec::SstvMode::Pd120);
+        let image_probes = (f64::from(pd.radio_lines()) * pd.line_seconds * rate
+            / SYNC_PROBE_STRIDE as f64) as usize;
+        let mut seed = 0xBADD_u32;
+        let mut track: Vec<bool> = (0..image_probes)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                seed >> 24 < 77
+            })
+            .collect();
+        let noise_only = find_sync(&track, rate, pd, &mut FindSyncScratch::new());
+        // A clean transmission follows in the same buffer.
+        track.extend(synth_has_sync(pd, rate));
+        let with_next = find_sync(&track, rate, pd, &mut FindSyncScratch::new());
+        assert!(
+            with_next.sync_quality < 0.1,
+            "noise image scored {} with a clean image after it",
+            with_next.sync_quality
+        );
+        assert_eq!(with_next.skip_samples, noise_only.skip_samples);
+        assert_eq!(with_next.sync_quality, noise_only.sync_quality);
+    }
+
+    #[test]
+    fn sync_quality_handles_a_pulse_straddling_the_line_edge() {
+        // The pulse column window wraps (Scottie's sync sits mid-line, and a
+        // skewed capture can put any mode's pulse at the edge).
+        let spec = modespec::for_mode(modespec::SstvMode::Robot36);
+        let mut x_acc = vec![0_u32; X_ACC_BINS];
+        let lines = spec.image_lines as usize;
+        // 20 columns at the end of the line plus 22 at the start.
+        x_acc[X_ACC_BINS - 20..].fill(spec.image_lines);
+        x_acc[..22].fill(spec.image_lines);
+        let q = sync_quality(&x_acc, spec, lines);
+        assert!(q > 0.9, "wrapped pulse: {q}");
     }
 
     #[test]

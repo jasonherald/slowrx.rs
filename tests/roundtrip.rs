@@ -3,7 +3,33 @@
 #![cfg(feature = "test-support")]
 #![allow(clippy::expect_used, clippy::cast_possible_truncation)]
 
-use slowrx::{SstvDecoder, SstvEvent, SstvMode, WORKING_SAMPLE_RATE_HZ};
+use slowrx::{SstvDecoder, SstvEvent, SstvImage, SstvMode, WORKING_SAMPLE_RATE_HZ};
+
+/// The completed image from a clean round-trip. Every clean synthetic
+/// image must score well above the noise threshold (≥ 0.87 across modes;
+/// PD scored 0.5 before #121's fix) — covers the metric for each mode
+/// family, incl. PD's two-rows-per-radio-line buffer and Scottie's
+/// mid-line sync.
+fn clean_image(events: &[SstvEvent], mode: SstvMode) -> SstvImage {
+    events
+        .iter()
+        .find_map(|e| match e {
+            SstvEvent::ImageComplete {
+                image,
+                sync_quality,
+                partial: false,
+            } => {
+                assert!(
+                    sync_quality.value() > 0.8 && !sync_quality.looks_like_noise(),
+                    "{mode:?}: clean round-trip sync quality {}",
+                    sync_quality.value()
+                );
+                Some(image.clone())
+            }
+            _ => None,
+        })
+        .expect("ImageComplete event")
+}
 
 /// Build a synthetic image: horizontal luma gradient + alternating chroma stripes.
 #[allow(
@@ -52,16 +78,7 @@ fn run_roundtrip(mode: SstvMode) {
     let mut d = SstvDecoder::new(WORKING_SAMPLE_RATE_HZ).expect("decoder");
     let events = d.process(&audio);
 
-    let img = events
-        .iter()
-        .find_map(|e| match e {
-            SstvEvent::ImageComplete {
-                image,
-                partial: false,
-            } => Some(image.clone()),
-            _ => None,
-        })
-        .expect("ImageComplete event");
+    let img = clean_image(&events, mode);
 
     assert_eq!(img.mode, mode);
     assert_eq!(img.width, w);
@@ -140,16 +157,7 @@ fn run_robot_roundtrip(mode: SstvMode) {
     let mut d = SstvDecoder::new(WORKING_SAMPLE_RATE_HZ).expect("decoder");
     let events = d.process(&audio);
 
-    let img = events
-        .iter()
-        .find_map(|e| match e {
-            SstvEvent::ImageComplete {
-                image,
-                partial: false,
-            } => Some(image.clone()),
-            _ => None,
-        })
-        .expect("ImageComplete event");
+    let img = clean_image(&events, mode);
 
     assert_eq!(img.mode, mode);
     assert_eq!(img.width, w);
@@ -253,16 +261,7 @@ fn run_scottie_roundtrip(mode: SstvMode) {
     let mut d = SstvDecoder::new(WORKING_SAMPLE_RATE_HZ).expect("decoder");
     let events = d.process(&audio);
 
-    let img = events
-        .iter()
-        .find_map(|e| match e {
-            SstvEvent::ImageComplete {
-                image,
-                partial: false,
-            } => Some(image.clone()),
-            _ => None,
-        })
-        .expect("ImageComplete event");
+    let img = clean_image(&events, mode);
 
     assert_eq!(img.mode, mode);
     assert_eq!(img.width, w);

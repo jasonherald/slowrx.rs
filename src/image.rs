@@ -65,6 +65,49 @@ impl SstvImage {
     }
 }
 
+/// How clearly an image's line-sync pulses showed up while it was decoded:
+/// `0.0` means no line structure at all, about `1.0` means a sync pulse on
+/// every line. Carried on [`crate::SstvEvent::ImageComplete`].
+///
+/// On weak signals a VIS can be followed by noise (the transmission fades
+/// or ends, or a VIS matched by chance in noise), and the decoder still
+/// produces a full-size "image" of that noise. [`Self::looks_like_noise`]
+/// flags those, so callers can drop them instead of saving junk. Measured
+/// on real ISS passes: legible images 0.43–0.95 (clean ~0.95), noise
+/// images 0.03–0.10.
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+pub struct SyncQuality(f32);
+
+impl SyncQuality {
+    /// Scores below this look like noise rather than an image. Sits in the
+    /// gap between the classes measured on real passes (noise ≤ 0.10,
+    /// legible ≥ 0.43).
+    pub const NOISE_THRESHOLD: f32 = 0.2;
+
+    /// Wrap a raw score, clamped to `[0, 1]` (`NaN` becomes `0`).
+    #[must_use]
+    pub fn new(value: f32) -> Self {
+        Self(if value.is_nan() {
+            0.0
+        } else {
+            value.clamp(0.0, 1.0)
+        })
+    }
+
+    /// The score in `[0, 1]`.
+    #[must_use]
+    pub fn value(self) -> f32 {
+        self.0
+    }
+
+    /// Whether the image is more likely noise than a picture
+    /// (score below [`Self::NOISE_THRESHOLD`]).
+    #[must_use]
+    pub fn looks_like_noise(self) -> bool {
+        self.0 < Self::NOISE_THRESHOLD
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,5 +154,15 @@ mod tests {
         // put_pixel() must silently no-op on indices past the buffer.
         img.put_pixel(3, 2, [1, 2, 3]);
         assert_eq!(img.pixels.len(), 2); // no growth
+    }
+
+    #[test]
+    fn sync_quality_clamps_and_classifies() {
+        assert!((SyncQuality::new(1.7).value() - 1.0).abs() < f32::EPSILON);
+        assert!(SyncQuality::new(-0.3).value().abs() < f32::EPSILON);
+        assert!(SyncQuality::new(f32::NAN).value().abs() < f32::EPSILON);
+        assert!(SyncQuality::new(0.05).looks_like_noise());
+        assert!(!SyncQuality::new(SyncQuality::NOISE_THRESHOLD).looks_like_noise());
+        assert!(!SyncQuality::new(0.95).looks_like_noise());
     }
 }
