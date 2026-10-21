@@ -126,14 +126,23 @@ fn fixtures_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ariss-fram2")
 }
 
-fn baseline_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/ariss_fram2_baseline.tsv")
+/// The committed baseline for the default (slowrx) demod, or for the
+/// opt-in analytic-signal demod (#71).
+fn baseline_path(analytic: bool) -> PathBuf {
+    let name = if analytic {
+        "tests/ariss_fram2_baseline_analytic.tsv"
+    } else {
+        "tests/ariss_fram2_baseline.tsv"
+    };
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(name)
 }
 
-/// Decode `wav` with a default decoder; its first completed image.
-fn decode_first_image(wav: &Path) -> Rgb {
+/// Decode `wav` (with the analytic-signal demod if `analytic`); its first
+/// completed image.
+fn decode_first_image(wav: &Path, analytic: bool) -> Rgb {
     let mut reader = hound::WavReader::open(wav).expect("open WAV");
     let mut decoder = SstvDecoder::new(reader.spec().sample_rate).expect("decoder");
+    decoder.set_analytic_demod(analytic);
     let mut first = None;
     slowrx::wav::decode_wav_stream(&mut reader, &mut decoder, |event| {
         if let SstvEvent::ImageComplete { image, .. } = event {
@@ -160,8 +169,8 @@ fn load_reference(jpg: &Path) -> Rgb {
 }
 
 /// `slide → baseline MAE` from the committed TSV (`#` lines are comments).
-fn load_baseline() -> Vec<(String, f64)> {
-    std::fs::read_to_string(baseline_path())
+fn load_baseline(analytic: bool) -> Vec<(String, f64)> {
+    std::fs::read_to_string(baseline_path(analytic))
         .unwrap_or_default()
         .lines()
         .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
@@ -174,7 +183,7 @@ fn load_baseline() -> Vec<(String, f64)> {
         .collect()
 }
 
-fn write_baseline(rows: &[(String, Score)]) {
+fn write_baseline(rows: &[(String, Score)], analytic: bool) {
     let mut out = String::from(
         "# Fram2 decode vs reference JPG: mean absolute error (0-255) at the best shift.\n\
          # Written by `SLOWRX_FRAM2_BLESS=1 cargo test --release --features cli \
@@ -188,7 +197,7 @@ fn write_baseline(rows: &[(String, Score)]) {
         )
         .expect("writing to a String");
     }
-    std::fs::write(baseline_path(), out).expect("write baseline");
+    std::fs::write(baseline_path(analytic), out).expect("write baseline");
 }
 
 /// `false` when none of the 12 WAV + JPG pairs are present (skip); panics
@@ -233,9 +242,9 @@ fn print_table(rows: &[(String, Score)]) {
     eprintln!("mean     {mean_mae:6.3}");
 }
 
-#[test]
-#[ignore = "needs the gitignored ARISS Fram2 fixtures; run with --ignored"]
-fn fram2_slides_match_their_reference_jpgs() {
+/// Decode every slide, print the table, and either bless the baseline
+/// (`SLOWRX_FRAM2_BLESS=1`) or check each slide against it.
+fn check_fram2(analytic: bool) {
     let dir = fixtures_dir();
     if !fixtures_present(&dir) {
         eprintln!("skipping: no Fram2 fixtures in {}", dir.display());
@@ -244,17 +253,17 @@ fn fram2_slides_match_their_reference_jpgs() {
     let rows: Vec<(String, Score)> = (1..=12)
         .map(|n| {
             let slide = format!("Slide{n:02}");
-            let decoded = decode_first_image(&dir.join(format!("{slide}.wav")));
+            let decoded = decode_first_image(&dir.join(format!("{slide}.wav")), analytic);
             let reference = load_reference(&dir.join(format!("{slide}-Robot-36-Color.jpg")));
             (slide, score(&decoded, &reference))
         })
         .collect();
     print_table(&rows);
     if bless_requested() {
-        write_baseline(&rows);
+        write_baseline(&rows, analytic);
         return;
     }
-    let baseline = load_baseline();
+    let baseline = load_baseline(analytic);
     assert_eq!(baseline.len(), rows.len(), "baseline covers every slide");
     for ((slide, s), (base_slide, base_mae)) in rows.iter().zip(&baseline) {
         assert_eq!(slide, base_slide);
@@ -264,6 +273,19 @@ fn fram2_slides_match_their_reference_jpgs() {
             s.mae
         );
     }
+}
+
+#[test]
+#[ignore = "needs the gitignored ARISS Fram2 fixtures; run with --ignored"]
+fn fram2_slides_match_their_reference_jpgs() {
+    check_fram2(false);
+}
+
+/// The opt-in analytic-signal demod (#71), against its own baseline.
+#[test]
+#[ignore = "needs the gitignored ARISS Fram2 fixtures; run with --ignored"]
+fn fram2_slides_match_with_analytic_demod() {
+    check_fram2(true);
 }
 
 /// A synthetic image with structure in both axes, so a shift is

@@ -83,6 +83,13 @@ struct Args {
     /// ended transmission). They are still reported on stderr.
     #[arg(long)]
     drop_noise: bool,
+
+    /// Demodulate pixels from the analytic signal: removes the fine diagonal
+    /// cross-hatch slowrx's real-signal demod leaves in dark areas, with no
+    /// loss of sharpness. Off by default (slowrx's behaviour). See
+    /// `SstvDecoder::set_analytic_demod`.
+    #[arg(long)]
+    analytic_demod: bool,
 }
 
 /// Resolve a mode by its `ModeSpec::short_name` (case-insensitive).
@@ -149,6 +156,7 @@ fn run(args: &Args) -> Result<u32> {
         SstvDecoder::new(spec.sample_rate).with_context(|| "construct SstvDecoder")?;
     decoder.set_fallback_mode(args.fallback_mode);
     decoder.set_forced_mode(args.mode);
+    decoder.set_analytic_demod(args.analytic_demod);
 
     if !args.quiet {
         eprintln!("decoding {} samples (streaming)...", reader.duration());
