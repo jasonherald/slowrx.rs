@@ -34,6 +34,7 @@ pub(crate) struct HannBank {
 }
 
 impl HannBank {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             windows: std::array::from_fn(|idx| {
@@ -268,18 +269,16 @@ pub(crate) struct ChannelDemod {
     pixel_times: Vec<i64>,
     stored_lum: Vec<u8>,
     scratch_audio: Vec<f32>,
-    /// PD line-pair scratch buffers hoisted out of `decode_pd_line_pair`.
-    /// Reused across calls via `clear() + resize()`. (Audit #93 D3.)
-    /// `pub(crate)` because `mode_pd::decode_pd_line_pair` takes ownership
-    /// temporarily (via `std::mem::take`) to satisfy the borrow checker while
-    /// `demod` is also mutably borrowed through `DemodState`.
-    pub(crate) pd_y_odd: Vec<u8>,
-    pub(crate) pd_cr: Vec<u8>,
-    pub(crate) pd_cb: Vec<u8>,
-    pub(crate) pd_y_even: Vec<u8>,
+    /// Per-line channel buffers hoisted out of the mode line decoders (PD
+    /// uses all four, Robot and Scottie three). A decoder takes them with
+    /// [`Self::take_line_bufs`] — so `demod` can be mutably borrowed through
+    /// `DemodState` meanwhile — and hands them back with
+    /// [`Self::restore_line_bufs`], keeping the allocations. (Audit #93 D3.)
+    line_bufs: [Vec<u8>; 4],
 }
 
 impl ChannelDemod {
+    #[must_use]
     pub fn new() -> Self {
         let mut planner = FftPlanner::<f32>::new();
         let fft = planner.plan_fft_forward(FFT_LEN);
@@ -295,10 +294,7 @@ impl ChannelDemod {
             pixel_times: Vec::new(),
             stored_lum: Vec::new(),
             scratch_audio: Vec::new(),
-            pd_y_odd: Vec::new(),
-            pd_cr: Vec::new(),
-            pd_cb: Vec::new(),
-            pd_y_even: Vec::new(),
+            line_bufs: Default::default(),
         }
     }
 
@@ -313,12 +309,29 @@ impl ChannelDemod {
     /// Translated from slowrx `video.c:369-395` (windowed FFT + bin
     /// search + Gaussian interp).
     #[must_use = "the demodulated frequency must be consumed; dropping it discards the per-pixel demod result"]
+    /// The four per-line channel buffers, each cleared to `width` zeros.
+    /// Return them with [`Self::restore_line_bufs`] after the line.
+    pub(crate) fn take_line_bufs(&mut self, width: usize) -> [Vec<u8>; 4] {
+        let mut bufs = std::mem::take(&mut self.line_bufs);
+        for buf in &mut bufs {
+            buf.clear();
+            buf.resize(width, 0);
+        }
+        bufs
+    }
+
+    /// Hand back the buffers from [`Self::take_line_bufs`] for reuse.
+    pub(crate) fn restore_line_bufs(&mut self, bufs: [Vec<u8>; 4]) {
+        self.line_bufs = bufs;
+    }
+
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::cast_possible_wrap
     )]
+    #[must_use]
     pub fn pixel_freq(
         &mut self,
         audio: &[f32],
@@ -977,6 +990,22 @@ mod tests {
         // 1500-2300 band, and bin width is ~43 Hz, so the fallback may
         // land within ~50 Hz of either edge.
         assert!((1450.0..=2350.0).contains(&est), "out of band: {est}");
+    }
+
+    #[test]
+    fn line_bufs_come_back_zeroed_at_width_and_keep_their_allocation() {
+        let mut demod = ChannelDemod::new();
+        let mut bufs = demod.take_line_bufs(320);
+        assert!(bufs
+            .iter()
+            .all(|b| b.len() == 320 && b.iter().all(|&v| v == 0)));
+        bufs[2].fill(7);
+        let ptrs: Vec<*const u8> = bufs.iter().map(Vec::as_ptr).collect();
+        demod.restore_line_bufs(bufs);
+        let again = demod.take_line_bufs(320);
+        assert!(again.iter().all(|b| b.iter().all(|&v| v == 0)), "re-zeroed");
+        let reused: Vec<*const u8> = again.iter().map(Vec::as_ptr).collect();
+        assert_eq!(ptrs, reused, "no reallocation for the same width");
     }
 
     #[test]

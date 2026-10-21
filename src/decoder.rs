@@ -439,6 +439,7 @@ impl SstvDecoder {
     /// Process a chunk of mono `f32` audio samples in caller's rate.
     ///
     /// Returns events produced during this call's processing window.
+    #[must_use = "the events carry the decoded images"]
     pub fn process(&mut self, audio: &[f32]) -> Vec<SstvEvent> {
         let working = self.resampler.process(audio);
         self.samples_processed = self.samples_processed.saturating_add(audio.len() as u64);

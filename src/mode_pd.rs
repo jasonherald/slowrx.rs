@@ -96,24 +96,11 @@ pub(crate) fn decode_pd_line_pair(
     let row1 = row0 + 1;
     let width_us = width as usize;
 
-    // Hoist PD line-pair channel buffers (Audit #93 D3): take the backing
-    // allocations from `demod` so the borrow checker permits simultaneous
-    // mutable use of `demod` (via DemodState) inside decode_one_channel_into.
-    // The Vecs are returned to `demod` after the loop so their capacity is
-    // retained for the next pair call.
-    let mut y_odd = std::mem::take(&mut demod.pd_y_odd);
-    let mut cr = std::mem::take(&mut demod.pd_cr);
-    let mut cb = std::mem::take(&mut demod.pd_cb);
-    let mut y_even = std::mem::take(&mut demod.pd_y_even);
-
-    y_odd.clear();
-    y_odd.resize(width_us, 0);
-    cr.clear();
-    cr.resize(width_us, 0);
-    cb.clear();
-    cb.resize(width_us, 0);
-    y_even.clear();
-    y_even.resize(width_us, 0);
+    // Borrow the hoisted line buffers (Audit #93 D3) so `demod` can be
+    // mutably borrowed through DemodState inside decode_one_channel_into;
+    // they go back to `demod` after the pair, keeping their capacity.
+    let mut bufs = demod.take_line_bufs(width_us);
+    let [y_odd, cr, cb, y_even] = &mut bufs;
 
     let ctx = crate::demod::ChannelDecodeCtx {
         audio,
@@ -123,7 +110,7 @@ pub(crate) fn decode_pd_line_pair(
         spec,
     };
 
-    let buffers: [&mut [u8]; 4] = [&mut y_odd, &mut cr, &mut cb, &mut y_even];
+    let buffers: [&mut [u8]; 4] = [y_odd, cr, cb, y_even];
     for (chan_idx, buf) in buffers.into_iter().enumerate() {
         crate::demod::decode_one_channel_into(
             buf,
@@ -141,11 +128,7 @@ pub(crate) fn decode_pd_line_pair(
         image.put_pixel(x as u32, row1, rgb_even);
     }
 
-    // Return allocations to demod for reuse on the next pair call.
-    demod.pd_y_odd = y_odd;
-    demod.pd_cr = cr;
-    demod.pd_cb = cb;
-    demod.pd_y_even = y_even;
+    demod.restore_line_bufs(bufs);
 }
 
 #[cfg(test)]

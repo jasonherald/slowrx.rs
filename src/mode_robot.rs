@@ -142,9 +142,9 @@ fn decode_r72_line(
 
     let width_us = width as usize;
 
-    let mut y = vec![0_u8; width_us];
-    let mut cr = vec![0_u8; width_us];
-    let mut cb = vec![0_u8; width_us];
+    // Hoisted line buffers (Audit #93 D3); returned to `demod` below.
+    let mut bufs = demod.take_line_bufs(width_us);
+    let [y, cr, cb, _] = &mut bufs;
 
     let ctx = crate::demod::ChannelDecodeCtx {
         audio,
@@ -154,7 +154,7 @@ fn decode_r72_line(
         spec,
     };
 
-    let buffers: [&mut [u8]; 3] = [&mut y, &mut cr, &mut cb];
+    let buffers: [&mut [u8]; 3] = [y, cr, cb];
     for (chan_idx, buf) in buffers.into_iter().enumerate() {
         crate::demod::decode_one_channel_into(
             buf,
@@ -169,6 +169,7 @@ fn decode_r72_line(
         let rgb = crate::demod::ycbcr_to_rgb(y[x], cr[x], cb[x]);
         image.put_pixel(x as u32, line_index, rgb);
     }
+    demod.restore_line_bufs(bufs);
 }
 
 /// Decode one R36 or R24 radio line. Writes Y into image[`line_index`],
@@ -245,8 +246,9 @@ fn decode_r36_or_r24_line(
 
     let width_us = width as usize;
 
-    let mut y_buf = vec![0_u8; width_us];
-    let mut chroma_buf = vec![0_u8; width_us];
+    // Hoisted line buffers (Audit #93 D3); returned to `demod` below.
+    let mut bufs = demod.take_line_bufs(width_us);
+    let [y_buf, chroma_buf, _, _] = &mut bufs;
 
     // Y channel — synthesize a temporary ModeSpec with doubled
     // pixel_seconds so decode_one_channel_into reads at the correct
@@ -264,7 +266,7 @@ fn decode_r36_or_r24_line(
     };
 
     crate::demod::decode_one_channel_into(
-        &mut y_buf,
+        y_buf,
         chan_start_y,
         line_seconds_offset,
         &ctx_y,
@@ -281,7 +283,7 @@ fn decode_r36_or_r24_line(
     };
 
     crate::demod::decode_one_channel_into(
-        &mut chroma_buf,
+        chroma_buf,
         chan_start_chroma,
         line_seconds_offset,
         &ctx_chroma,
@@ -298,11 +300,11 @@ fn decode_r36_or_r24_line(
     let plane_len = chroma_planes[chroma_plane_idx].len();
 
     // Write own chroma into the plane at this row.
-    chroma_planes[chroma_plane_idx][line_off..line_off + width_us].copy_from_slice(&chroma_buf);
+    chroma_planes[chroma_plane_idx][line_off..line_off + width_us].copy_from_slice(chroma_buf);
 
     // Duplicate to next row (bounds-guarded for last image row).
     if next_off + width_us <= plane_len {
-        chroma_planes[chroma_plane_idx][next_off..next_off + width_us].copy_from_slice(&chroma_buf);
+        chroma_planes[chroma_plane_idx][next_off..next_off + width_us].copy_from_slice(chroma_buf);
     }
 
     // Compose RGB. cr and cb come from the two chroma planes at the
@@ -317,4 +319,5 @@ fn decode_r36_or_r24_line(
         let rgb = crate::demod::ycbcr_to_rgb(y, cr, cb);
         image.put_pixel(x as u32, line_index, rgb);
     }
+    demod.restore_line_bufs(bufs);
 }

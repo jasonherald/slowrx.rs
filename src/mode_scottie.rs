@@ -117,9 +117,9 @@ pub(crate) fn decode_line(
     let width_us = width as usize;
 
     // Decode each channel into its own buffer.
-    let mut g = vec![0_u8; width_us];
-    let mut b = vec![0_u8; width_us];
-    let mut r = vec![0_u8; width_us];
+    // Hoisted line buffers (Audit #93 D3); returned to `demod` below.
+    let mut bufs = demod.take_line_bufs(width_us);
+    let [g, b, r, _] = &mut bufs;
 
     let ctx = crate::demod::ChannelDecodeCtx {
         audio,
@@ -129,7 +129,7 @@ pub(crate) fn decode_line(
         spec,
     };
 
-    let buffers: [&mut [u8]; 3] = [&mut g, &mut b, &mut r];
+    let buffers: [&mut [u8]; 3] = [g, b, r];
     for (chan_idx, buf) in buffers.into_iter().enumerate() {
         crate::demod::decode_one_channel_into(
             buf,
@@ -145,4 +145,5 @@ pub(crate) fn decode_line(
     for x in 0..width_us {
         image.put_pixel(x as u32, line_index, [r[x], g[x], b[x]]);
     }
+    demod.restore_line_bufs(bufs);
 }
