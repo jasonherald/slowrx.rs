@@ -40,6 +40,14 @@
 //! has the stem `stdin`), or as `--prefix img` to get the
 //! `img-NNN-{mode}.png` names used before 0.9.0.
 //!
+//! # Messages
+//!
+//! Progress and errors go to stderr. A path printed in a message has its
+//! control characters, the Unicode line and paragraph separators and the
+//! bidirectional formatting characters written as escapes (`\u{1b}`,
+//! `\n`), so a file name cannot act on the terminal or change how the
+//! message reads. Other paths are printed as they are.
+//!
 //! # Exit status
 //!
 //! - `0` — at least one image was written.

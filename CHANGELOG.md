@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-11
+
 ### Added
 
 - **`slowrx-cli --prefix NAME`** (#136): names the PNGs
@@ -36,10 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ones that differ only in letter case (Windows and macOS, by default) or
   only in Unicode normalization (macOS). Give each a `--prefix` or its own
   output directory.
-
-- **The minimum supported Rust version is now 1.88** (was 1.85), so that
-  dependency updates, security fixes among them, are not held back by the
-  compiler floor (#139). `image` 0.25.10 and `proptest` 1.12 both need it.
+- **Breaking (Rust 1.85 to 1.87):** the minimum supported Rust version is
+  now 1.88 (was 1.85), so that dependency updates, security fixes among
+  them, are not held back by the compiler floor (#139). `image` 0.25.10
+  and `proptest` 1.12 both need it.
 - The README installs the CLI with
   `cargo install slowrx --features cli --locked`, which uses the dependency
   versions the release was tested and audited with.
