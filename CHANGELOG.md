@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-11
+
 ### Added
 
 - **`slowrx-cli --prefix NAME`** (#136): names the PNGs
@@ -36,10 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ones that differ only in letter case (Windows and macOS, by default) or
   only in Unicode normalization (macOS). Give each a `--prefix` or its own
   output directory.
-
-- **The minimum supported Rust version is now 1.88** (was 1.85), so that
-  dependency updates, security fixes among them, are not held back by the
-  compiler floor (#139). `image` 0.25.10 and `proptest` 1.12 both need it.
+- **Breaking (Rust 1.85 to 1.87):** the minimum supported Rust version is
+  now 1.88 (was 1.85), so that dependency updates, security fixes among
+  them, are not held back by the compiler floor (#139). `image` 0.25.10
+  and `proptest` 1.12 both need it.
 - The README installs the CLI with
   `cargo install slowrx --features cli --locked`, which uses the dependency
   versions the release was tested and audited with.
@@ -73,6 +75,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   documented `cargo install` uses `--locked`.
 - The CI job that checks the MSRV is named `MSRV check`, with no version,
   so it can be a required status check whose name survives an MSRV bump.
+- New guards for what a release edits by hand: `slowrx-cli --version`
+  reports the package version; the changelog's newest release heading and
+  the README status line name it (`tests/release.rs`); and the summary
+  line the Fram2 validation guide quotes is the one a clean Robot 36
+  decode prints.
 
 ## [0.8.1] - 2026-10-21
 

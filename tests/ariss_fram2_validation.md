@@ -93,7 +93,9 @@ done
 ls -la /tmp/fram2-validate/
 ```
 
-Each WAV should produce: `1 VIS, 240 lines, 1 image(s)` and a PNG file.
+Each WAV should end with
+`done: 1 VIS (0 assumed), 0 sync start(s), 240 lines, 1 image(s), 0 dropped as noise`
+and leave a PNG file.
 The script fails closed if any decode fails or any PNG is missing — a
 regressed re-run will exit non-zero, NOT silently leave stale PNGs that
 look like a 12/12 pass.

@@ -14,9 +14,9 @@
 //! [`tests/ariss_fram2_validation.md`][fram2]). The Scottie, Martin,
 //! Wraase SC-2 and Robot B/W modes are synthetic round-trip-validated only
 //! — no reference WAVs are available for them. The public API is
-//! `#[non_exhaustive]`-protected for additive growth. See
-//! <https://github.com/jasonherald/slowrx.rs/issues/9> for the
-//! roadmap.
+//! `#[non_exhaustive]`-protected for additive growth. The V2
+//! mode-coverage roadmap is complete; see
+//! <https://github.com/jasonherald/slowrx.rs/issues/9>.
 //!
 //! ## Example
 //!

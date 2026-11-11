@@ -310,3 +310,46 @@ fn analytic_demod_flag_changes_the_decoded_image() {
     assert_ne!(real, analytic, "--analytic-demod must change the demod");
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// The Fram2 validation guide quotes the summary line a clean Robot 36
+/// decode ends with, so a reader can tell a good run from a bad one. The
+/// quote went stale once; this keeps it true, with a synthetic Robot 36
+/// transmission standing in for a Fram2 slide (the real recordings are not
+/// in the repository).
+#[test]
+fn a_clean_robot36_decode_ends_with_the_summary_the_fram2_guide_quotes() {
+    let dir = scratch("fram2-summary");
+    let wav = dir.join("slide.wav");
+    let mut audio = slowrx::__test_support::vis::synth_vis(0x08, 0.0);
+    let ycrcb = slowrx::__test_support::mode_robot::synthetic_ycrcb(SstvMode::Robot36);
+    audio.extend(slowrx::__test_support::mode_robot::encode_robot(
+        SstvMode::Robot36,
+        &ycrcb,
+    ));
+    audio.extend(std::iter::repeat_n(0.0_f32, 8192));
+    write_wav(&wav, &audio);
+    let out = dir.join("out");
+    let assert = cli()
+        .arg("--input")
+        .arg(&wav)
+        .arg("--output")
+        .arg(&out)
+        .assert()
+        .success();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    let summary = stderr.lines().last().expect("a summary line");
+    assert_eq!(
+        summary,
+        "done: 1 VIS (0 assumed), 0 sync start(s), 240 lines, 1 image(s), 0 dropped as noise"
+    );
+    assert!(out.join("slide-001-robot36.png").is_file(), "image written");
+    let guide = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/ariss_fram2_validation.md"),
+    )
+    .unwrap();
+    assert!(
+        guide.contains(&format!("`{summary}`")),
+        "tests/ariss_fram2_validation.md quotes `{summary}`"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}

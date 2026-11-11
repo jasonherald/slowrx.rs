@@ -160,6 +160,17 @@ fn help_documents_the_png_names() {
     );
 }
 
+/// `--version` reports the package version, the one a release bumps.
+#[test]
+fn version_flag_reports_the_package_version() {
+    let assert = cli().arg("--version").assert().success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    assert_eq!(
+        stdout.trim_end(),
+        concat!("slowrx-cli ", env!("CARGO_PKG_VERSION"))
+    );
+}
+
 #[test]
 fn a_usage_error_exits_1() {
     let err = stderr(&cli().args(["--input", "x.wav"]).assert().code(1));
