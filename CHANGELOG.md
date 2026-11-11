@@ -75,6 +75,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   documented `cargo install` uses `--locked`.
 - The CI job that checks the MSRV is named `MSRV check`, with no version,
   so it can be a required status check whose name survives an MSRV bump.
+- New guards for what a release edits by hand: `slowrx-cli --version`
+  reports the package version; the changelog's newest release heading and
+  the README status line name it (`tests/release.rs`); and the summary
+  line the Fram2 validation guide quotes is the one a clean Robot 36
+  decode prints.
 
 ## [0.8.1] - 2026-10-21
 
