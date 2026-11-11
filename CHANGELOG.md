@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`slowrx-cli --prefix NAME`** (#136): names the PNGs
+  `NAME-NNN-{mode}.png` instead of after the input file. Use it for piped
+  input (`--input /dev/stdin`), for inputs that share a file name, or as
+  `--prefix img` to keep the old names. It takes a plain name only:
+  letters, digits, `-`, `_` and `.`, not starting with `.` or `-`, at most
+  200 bytes, and not a Windows device name. Anything else is an argument
+  error.
+
+### Changed
+
+- **Breaking (scripts):** `slowrx-cli` names its PNGs
+  `<input-stem>-NNN-{mode}.png` instead of `img-NNN-{mode}.png` (#136), so
+  `recording.wav` gives `recording-001-pd120.png`. Before, every run wrote
+  `img-001-…`, and decoding a second recording into the same output
+  directory silently replaced the first one's images. Scripts that expect
+  `img-*.png` can pass `--prefix img`. The stem is made safe first:
+  letters and digits of any script, `-`, `_` and `.` are kept, every other
+  character becomes `_`, leading `.` and `-` are dropped, a Windows device
+  name (`nul`, `con`, `com1`, …) gains a leading `_`, and it is cut to 200
+  bytes (`img` if nothing is left). So a PNG is always a plain, visible
+  file inside `--output`, whatever the input was called. An accent stored
+  as a separate combining character counts as "other" and becomes `_`. Two
+  inputs with the same file name in different directories still share
+  their PNG names, as do names the output file system treats as equal:
+  ones that differ only in letter case (Windows and macOS, by default) or
+  only in Unicode normalization (macOS). Give each a `--prefix` or its own
+  output directory.
+
 ## [0.8.1] - 2026-10-21
 
 ### Changed

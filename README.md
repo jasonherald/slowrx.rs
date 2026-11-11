@@ -63,8 +63,14 @@ CLI:
 
 ```bash
 slowrx-cli --input recording.wav --output ./out
-# → out/img-001-pd120.png, out/img-002-robot36.png, ...
+# → out/recording-001-pd120.png, out/recording-002-robot36.png, ...
 ```
+
+PNGs are named after the input file, so several recordings can share one
+output directory. Characters other than letters, digits, `-`, `_` and `.`
+become `_`. `--prefix NAME` picks the name instead: for piped input, for
+inputs that share a file name, or as `--prefix img` to get the
+`img-NNN-{mode}.png` names used before 0.9.0.
 
 Exit status: `0` = at least one image written, `2` = no images found,
 `1` = error. With the `cli` feature, the library's `slowrx::wav` module
