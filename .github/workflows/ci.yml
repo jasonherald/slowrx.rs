@@ -73,8 +73,12 @@ jobs:
       - name: No-VIS regression (debug)
         run: cargo test --test no_vis --all-features --locked
 
+  # The job name has no version in it on purpose: the repository requires
+  # this check by name before a pull request can merge, and the name must
+  # not change when the MSRV does. `tests/msrv.rs` keeps the toolchain below
+  # equal to `rust-version` in Cargo.toml.
   msrv:
-    name: MSRV check (1.88)
+    name: MSRV check
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

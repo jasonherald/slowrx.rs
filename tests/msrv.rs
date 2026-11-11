@@ -62,7 +62,9 @@ fn rust_files(dir: &Path, found: &mut Vec<PathBuf>) {
 }
 
 /// The CI job that guards the MSRV has to check the version `Cargo.toml`
-/// declares, against the committed lockfile.
+/// declares, against the committed lockfile. Its name carries no version:
+/// the repository requires the check by name before a pull request can
+/// merge, and a name that changed with every MSRV bump would stop matching.
 #[test]
 fn the_ci_msrv_job_checks_the_declared_rust_version_with_the_lockfile() {
     let msrv = declared_msrv();
@@ -72,8 +74,8 @@ fn the_ci_msrv_job_checks_the_declared_rust_version_with_the_lockfile() {
         "the msrv job installs Rust {msrv}:\n{job}"
     );
     assert!(
-        job.contains(&format!("name: MSRV check ({msrv})")),
-        "the msrv job is named after Rust {msrv}:\n{job}"
+        job.lines().any(|line| line == "    name: MSRV check"),
+        "the msrv job is named `MSRV check`, with no version in the name:\n{job}"
     );
     assert!(
         job.lines()
