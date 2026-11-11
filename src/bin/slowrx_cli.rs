@@ -186,10 +186,10 @@ fn main() -> ExitCode {
 /// PNGs were written, which `main` turns into the exit status.
 fn run(args: &Args) -> Result<u32> {
     std::fs::create_dir_all(&args.output)
-        .with_context(|| format!("create output dir {}", args.output.display()))?;
+        .with_context(|| format!("create output dir {}", shown(&args.output)))?;
 
     let mut reader = hound::WavReader::open(&args.input)
-        .with_context(|| format!("open WAV {}", args.input.display()))?;
+        .with_context(|| format!("open WAV {}", shown(&args.input)))?;
     let spec = reader.spec();
     if !args.quiet {
         eprintln!(
@@ -322,10 +322,29 @@ fn on_image(
             image.height,
             sync_quality.value(),
             if noise { ", looks like noise" } else { "" },
-            path.display()
+            shown(&path)
         );
     }
     Ok(())
+}
+
+/// `path` as text for a message, with control characters written as
+/// escapes (`\u{1b}`, `\n`) instead of being sent to the terminal. A file
+/// name can hold any character and is not always the user's own choice; an
+/// ANSI escape in one would otherwise act on the terminal, or on whatever
+/// later displays a log of this output. The Unicode line and paragraph
+/// separators are escaped too, so a message stays on one line for readers
+/// that break at them. Everything else is as [`Path::display`] prints it.
+fn shown(path: &Path) -> String {
+    let mut text = String::new();
+    for c in path.to_string_lossy().chars() {
+        if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+            text.extend(c.escape_default());
+        } else {
+            text.push(c);
+        }
+    }
+    text
 }
 
 /// The prefix of this run's PNG names: `--prefix` when given, otherwise the
@@ -440,7 +459,7 @@ fn save_image(image: &SstvImage, path: &Path) -> Result<()> {
     let img: image::ImageBuffer<image::Rgb<u8>, _> = image::ImageBuffer::from_vec(w, h, buf)
         .ok_or_else(|| anyhow!("image buffer size mismatch"))?;
     img.save(path)
-        .with_context(|| format!("write {}", path.display()))?;
+        .with_context(|| format!("write {}", shown(path)))?;
     Ok(())
 }
 
@@ -448,6 +467,63 @@ fn save_image(image: &SstvImage, path: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    /// Ordinary paths are printed as they are: spaces, letters of any
+    /// script, combining accents, backslashes and quotes included.
+    #[test]
+    fn a_path_without_control_characters_is_shown_unchanged() {
+        for path in [
+            "out/pass-001-robot36.png",
+            "my recordings/запись 1.wav",
+            "C:\\sstv\\\"out\"",
+            "cafe\u{301}.wav",
+        ] {
+            assert_eq!(shown(Path::new(path)), path);
+        }
+    }
+
+    /// C0 controls, DEL and C1 controls all come out as visible escapes.
+    #[test]
+    fn control_characters_in_a_path_are_shown_as_escapes() {
+        assert_eq!(
+            shown(Path::new("a\u{1b}[31m\n\tb\u{7f}\u{9b}c")),
+            "a\\u{1b}[31m\\n\\tb\\u{7f}\\u{9b}c"
+        );
+    }
+
+    /// The Unicode line and paragraph separators are not control
+    /// characters, but some log readers end a line at them.
+    #[test]
+    fn unicode_line_separators_in_a_path_are_shown_as_escapes() {
+        assert_eq!(
+            shown(Path::new("a\u{2028}b\u{2029}c")),
+            "a\\u{2028}b\\u{2029}c"
+        );
+    }
+
+    /// Every character there is, one at a time: none comes out as a
+    /// control character.
+    #[test]
+    fn no_control_character_survives_being_shown() {
+        for c in '\0'..=char::MAX {
+            let text = shown(Path::new(&format!("a{c}b")));
+            assert!(
+                !text.contains(char::is_control),
+                "U+{:04X} gave {text:?}",
+                u32::from(c)
+            );
+        }
+    }
+
+    /// Bytes that are not UTF-8 are shown as the replacement character,
+    /// as `Path::display` shows them.
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_path_is_shown_with_the_replacement_character() {
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::ffi::OsStr::from_bytes(b"caf\xe9.wav");
+        assert_eq!(shown(Path::new(path)), "caf\u{fffd}.wav");
+    }
 
     /// The names recordings usually have pass through untouched.
     #[test]

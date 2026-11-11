@@ -37,6 +37,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only in Unicode normalization (macOS). Give each a `--prefix` or its own
   output directory.
 
+### Fixed
+
+- `slowrx-cli`'s own messages show control characters in the `--input`
+  and `--output` paths as escapes (`\u{1b}`, `\n`) instead of sending them
+  to the terminal (#137). A file or directory name with an ANSI escape
+  sequence in it used to be replayed as it was in the `open WAV`,
+  `create output dir` and `write` errors and on each `ImageComplete` line.
+  The Unicode line and paragraph separators are escaped as well, so each
+  message stays on one line. Other paths are printed as before. Argument
+  errors come from the argument parser and still echo a bad value as
+  given.
+
 ## [0.8.1] - 2026-10-21
 
 ### Changed

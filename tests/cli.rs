@@ -389,3 +389,90 @@ fn a_prefix_that_is_not_a_plain_name_is_rejected() {
     }
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// A name holding an ANSI escape, a BEL and a newline. A file name can hold
+/// any character, and it is not always the user's own choice, so the CLI
+/// shows control characters as escapes instead of sending them to the
+/// terminal (#137).
+#[cfg(unix)]
+const HOSTILE: &str = "x\u{1b}[31m\u{7}\ny";
+/// How `HOSTILE` is printed: on one line, with nothing for a terminal to act
+/// on.
+#[cfg(unix)]
+const HOSTILE_SHOWN: &str = "x\\u{1b}[31m\\u{7}\\ny";
+
+/// No control character reached stderr, other than the newline that ends
+/// each message. (A newline from a path would break `HOSTILE_SHOWN` up, so
+/// the tests that look for it catch that.)
+#[cfg(unix)]
+fn assert_no_raw_control(err: &str) {
+    assert!(
+        !err.contains(|c: char| c.is_control() && c != '\n'),
+        "{err:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_control_character_in_the_input_name_is_escaped_when_it_cannot_be_opened() {
+    let dir = scratch("esc-input");
+    let input = dir.join(format!("{HOSTILE}.wav"));
+    fs::write(&input, b"this is not a RIFF/WAVE file").unwrap();
+    let err = stderr(&run(&input, &dir.join("out")).code(1));
+    assert!(err.contains("error: open WAV"), "{err:?}");
+    assert!(err.contains(&format!("{HOSTILE_SHOWN}.wav")), "{err:?}");
+    assert_no_raw_control(&err);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_control_character_in_the_output_name_is_escaped_when_it_cannot_be_created() {
+    let dir = scratch("esc-outfile");
+    let input = dir.join("silence.wav");
+    write_wav(&input, 1, &[0; 64]);
+    // A regular file where the output directory should be.
+    let out = dir.join(HOSTILE);
+    fs::write(&out, b"").unwrap();
+    let err = stderr(&run(&input, &out).code(1));
+    assert!(err.contains("create output dir"), "{err:?}");
+    assert!(err.contains(HOSTILE_SHOWN), "{err:?}");
+    assert_no_raw_control(&err);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(all(unix, feature = "test-support"))]
+#[test]
+fn a_control_character_in_the_output_name_is_escaped_when_an_image_is_written() {
+    let dir = scratch("esc-outdir");
+    let input = dir.join("pass.wav");
+    write_wav(&input, 1, &robot12bw_mono());
+    let out = dir.join(HOSTILE);
+    let err = stderr(&run(&input, &out).code(0));
+    assert!(out.join("pass-001-robot12bw.png").is_file());
+    assert!(
+        err.contains(&format!("{HOSTILE_SHOWN}/pass-001-robot12bw.png")),
+        "{err:?}"
+    );
+    assert_no_raw_control(&err);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(all(unix, feature = "test-support"))]
+#[test]
+fn a_control_character_in_the_output_name_is_escaped_when_a_write_fails() {
+    let dir = scratch("esc-write");
+    let input = dir.join("pass.wav");
+    write_wav(&input, 1, &robot12bw_mono());
+    let out = dir.join(HOSTILE);
+    // A directory where the PNG should go, so the write fails.
+    fs::create_dir_all(out.join("pass-001-robot12bw.png")).unwrap();
+    let err = stderr(&run(&input, &out).code(1));
+    assert!(err.contains("error: write"), "{err:?}");
+    assert!(
+        err.contains(&format!("{HOSTILE_SHOWN}/pass-001-robot12bw.png")),
+        "{err:?}"
+    );
+    assert_no_raw_control(&err);
+    let _ = fs::remove_dir_all(&dir);
+}
