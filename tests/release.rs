@@ -36,12 +36,20 @@ fn the_changelogs_newest_release_is_the_package_version() {
     );
 }
 
-/// The README's status line leads with the current version.
+/// The README's status line leads with the current version. Older versions
+/// are named further along the same line, so only the first one counts.
 #[test]
-fn the_readme_status_names_the_package_version() {
+fn the_readme_status_leads_with_the_package_version() {
     let readme = read("README.md");
-    assert!(
-        readme.contains(&format!("**{VERSION}**")),
-        "README.md names **{VERSION}** in its status line"
-    );
+    let status = readme
+        .lines()
+        .skip_while(|line| *line != "## Status")
+        .skip(1)
+        .find(|line| !line.trim().is_empty())
+        .expect("README.md has a line under `## Status`");
+    let leading = status
+        .split("**")
+        .nth(1)
+        .expect("the status line names a version in bold");
+    assert_eq!(leading, VERSION, "first version in: {status}");
 }
