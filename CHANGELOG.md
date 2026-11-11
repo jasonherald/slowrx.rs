@@ -68,6 +68,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Decoded output is unchanged: 92 real-radio decodes (ARISS Fram2 and the
   2017 ISS passes, both demods) are byte-identical before and after. The
   pinned toolchain stays at 1.99.1, the current stable release.
+- New `tests/msrv.rs` keeps the places the MSRV is written down in
+  agreement (`Cargo.toml`, the CI job, the README), and checks that every
+  documented `cargo install` uses `--locked`.
 
 ## [0.8.1] - 2026-10-21
 
