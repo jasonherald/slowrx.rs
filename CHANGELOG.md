@@ -71,6 +71,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New `tests/msrv.rs` keeps the places the MSRV is written down in
   agreement (`Cargo.toml`, the CI job, the README), and checks that every
   documented `cargo install` uses `--locked`.
+- The CI job that checks the MSRV is named `MSRV check`, with no version,
+  so it can be a required status check whose name survives an MSRV bump.
 
 ## [0.8.1] - 2026-10-21
 
