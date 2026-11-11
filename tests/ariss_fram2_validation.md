@@ -67,7 +67,7 @@ set -e
 mkdir -p /tmp/fram2-validate
 # Clear any stale outputs from a previous run so a regressed re-run
 # can't look like 12/12 by leaving old PNGs in place.
-rm -f /tmp/fram2-validate/Slide*-decoded.png /tmp/fram2-validate/img-001-*.png
+rm -f /tmp/fram2-validate/Slide*.png
 
 for n in 01 02 03 04 05 06 07 08 09 10 11 12; do
   # Capture the CLI's stdout+stderr to a temp file so we can both display
@@ -84,11 +84,8 @@ for n in 01 02 03 04 05 06 07 08 09 10 11 12; do
   fi
   tail -2 "$log"
   rm "$log"
-  # Rename so each output is identifiable.
-  if [ -f "/tmp/fram2-validate/img-001-robot36.png" ]; then
-    mv "/tmp/fram2-validate/img-001-robot36.png" \
-       "/tmp/fram2-validate/Slide${n}-decoded.png"
-  else
+  # Each PNG is named after its WAV.
+  if [ ! -f "/tmp/fram2-validate/Slide${n}-001-robot36.png" ]; then
     echo "Slide${n}: NO PNG PRODUCED" >&2
     exit 1
   fi
@@ -102,7 +99,7 @@ regressed re-run will exit non-zero, NOT silently leave stale PNGs that
 look like a 12/12 pass.
 
 Open both directories in an image viewer and visually compare each
-`Slide${n}-decoded.png` against the reference
+`Slide${n}-001-robot36.png` against the reference
 `tests/fixtures/ariss-fram2/Slide${n}-Robot-36-Color.jpg`.
 
 ## Acceptance criteria (visual match)

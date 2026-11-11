@@ -2,8 +2,9 @@
 //!
 //! Most cases synthesize their WAVs, so they run in CI: the exit-code
 //! contract (0 = at least one image written, 2 = no images, 1 = error),
-//! input / output validation, and — with `test-support` — a synthetic
-//! PD120 transmission decoded to a correctly named PNG.
+//! input / output validation, and — with `test-support` — synthetic
+//! transmissions decoded to correctly named PNGs: named after the input
+//! file, safe whatever that file is called, or named by `--prefix` (#136).
 //!
 //! `cli_decodes_aris_fixture_to_png` also checks the binary end-to-end
 //! against real audio, but skips silently unless an ARISS fixture is
@@ -149,6 +150,16 @@ fn help_documents_the_exit_codes_and_output_directory() {
 }
 
 #[test]
+fn help_documents_the_png_names() {
+    let assert = cli().arg("--help").assert().success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    assert!(
+        stdout.contains("<input-stem>-NNN-{mode}.png") && stdout.contains("--prefix <NAME>"),
+        "{stdout}"
+    );
+}
+
+#[test]
 fn a_usage_error_exits_1() {
     let err = stderr(&cli().args(["--input", "x.wav"]).assert().code(1));
     assert!(err.contains("--output"), "{err}");
@@ -245,17 +256,16 @@ fn a_synthetic_pd120_wav_decodes_to_a_named_png() {
     write_wav(&input, 2, &pd120_stereo());
     let out = dir.join("out");
     run(&input, &out).code(0);
-    assert_eq!(pngs_in(&out), [out.join("img-001-pd120.png")]);
+    assert_eq!(pngs_in(&out), [out.join("pd120-001-pd120.png")]);
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// Robot 12 B/W sends 120 lines that slowrx shows twice each
-/// (`ModeSpec::line_height` = 2): the PNG is written 320 × 240 so it keeps
-/// the picture's aspect, like slowrx's saved images.
+/// A synthetic Robot 12 B/W transmission (VIS + image + padding), as mono.
+/// At 12 s it is the shortest image there is, for tests that only need a
+/// decode.
 #[cfg(feature = "test-support")]
-#[test]
 #[allow(clippy::cast_possible_truncation)]
-fn a_robot12bw_png_is_stretched_to_its_line_height() {
+fn robot12bw_mono() -> Vec<i16> {
     use slowrx::SstvMode;
     let spec = slowrx::for_mode(SstvMode::Robot12Bw);
     let ycrcb = vec![[200_u8, 128, 128]; (spec.line_pixels * spec.image_lines) as usize];
@@ -265,20 +275,116 @@ fn a_robot12bw_png_is_stretched_to_its_line_height() {
         &ycrcb,
     ));
     audio.extend(std::iter::repeat_n(0.0_f32, 8192));
-    let mono: Vec<i16> = audio
+    audio
         .iter()
         .map(|&s| (s.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16)
-        .collect();
+        .collect()
+}
+
+/// Robot 12 B/W sends 120 lines that slowrx shows twice each
+/// (`ModeSpec::line_height` = 2): the PNG is written 320 × 240 so it keeps
+/// the picture's aspect, like slowrx's saved images.
+#[cfg(feature = "test-support")]
+#[test]
+fn a_robot12bw_png_is_stretched_to_its_line_height() {
     let dir = scratch("r12bw");
     let input = dir.join("r12bw.wav");
-    write_wav(&input, 1, &mono);
+    write_wav(&input, 1, &robot12bw_mono());
     let out = dir.join("out");
     run(&input, &out).code(0);
-    let png = out.join("img-001-robot12bw.png");
+    let png = out.join("r12bw-001-robot12bw.png");
     assert_eq!(
         image::image_dimensions(&png).expect("png"),
         (320, 240),
         "120 lines × line_height 2"
     );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// PNGs are named after their input file, so decoding a second recording
+/// into the same directory keeps the first one's image (#136).
+#[cfg(feature = "test-support")]
+#[test]
+fn two_inputs_decoded_into_one_directory_keep_both_images() {
+    let dir = scratch("two-inputs");
+    let out = dir.join("out");
+    let audio = robot12bw_mono();
+    for name in ["pass1.wav", "pass2.wav"] {
+        let input = dir.join(name);
+        write_wav(&input, 1, &audio);
+        run(&input, &out).code(0);
+    }
+    let mut pngs = pngs_in(&out);
+    pngs.sort();
+    assert_eq!(
+        pngs,
+        [
+            out.join("pass1-001-robot12bw.png"),
+            out.join("pass2-001-robot12bw.png")
+        ]
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Whatever the input file is called, its PNG is a plain, visible file in
+/// the output directory, and the PNG's name, which the CLI prints, carries
+/// no escape characters (#136). This input starts with a dot and a dash,
+/// and has a space, an ANSI escape and shell syntax in it.
+#[cfg(all(unix, feature = "test-support"))]
+#[test]
+fn a_hostile_input_name_still_gives_a_plain_png_name() {
+    let dir = scratch("hostile");
+    let input = dir.join(".-pass 1\u{1b}[31m$(id).wav");
+    write_wav(&input, 1, &robot12bw_mono());
+    let out = dir.join("out");
+    let err = stderr(&run(&input, &out).code(0));
+    assert_eq!(
+        pngs_in(&out),
+        [out.join("pass_1__31m__id_-001-robot12bw.png")]
+    );
+    assert!(!err.contains('\u{1b}'), "{err:?}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// `--prefix NAME` names the PNGs instead of the input file; `--prefix img`
+/// gives the names used before 0.9.0.
+#[cfg(feature = "test-support")]
+#[test]
+fn prefix_flag_names_the_pngs() {
+    let dir = scratch("prefix");
+    let input = dir.join("pass1.wav");
+    write_wav(&input, 1, &robot12bw_mono());
+    let out = dir.join("out");
+    cli()
+        .args(["--prefix", "img", "--input"])
+        .arg(&input)
+        .arg("--output")
+        .arg(&out)
+        .assert()
+        .code(0);
+    assert_eq!(pngs_in(&out), [out.join("img-001-robot12bw.png")]);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// `--prefix` takes a plain name only: nothing that could leave the output
+/// directory, hide the file, or need quoting. It is refused while the
+/// arguments are parsed, before anything is read or written.
+#[test]
+fn a_prefix_that_is_not_a_plain_name_is_rejected() {
+    let dir = scratch("bad-prefix");
+    let out = dir.join("out");
+    for bad in ["../up", "a/b", ".hidden", "-x", "two words", ""] {
+        let assert = cli()
+            .arg("--input")
+            .arg(dir.join("missing.wav"))
+            .arg("--output")
+            .arg(&out)
+            .arg(format!("--prefix={bad}"))
+            .assert()
+            .code(1);
+        let err = stderr(&assert);
+        assert!(err.contains("letters, digits"), "{bad:?}: {err}");
+        assert!(!out.exists(), "{bad:?}: output dir created");
+    }
     let _ = fs::remove_dir_all(&dir);
 }

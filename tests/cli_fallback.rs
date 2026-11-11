@@ -87,7 +87,7 @@ fn fallback_mode_recovers_a_lost_vis_image() {
         .arg(&out)
         .assert()
         .success();
-    assert!(out.join("img-001-robot36.png").is_file(), "image written");
+    assert!(out.join("lost-001-robot36.png").is_file(), "image written");
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -112,7 +112,7 @@ fn a_kept_image_reports_its_sync_quality_score() {
         .and_then(|s| s.parse().ok())
         .unwrap_or_else(|| panic!("no sync-quality score in stderr: {stderr}"));
     assert!(score > 0.9, "clean image scored {score}: {stderr}");
-    assert!(stderr.contains("img-001-robot36.png"), "stderr: {stderr}");
+    assert!(stderr.contains("lost-001-robot36.png"), "stderr: {stderr}");
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -222,7 +222,7 @@ fn drop_noise_skips_an_image_decoded_from_noise() {
         .arg(&kept)
         .assert()
         .success();
-    assert!(kept.join("img-001-robot36.png").is_file());
+    assert!(kept.join("noise-001-robot36.png").is_file());
     // --drop-noise: nothing written, so the run reports no images.
     let dropped = dir.join("dropped");
     let assert = cli()
@@ -234,7 +234,7 @@ fn drop_noise_skips_an_image_decoded_from_noise() {
         .code(2);
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
     assert!(stderr.contains("looks like noise"), "stderr: {stderr}");
-    assert!(!dropped.join("img-001-robot36.png").exists());
+    assert!(!dropped.join("noise-001-robot36.png").exists());
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -257,7 +257,10 @@ fn mode_flag_decodes_an_image_with_no_header_from_its_sync_rhythm() {
         "stderr: {stderr}"
     );
     assert!(stderr.contains("1 sync start"), "stderr: {stderr}");
-    assert!(out.join("img-001-robot36.png").is_file(), "image written");
+    assert!(
+        out.join("headerless-001-robot36.png").is_file(),
+        "image written"
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -296,7 +299,7 @@ fn analytic_demod_flag_changes_the_decoded_image() {
             .arg(out)
             .assert()
             .success();
-        image::open(out.join("img-001-robot36.png"))
+        image::open(out.join("lost-001-robot36.png"))
             .expect("png")
             .to_rgb8()
             .into_raw()

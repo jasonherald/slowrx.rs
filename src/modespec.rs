@@ -63,7 +63,7 @@ pub struct ModeSpec {
     /// The mode this entry describes.
     pub mode: SstvMode,
     /// CLI/filename slug. Stable across releases (filenames like
-    /// `img-NNN-{short_name}.png` depend on this). lowercase, no
+    /// `recording-NNN-{short_name}.png` depend on this). lowercase, no
     /// separators: "pd120", "robot24", "scottiedx", "scottie1",
     /// "martin1", etc. (audit #91 B13)
     pub short_name: &'static str,
