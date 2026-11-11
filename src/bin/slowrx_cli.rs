@@ -186,10 +186,10 @@ fn main() -> ExitCode {
 /// PNGs were written, which `main` turns into the exit status.
 fn run(args: &Args) -> Result<u32> {
     std::fs::create_dir_all(&args.output)
-        .with_context(|| format!("create output dir {}", args.output.display()))?;
+        .with_context(|| format!("create output dir {}", shown(&args.output)))?;
 
     let mut reader = hound::WavReader::open(&args.input)
-        .with_context(|| format!("open WAV {}", args.input.display()))?;
+        .with_context(|| format!("open WAV {}", shown(&args.input)))?;
     let spec = reader.spec();
     if !args.quiet {
         eprintln!(
@@ -322,10 +322,44 @@ fn on_image(
             image.height,
             sync_quality.value(),
             if noise { ", looks like noise" } else { "" },
-            path.display()
+            shown(&path)
         );
     }
     Ok(())
+}
+
+/// `path` as text for a message, with control characters written as
+/// escapes (`\u{1b}`, `\n`) instead of being sent to the terminal. A file
+/// name can hold any character and is not always the user's own choice; an
+/// ANSI escape in one would otherwise act on the terminal, or on whatever
+/// later displays a log of this output. Two more kinds are escaped for the
+/// same reason, that they change how the rest of the message reads: the
+/// Unicode line and paragraph separators, which some readers break a line
+/// at, and the bidirectional formatting characters ([`is_bidi_control`]),
+/// which reorder the text after them. Everything else is as
+/// [`Path::display`] prints it, zero-width joiners included: Persian and
+/// emoji sequences are spelled with them.
+fn shown(path: &Path) -> String {
+    let mut text = String::new();
+    for c in path.to_string_lossy().chars() {
+        if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') || is_bidi_control(c) {
+            text.extend(c.escape_default());
+        } else {
+            text.push(c);
+        }
+    }
+    text
+}
+
+/// Whether `c` is one of Unicode's twelve bidirectional formatting
+/// characters (the `Bidi_Control` property): the Arabic letter mark, the
+/// left-to-right and right-to-left marks, and the embeddings, overrides and
+/// isolates with their terminators.
+fn is_bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
 }
 
 /// The prefix of this run's PNG names: `--prefix` when given, otherwise the
@@ -440,7 +474,7 @@ fn save_image(image: &SstvImage, path: &Path) -> Result<()> {
     let img: image::ImageBuffer<image::Rgb<u8>, _> = image::ImageBuffer::from_vec(w, h, buf)
         .ok_or_else(|| anyhow!("image buffer size mismatch"))?;
     img.save(path)
-        .with_context(|| format!("write {}", path.display()))?;
+        .with_context(|| format!("write {}", shown(path)))?;
     Ok(())
 }
 
@@ -448,6 +482,86 @@ fn save_image(image: &SstvImage, path: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    /// Ordinary paths are printed as they are: spaces, letters of any
+    /// script, combining accents, backslashes and quotes included. So are
+    /// right-to-left letters and the zero-width joiners that Persian and
+    /// emoji sequences are spelled with.
+    #[test]
+    fn a_path_without_control_characters_is_shown_unchanged() {
+        for path in [
+            "out/pass-001-robot36.png",
+            "my recordings/запись 1.wav",
+            "C:\\sstv\\\"out\"",
+            "cafe\u{301}.wav",
+            "می\u{200c}خواهم.wav",
+            "שלום.wav",
+        ] {
+            assert_eq!(shown(Path::new(path)), path);
+        }
+    }
+
+    /// C0 controls, DEL and C1 controls all come out as visible escapes.
+    #[test]
+    fn control_characters_in_a_path_are_shown_as_escapes() {
+        assert_eq!(
+            shown(Path::new("a\u{1b}[31m\n\tb\u{7f}\u{9b}c")),
+            "a\\u{1b}[31m\\n\\tb\\u{7f}\\u{9b}c"
+        );
+    }
+
+    /// The Unicode line and paragraph separators are not control
+    /// characters, but some log readers end a line at them.
+    #[test]
+    fn unicode_line_separators_in_a_path_are_shown_as_escapes() {
+        assert_eq!(
+            shown(Path::new("a\u{2028}b\u{2029}c")),
+            "a\\u{2028}b\\u{2029}c"
+        );
+    }
+
+    /// Unicode's twelve bidirectional formatting characters (the
+    /// `Bidi_Control` property) would reorder how the rest of a message is
+    /// displayed, so each one is shown as an escape.
+    #[test]
+    fn bidirectional_formatting_characters_in_a_path_are_shown_as_escapes() {
+        let bidi = [
+            '\u{061c}', '\u{200e}', '\u{200f}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}',
+            '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+        ];
+        for c in bidi {
+            assert_eq!(
+                shown(Path::new(&format!("a{c}b"))),
+                format!("a\\u{{{:x}}}b", u32::from(c)),
+                "U+{:04X}",
+                u32::from(c)
+            );
+        }
+    }
+
+    /// Every character there is, one at a time: none comes out as a
+    /// control character.
+    #[test]
+    fn no_control_character_survives_being_shown() {
+        for c in '\0'..=char::MAX {
+            let text = shown(Path::new(&format!("a{c}b")));
+            assert!(
+                !text.contains(char::is_control),
+                "U+{:04X} gave {text:?}",
+                u32::from(c)
+            );
+        }
+    }
+
+    /// Bytes that are not UTF-8 are shown as the replacement character,
+    /// as `Path::display` shows them.
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_path_is_shown_with_the_replacement_character() {
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::ffi::OsStr::from_bytes(b"caf\xe9.wav");
+        assert_eq!(shown(Path::new(path)), "caf\u{fffd}.wav");
+    }
 
     /// The names recordings usually have pass through untouched.
     #[test]
