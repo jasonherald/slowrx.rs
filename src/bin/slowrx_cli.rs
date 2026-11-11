@@ -332,19 +332,34 @@ fn on_image(
 /// escapes (`\u{1b}`, `\n`) instead of being sent to the terminal. A file
 /// name can hold any character and is not always the user's own choice; an
 /// ANSI escape in one would otherwise act on the terminal, or on whatever
-/// later displays a log of this output. The Unicode line and paragraph
-/// separators are escaped too, so a message stays on one line for readers
-/// that break at them. Everything else is as [`Path::display`] prints it.
+/// later displays a log of this output. Two more kinds are escaped for the
+/// same reason, that they change how the rest of the message reads: the
+/// Unicode line and paragraph separators, which some readers break a line
+/// at, and the bidirectional formatting characters ([`is_bidi_control`]),
+/// which reorder the text after them. Everything else is as
+/// [`Path::display`] prints it, zero-width joiners included: Persian and
+/// emoji sequences are spelled with them.
 fn shown(path: &Path) -> String {
     let mut text = String::new();
     for c in path.to_string_lossy().chars() {
-        if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+        if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') || is_bidi_control(c) {
             text.extend(c.escape_default());
         } else {
             text.push(c);
         }
     }
     text
+}
+
+/// Whether `c` is one of Unicode's twelve bidirectional formatting
+/// characters (the `Bidi_Control` property): the Arabic letter mark, the
+/// left-to-right and right-to-left marks, and the embeddings, overrides and
+/// isolates with their terminators.
+fn is_bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
 }
 
 /// The prefix of this run's PNG names: `--prefix` when given, otherwise the
@@ -469,7 +484,9 @@ mod tests {
     use proptest::prelude::*;
 
     /// Ordinary paths are printed as they are: spaces, letters of any
-    /// script, combining accents, backslashes and quotes included.
+    /// script, combining accents, backslashes and quotes included. So are
+    /// right-to-left letters and the zero-width joiners that Persian and
+    /// emoji sequences are spelled with.
     #[test]
     fn a_path_without_control_characters_is_shown_unchanged() {
         for path in [
@@ -477,6 +494,8 @@ mod tests {
             "my recordings/запись 1.wav",
             "C:\\sstv\\\"out\"",
             "cafe\u{301}.wav",
+            "می\u{200c}خواهم.wav",
+            "שלום.wav",
         ] {
             assert_eq!(shown(Path::new(path)), path);
         }
@@ -499,6 +518,25 @@ mod tests {
             shown(Path::new("a\u{2028}b\u{2029}c")),
             "a\\u{2028}b\\u{2029}c"
         );
+    }
+
+    /// Unicode's twelve bidirectional formatting characters (the
+    /// `Bidi_Control` property) would reorder how the rest of a message is
+    /// displayed, so each one is shown as an escape.
+    #[test]
+    fn bidirectional_formatting_characters_in_a_path_are_shown_as_escapes() {
+        let bidi = [
+            '\u{061c}', '\u{200e}', '\u{200f}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}',
+            '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+        ];
+        for c in bidi {
+            assert_eq!(
+                shown(Path::new(&format!("a{c}b"))),
+                format!("a\\u{{{:x}}}b", u32::from(c)),
+                "U+{:04X}",
+                u32::from(c)
+            );
+        }
     }
 
     /// Every character there is, one at a time: none comes out as a

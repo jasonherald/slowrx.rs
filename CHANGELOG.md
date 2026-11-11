@@ -45,9 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sequence in it used to be replayed as it was in the `open WAV`,
   `create output dir` and `write` errors and on each `ImageComplete` line.
   The Unicode line and paragraph separators are escaped as well, so each
-  message stays on one line. Other paths are printed as before. Argument
-  errors come from the argument parser and still echo a bad value as
-  given.
+  message stays on one line, and so are the bidirectional formatting
+  characters (such as the right-to-left override), which would reorder the
+  text after them. Other paths are printed as before. Argument errors come
+  from the argument parser and still echo a bad value as given.
 
 ## [0.8.1] - 2026-10-21
 

@@ -390,24 +390,25 @@ fn a_prefix_that_is_not_a_plain_name_is_rejected() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// A name holding an ANSI escape, a BEL and a newline. A file name can hold
-/// any character, and it is not always the user's own choice, so the CLI
-/// shows control characters as escapes instead of sending them to the
-/// terminal (#137).
+/// A name holding an ANSI escape, a BEL, a newline and a right-to-left
+/// override. A file name can hold any character, and it is not always the
+/// user's own choice, so the CLI shows these as escapes instead of sending
+/// them to the terminal (#137).
 #[cfg(unix)]
-const HOSTILE: &str = "x\u{1b}[31m\u{7}\ny";
+const HOSTILE: &str = "x\u{1b}[31m\u{7}\n\u{202e}y";
 /// How `HOSTILE` is printed: on one line, with nothing for a terminal to act
-/// on.
+/// on and nothing that reorders the text after it.
 #[cfg(unix)]
-const HOSTILE_SHOWN: &str = "x\\u{1b}[31m\\u{7}\\ny";
+const HOSTILE_SHOWN: &str = "x\\u{1b}[31m\\u{7}\\n\\u{202e}y";
 
 /// No control character reached stderr, other than the newline that ends
-/// each message. (A newline from a path would break `HOSTILE_SHOWN` up, so
-/// the tests that look for it catch that.)
+/// each message, and no right-to-left override. (A newline from a path
+/// would break `HOSTILE_SHOWN` up, so the tests that look for it catch
+/// that.)
 #[cfg(unix)]
 fn assert_no_raw_control(err: &str) {
     assert!(
-        !err.contains(|c: char| c.is_control() && c != '\n'),
+        !err.contains(|c: char| (c.is_control() && c != '\n') || c == '\u{202e}'),
         "{err:?}"
     );
 }
