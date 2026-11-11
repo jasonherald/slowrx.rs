@@ -31,12 +31,14 @@
 //! is not a letter, so it becomes `_` too.
 //!
 //! `--prefix NAME` sets the prefix instead. Use it for inputs that would
-//! get the same PNG names: `pass1/audio.wav` and `pass2/audio.wav`,
-//! `a b.wav` and `a_b.wav`, or `pass.wav` and `PASS.wav` when the output
-//! directory's file system ignores letter case (the default on Windows and
-//! macOS). Use it too for piped input (`--input /dev/stdin` has the stem
-//! `stdin`), or as `--prefix img` to get the `img-NNN-{mode}.png` names
-//! used before 0.9.0.
+//! get the same PNG names: `pass1/audio.wav` and `pass2/audio.wav`, or
+//! `a b.wav` and `a_b.wav`. The same goes for names the output directory's
+//! file system treats as equal: `pass.wav` and `PASS.wav` where it ignores
+//! letter case (the default on Windows and macOS), or two spellings of one
+//! name that differ only in Unicode normalization (`가` as one character
+//! or as two) on macOS. Use it too for piped input (`--input /dev/stdin`
+//! has the stem `stdin`), or as `--prefix img` to get the
+//! `img-NNN-{mode}.png` names used before 0.9.0.
 //!
 //! # Exit status
 //!

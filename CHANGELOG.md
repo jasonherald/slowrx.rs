@@ -32,8 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file inside `--output`, whatever the input was called. An accent stored
   as a separate combining character counts as "other" and becomes `_`. Two
   inputs with the same file name in different directories still share
-  their PNG names, as do names that differ only in letter case when the
-  output file system ignores case; give each a `--prefix` or its own
+  their PNG names, as do names the output file system treats as equal:
+  ones that differ only in letter case (Windows and macOS, by default) or
+  only in Unicode normalization (macOS). Give each a `--prefix` or its own
   output directory.
 
 ## [0.8.1] - 2026-10-21
