@@ -38,8 +38,12 @@ standard SSTV convention) and on `ColorEncoding` for the colour order
 cargo add slowrx
 
 # CLI tool (decodes WAV → PNG)
-cargo install slowrx --features cli
+cargo install slowrx --features cli --locked
 ```
+
+Requires Rust 1.88 or newer. `--locked` builds the CLI with the dependency
+versions each release was tested and audited with, instead of whatever is
+newest on the day you install.
 
 ## Quick start
 

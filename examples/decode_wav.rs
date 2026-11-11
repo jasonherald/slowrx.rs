@@ -5,7 +5,7 @@
 //! progress reporting, use the `slowrx-cli` binary instead:
 //!
 //! ```text
-//! cargo install slowrx --features cli
+//! cargo install slowrx --features cli --locked
 //! slowrx-cli --input recording.wav --output ./out
 //! ```
 //!
