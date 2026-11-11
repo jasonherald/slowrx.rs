@@ -149,6 +149,7 @@ fn help_documents_the_exit_codes_and_output_directory() {
     );
 }
 
+/// `--help` shows how PNGs are named and that `--prefix` changes it.
 #[test]
 fn help_documents_the_png_names() {
     let assert = cli().arg("--help").assert().success();

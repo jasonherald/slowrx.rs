@@ -30,11 +30,13 @@
 //! as a separate combining character (as macOS often stores file names)
 //! is not a letter, so it becomes `_` too.
 //!
-//! `--prefix NAME` sets the prefix instead. Use it for inputs that end up
-//! with the same prefix (`pass1/audio.wav` and `pass2/audio.wav`, or
-//! `a b.wav` and `a_b.wav`), for piped input (`--input /dev/stdin` has the
-//! stem `stdin`), or as `--prefix img` to get the `img-NNN-{mode}.png`
-//! names used before 0.9.0.
+//! `--prefix NAME` sets the prefix instead. Use it for inputs that would
+//! get the same PNG names: `pass1/audio.wav` and `pass2/audio.wav`,
+//! `a b.wav` and `a_b.wav`, or `pass.wav` and `PASS.wav` when the output
+//! directory's file system ignores letter case (the default on Windows and
+//! macOS). Use it too for piped input (`--input /dev/stdin` has the stem
+//! `stdin`), or as `--prefix img` to get the `img-NNN-{mode}.png` names
+//! used before 0.9.0.
 //!
 //! # Exit status
 //!
@@ -178,6 +180,8 @@ fn main() -> ExitCode {
     }
 }
 
+/// Decode `--input` and write its images into `--output`. Returns how many
+/// PNGs were written, which `main` turns into the exit status.
 fn run(args: &Args) -> Result<u32> {
     std::fs::create_dir_all(&args.output)
         .with_context(|| format!("create output dir {}", args.output.display()))?;
@@ -387,7 +391,7 @@ fn safe_name(raw: &str) -> String {
 }
 
 /// Whether `stem` (a file name up to its first `.`) is a Windows device
-/// name: `con`, `prn`, `aux`, `nul`, or `com` / `lpt` and one digit (`0` to
+/// name: `con`, `prn`, `aux`, `nul`, or `com` / `lpt` and one digit (`1` to
 /// `9`, `¹`, `²`, `³`), in any letter case. Before Windows 11, opening
 /// `nul.anything` in any directory opens the device, so a PNG written
 /// under such a name would be lost without an error.
@@ -405,7 +409,7 @@ fn is_windows_device(stem: &str) -> bool {
     let mut digits = port.chars();
     matches!(
         (digits.next(), digits.next()),
-        (Some('0'..='9' | '¹' | '²' | '³'), None)
+        (Some('1'..='9' | '¹' | '²' | '³'), None)
     )
 }
 
@@ -443,6 +447,7 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    /// The names recordings usually have pass through untouched.
     #[test]
     fn a_plain_name_is_kept() {
         for name in [
@@ -455,6 +460,7 @@ mod tests {
         }
     }
 
+    /// Cyrillic, CJK and precomposed accented letters are letters too.
     #[test]
     fn letters_and_digits_of_any_script_are_kept() {
         for name in ["запись7", "録音", "café"] {
@@ -462,6 +468,8 @@ mod tests {
         }
     }
 
+    /// Spaces, path separators, shell syntax and control characters all
+    /// go the same way, one `_` each.
     #[test]
     fn every_other_character_becomes_an_underscore() {
         assert_eq!(safe_name("pass 1 (final)"), "pass_1__final_");
@@ -509,6 +517,8 @@ mod tests {
         assert_eq!(safe_name("cafe\u{301}"), "cafe_");
     }
 
+    /// No hidden files and nothing that reads as an option; dots and
+    /// dashes further in are fine.
     #[test]
     fn leading_dots_and_dashes_are_dropped() {
         assert_eq!(safe_name(".hidden"), "hidden");
@@ -516,6 +526,7 @@ mod tests {
         assert_eq!(safe_name("..-.x.-y"), "x.-y");
     }
 
+    /// Empty, or only dots and dashes: there is always a prefix.
     #[test]
     fn a_name_with_nothing_left_is_img() {
         for name in ["", ".", "..", "---", "-.-"] {
@@ -523,6 +534,7 @@ mod tests {
         }
     }
 
+    /// The cap is in bytes and never splits a character.
     #[test]
     fn a_long_name_is_cut_on_a_character_boundary() {
         assert_eq!(safe_name(&"a".repeat(300)), "a".repeat(MAX_PREFIX_BYTES));
@@ -555,6 +567,7 @@ mod tests {
         }
     }
 
+    /// Only an exact device name up to the first `.` counts.
     #[test]
     fn a_name_that_only_resembles_a_device_name_is_kept() {
         for name in [
@@ -567,6 +580,10 @@ mod tests {
             "com10",
             "com1x.y",
             "_nul",
+            // Windows reserves ports 1 to 9 only.
+            "com0",
+            "LPT0",
+            "com0.x",
         ] {
             assert_eq!(safe_name(name), name);
         }
@@ -607,6 +624,7 @@ mod tests {
         }
     }
 
+    /// The directory and the last extension go; earlier dots stay.
     #[test]
     fn the_prefix_is_the_input_files_stem() {
         assert_eq!(
@@ -620,6 +638,7 @@ mod tests {
         assert_eq!(output_prefix(None, Path::new("/dev/stdin")), "stdin");
     }
 
+    /// The stem goes through `safe_name` on its way to the prefix.
     #[test]
     fn a_hostile_input_name_gives_a_safe_prefix() {
         assert_eq!(output_prefix(None, Path::new(".hidden.wav")), "hidden");
@@ -630,6 +649,7 @@ mod tests {
         );
     }
 
+    /// Paths with no final component have no stem to use.
     #[test]
     fn an_input_with_no_file_name_gives_img() {
         for input in ["..", "/", "recordings/.."] {
@@ -637,6 +657,7 @@ mod tests {
         }
     }
 
+    /// Bytes that are not UTF-8 have a defined result: `_`.
     #[cfg(unix)]
     #[test]
     fn a_non_utf8_input_name_gives_a_safe_prefix() {
@@ -645,6 +666,7 @@ mod tests {
         assert_eq!(output_prefix(None, Path::new(input)), "caf_");
     }
 
+    /// `--prefix` wins over the input's name.
     #[test]
     fn an_explicit_prefix_replaces_the_input_stem() {
         assert_eq!(output_prefix(Some("iss"), Path::new("pass1.wav")), "iss");
@@ -657,13 +679,16 @@ mod tests {
         assert_eq!(output_prefix(Some("../up"), Path::new("pass1.wav")), "_up");
     }
 
+    /// A `--prefix` that is already safe is taken as given.
     #[test]
     fn a_plain_prefix_is_accepted() {
-        for name in ["img", "iss-2026.11.10", "запись_1"] {
+        for name in ["img", "iss-2026.11.10", "запись_1", "com0"] {
             assert_eq!(parse_prefix(name), Ok(name.to_string()));
         }
     }
 
+    /// Anything `safe_name` would have to change is an argument error:
+    /// a name the user chose is refused, not rewritten.
     #[test]
     fn a_prefix_that_is_not_already_safe_is_refused() {
         let too_long = "a".repeat(MAX_PREFIX_BYTES + 1);
@@ -686,6 +711,7 @@ mod tests {
         }
     }
 
+    /// The number is padded to three digits and grows past them.
     #[test]
     fn a_png_is_named_prefix_number_mode() {
         assert_eq!(
