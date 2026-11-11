@@ -401,12 +401,13 @@ const HOSTILE: &str = "x\u{1b}[31m\u{7}\n\u{202e}y";
 #[cfg(unix)]
 const HOSTILE_SHOWN: &str = "x\\u{1b}[31m\\u{7}\\n\\u{202e}y";
 
-/// No control character reached stderr, other than the newline that ends
-/// each message, and no right-to-left override. (A newline from a path
-/// would break `HOSTILE_SHOWN` up, so the tests that look for it catch
-/// that.)
+/// `err` prints a path as `shown`, its escaped form, and nothing from the
+/// path reached stderr raw: no control character other than the newline
+/// that ends each message, and no right-to-left override. (A raw newline
+/// from the path would break `shown` up, so the first check catches that.)
 #[cfg(unix)]
-fn assert_no_raw_control(err: &str) {
+fn assert_shown_escaped(err: &str, shown: &str) {
+    assert!(err.contains(shown), "{err:?}");
     assert!(
         !err.contains(|c: char| (c.is_control() && c != '\n') || c == '\u{202e}'),
         "{err:?}"
@@ -421,8 +422,7 @@ fn a_control_character_in_the_input_name_is_escaped_when_it_cannot_be_opened() {
     fs::write(&input, b"this is not a RIFF/WAVE file").unwrap();
     let err = stderr(&run(&input, &dir.join("out")).code(1));
     assert!(err.contains("error: open WAV"), "{err:?}");
-    assert!(err.contains(&format!("{HOSTILE_SHOWN}.wav")), "{err:?}");
-    assert_no_raw_control(&err);
+    assert_shown_escaped(&err, &format!("{HOSTILE_SHOWN}.wav"));
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -437,8 +437,7 @@ fn a_control_character_in_the_output_name_is_escaped_when_it_cannot_be_created()
     fs::write(&out, b"").unwrap();
     let err = stderr(&run(&input, &out).code(1));
     assert!(err.contains("create output dir"), "{err:?}");
-    assert!(err.contains(HOSTILE_SHOWN), "{err:?}");
-    assert_no_raw_control(&err);
+    assert_shown_escaped(&err, HOSTILE_SHOWN);
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -451,11 +450,7 @@ fn a_control_character_in_the_output_name_is_escaped_when_an_image_is_written() 
     let out = dir.join(HOSTILE);
     let err = stderr(&run(&input, &out).code(0));
     assert!(out.join("pass-001-robot12bw.png").is_file());
-    assert!(
-        err.contains(&format!("{HOSTILE_SHOWN}/pass-001-robot12bw.png")),
-        "{err:?}"
-    );
-    assert_no_raw_control(&err);
+    assert_shown_escaped(&err, &format!("{HOSTILE_SHOWN}/pass-001-robot12bw.png"));
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -470,10 +465,6 @@ fn a_control_character_in_the_output_name_is_escaped_when_a_write_fails() {
     fs::create_dir_all(out.join("pass-001-robot12bw.png")).unwrap();
     let err = stderr(&run(&input, &out).code(1));
     assert!(err.contains("error: write"), "{err:?}");
-    assert!(
-        err.contains(&format!("{HOSTILE_SHOWN}/pass-001-robot12bw.png")),
-        "{err:?}"
-    );
-    assert_no_raw_control(&err);
+    assert_shown_escaped(&err, &format!("{HOSTILE_SHOWN}/pass-001-robot12bw.png"));
     let _ = fs::remove_dir_all(&dir);
 }
