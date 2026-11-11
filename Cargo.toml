@@ -2,7 +2,7 @@
 name = "slowrx"
 version = "0.8.1"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Pure-Rust SSTV (Slow-Scan TV) decoder library — a port of slowrx by Oona Räisänen"
 authors = ["Jason Herald <jason.herald@gmail.com>"]
 license = "MIT"

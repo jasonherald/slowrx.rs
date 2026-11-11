@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only in Unicode normalization (macOS). Give each a `--prefix` or its own
   output directory.
 
+- **The minimum supported Rust version is now 1.88** (was 1.85), so that
+  dependency updates, security fixes among them, are not held back by the
+  compiler floor (#139). `image` 0.25.10 and `proptest` 1.12 both need it.
+- The README installs the CLI with
+  `cargo install slowrx --features cli --locked`, which uses the dependency
+  versions the release was tested and audited with.
+
 ### Fixed
 
 - `slowrx-cli`'s own messages show control characters in the `--input`
@@ -49,6 +56,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   characters (such as the right-to-left override), which would reorder the
   text after them. Other paths are printed as before. Argument errors come
   from the argument parser and still echo a bad value as given.
+
+### Internal
+
+- Dependency lockfile refreshed (#139): `image` 0.25.9 → 0.25.10 and
+  `proptest` 1.11.0 → 1.12.0 (with `rand` 0.9 → 0.10), plus patch updates.
+  Releases less than a week old were not taken: `bit-vec`, `crc32fast`,
+  `flate2` and `syn` stay on their newest release that has been public for
+  seven days or more. Three crates are newly compiled, all for tests only
+  (`chacha20`, `cpufeatures`, `core_detect`), and six no longer are.
+  Decoded output is unchanged: 92 real-radio decodes (ARISS Fram2 and the
+  2017 ISS passes, both demods) are byte-identical before and after. The
+  pinned toolchain stays at 1.99.1, the current stable release.
 
 ## [0.8.1] - 2026-10-21
 

@@ -48,7 +48,7 @@
 //! - `1` — error: bad arguments, an unreadable or unsupported WAV, or an
 //!   output directory / PNG that couldn't be written.
 //!
-//! Requires the `cli` feature: `cargo install --features cli`.
+//! Requires the `cli` feature: `cargo install slowrx --features cli --locked`.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
